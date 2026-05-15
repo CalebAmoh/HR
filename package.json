@@ -1,0 +1,12 @@
+{
+  "name": "hr",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev --prefix Client\" \"npm run dev --prefix Server\" --names \"client,server\" --prefix-colors \"cyan,yellow\"",
+    "install:all": "npm install --prefix Client && npm install --prefix Server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

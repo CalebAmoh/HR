@@ -1,0 +1,758 @@
+import React, { useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import {
+  Users, FileText, CalendarCheck, Banknote, Building2,
+  ShieldAlert, PieChart, FolderOpen, Briefcase, GraduationCap,
+  ArrowUpRight, Search, LayoutGrid, List
+} from 'lucide-react';
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   DESIGN TOKENS
+   Colors encode CATEGORY, not "one per card". Three semantic ramps:
+     blue  → core business ops  (Employees, Organisation, Admin)
+     teal  → people & growth    (Leave, Recruitment, Training)
+     amber → finance & data     (Payroll, Salary, Analytics, Documents)
+───────────────────────────────────────────────────────────────────────────── */
+const RAMP = {
+  blue:  { bg: 'rgba(55,138,221,0.09)',  border: 'rgba(55,138,221,0.20)',  icon: '#378ADD', tag: '#185FA5' },
+  teal:  { bg: 'rgba(29,158,117,0.09)',  border: 'rgba(29,158,117,0.20)',  icon: '#1D9E75', tag: '#0F6E56' },
+  amber: { bg: 'rgba(186,117,23,0.09)', border: 'rgba(186,117,23,0.20)',  icon: '#BA7517', tag: '#854F0B' },
+};
+
+const modules = [
+  { id: 'Employees',       icon: Users,         title: 'Employee Directory',     desc: 'Personnel records, onboarding workflows, and complete employee profile management.',      tag: 'Core',         ramp: 'blue',  stat: '200 employees',    statColor: '#378ADD' },
+  { id: 'LeaveManagement', icon: CalendarCheck, title: 'Leave Management',       desc: 'Time-off requests, public holiday calendars, approval chains, and leave balances.',       tag: 'HR',           ramp: 'teal',  stat: '12 pending',       statColor: '#f59e0b' },
+  { id: 'Payroll',         icon: Banknote,      title: 'Payroll Processing',     desc: 'Payroll cycles, payslip generation, and employee benefits administration.',               tag: 'Finance',      ramp: 'amber', stat: 'Last run: Jan',    statColor: '#10b981' },
+  { id: 'Salary',          icon: FileText,      title: 'Salary & Compensation',  desc: 'Salary structures, pay grades, notches, and compensation policy configuration.',          tag: 'Finance',      ramp: 'amber', stat: '8 grades',         statColor: '#BA7517' },
+  { id: 'Insights',        icon: PieChart,      title: 'Analytics & Reports',    desc: 'Custom report generation, trend visualisation, and organisation-wide insights.',          tag: 'Intelligence', ramp: 'amber', stat: '24 reports',       statColor: '#BA7517' },
+  { id: 'Company',         icon: Building2,     title: 'Organisation Structure', desc: 'Departments, branches, reporting lines, and full company hierarchy configuration.',      tag: 'Core',         ramp: 'blue',  stat: '5 branches',       statColor: '#378ADD' },
+  { id: 'Recruitment',     icon: Briefcase,     title: 'Recruitment',            desc: 'Job postings, applicant tracking pipeline, and interview panel scheduling.',              tag: 'HR',           ramp: 'teal',  stat: '16 applicants',    statColor: '#1D9E75' },
+  { id: 'Training',        icon: GraduationCap, title: 'Training & Development', desc: 'Employee courses, certifications, skills matrices, and learning path design.',            tag: 'Growth',       ramp: 'teal',  stat: '7 active courses', statColor: '#1D9E75' },
+  { id: 'Documents',       icon: FolderOpen,    title: 'Document Centre',        desc: 'Secure storage, organisation, and sharing of company files and HR policies.',            tag: 'Operations',   ramp: 'amber', stat: '340 files',        statColor: '#BA7517' },
+  { id: 'Admin',           icon: ShieldAlert,   title: 'System Administration',  desc: 'Roles, permissions, audit logs, and global platform configuration settings.',            tag: 'Core',         ramp: 'blue',  stat: '3 admins',         statColor: '#64748b' },
+];
+
+const TAGS = ['All', 'Core', 'HR', 'Finance', 'Intelligence', 'Operations', 'Growth'];
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   GLOBAL STATE FOR MODULES
+───────────────────────────────────────────────────────────────────────────── */
+let enabledModulesArray = [
+  'Employees', 'LeaveManagement', 'Payroll', 'Salary', 'Insights',
+  'Company', 'Recruitment', 'Training', 'Documents', 'Admin'
+];
+const listeners = new Set<() => void>();
+
+function useEnabledModules() {
+  const [enabled, setEnabled] = useState(enabledModulesArray);
+  
+  React.useEffect(() => {
+    const trigger = () => setEnabled([...enabledModulesArray]);
+    listeners.add(trigger);
+    return () => { listeners.delete(trigger); };
+  }, []);
+
+  const toggle = (id: string) => {
+    if (enabledModulesArray.includes(id)) {
+      enabledModulesArray = enabledModulesArray.filter(m => m !== id);
+    } else {
+      enabledModulesArray.push(id);
+    }
+    listeners.forEach(fn => fn());
+  };
+
+  const toggleAll = () => {
+    if (enabledModulesArray.length === modules.length) {
+      enabledModulesArray = [];
+    } else {
+      enabledModulesArray = modules.map(m => m.id);
+    }
+    listeners.forEach(fn => fn());
+  };
+
+  return { enabled, toggle, toggleAll };
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   MODULE CARD
+   Hover state driven by direct DOM style mutation — avoids React re-renders
+   on every mousemove event tick that setState() would cause.
+───────────────────────────────────────────────────────────────────────────── */
+function ModuleCard({ key,mod, index, onClick, isSettings, isEnabled, onToggle }) {
+  const Icon = mod.icon;
+  const r = RAMP[mod.ramp];
+
+  const handleMouseEnter = (e) => {
+    const el = e.currentTarget;
+    if (isSettings && !isEnabled) return;
+    el.style.borderColor = r.border;
+    el.style.boxShadow = `0 8px 32px -8px rgba(0,0,0,0.14), inset 0 0 0 1px ${r.border}`;
+    const iconEl = el.querySelector('.card-icon');
+    if (iconEl) iconEl.style.transform = 'scale(1.07)';
+    const arrowEl = el.querySelector('.card-arrow');
+    if (arrowEl) {
+      arrowEl.style.color = r.icon;
+      arrowEl.style.transform = 'translate(2px,-2px)';
+    }
+  };
+
+  const handleMouseLeave = (e) => {
+    const el = e.currentTarget;
+    if (isSettings && !isEnabled) return;
+    el.style.borderColor = 'var(--border)';
+    el.style.boxShadow = '0 1px 3px rgba(0,0,0,0.05)';
+    const iconEl = el.querySelector('.card-icon');
+    if (iconEl) iconEl.style.transform = 'scale(1)';
+    const arrowEl = el.querySelector('.card-arrow');
+    if (arrowEl) {
+      arrowEl.style.color = 'var(--text-muted)';
+      arrowEl.style.transform = 'translate(0,0)';
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 18 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.97 }}
+      transition={{ delay: index * 0.04, duration: 0.36, ease: [0.23, 1, 0.32, 1] }}
+      onClick={() => {
+        if (isSettings) onToggle(mod.id);
+        else onClick();
+      }}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      style={{
+        position: 'relative',
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+        borderRadius: '16px',
+        padding: '22px 20px 18px',
+        cursor: 'pointer',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        transition: 'border-color .2s ease, box-shadow .2s ease, opacity .2s ease',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+        opacity: isSettings && !isEnabled ? 0.6 : 1,
+        ...(isSettings && !isEnabled ? { filter: 'grayscale(0.6)' } : {})
+      }}
+    >
+      {/* Top row — icon + category badge + toggle */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '16px' }}>
+        <div style={{ display: 'flex', gap: '12px' }}>
+          <div
+            className="card-icon"
+            style={{
+              width: '44px',
+              height: '44px',
+              borderRadius: '12px',
+              background: r.bg,
+              border: `1px solid ${r.border}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: r.icon,
+              flexShrink: 0,
+              transition: 'transform .2s ease',
+            }}
+          >
+            <Icon size={19} strokeWidth={1.75} />
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
+          {isSettings && (
+            <div
+              style={{
+                width: '36px', height: '20px', borderRadius: '100px',
+                background: isEnabled ? 'var(--accent)' : 'var(--border)',
+                position: 'relative', transition: 'background 0.2s',
+                cursor: 'pointer'
+              }}
+            >
+              <div style={{
+                position: 'absolute', top: '2px', left: isEnabled ? '18px' : '2px',
+                width: '16px', height: '16px', borderRadius: '50%', background: '#fff',
+                transition: 'left 0.2s', boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
+              }} />
+            </div>
+          )}
+          {/* Category badge — text uses same ramp's dark stop, never raw black */}
+          <span
+            style={{
+              fontSize: '10px',
+              fontWeight: 700,
+              letterSpacing: '.07em',
+              textTransform: 'uppercase',
+              color: r.tag,
+              background: r.bg,
+              border: `1px solid ${r.border}`,
+              borderRadius: '100px',
+              padding: '3px 9px',
+              lineHeight: 1.4,
+            }}
+          >
+            {mod.tag}
+          </span>
+        </div>
+      </div>
+
+      {/* Title — clear size step above description */}
+      <h3
+        className="syne"
+        style={{
+          fontSize: '14.5px',
+          fontWeight: 800,
+          color: 'var(--text-primary)',
+          margin: '0 0 7px',
+          lineHeight: 1.25,
+          letterSpacing: '-.01em',
+        }}
+      >
+        {mod.title}
+      </h3>
+
+      {/* Description — visually subordinate, comfortable line height */}
+      <p
+        style={{
+          fontSize: '12px',
+          color: 'var(--text-muted)',
+          lineHeight: 1.7,
+          margin: 0,
+          flex: 1,
+        }}
+      >
+        {mod.desc}
+      </p>
+
+      {/* Footer — colored dot anchors the stat, arrow responds to hover */}
+      <div
+        style={{
+          marginTop: '18px',
+          paddingTop: '13px',
+          borderTop: '1px solid var(--border)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span
+            style={{
+              width: '6px',
+              height: '6px',
+              borderRadius: '50%',
+              background: mod.statColor,
+              flexShrink: 0,
+            }}
+          />
+          <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)' }}>
+            {mod.stat}
+          </span>
+        </div>
+
+        <span
+          className="card-arrow"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            color: 'var(--text-muted)',
+            transition: 'color .18s ease, transform .18s ease',
+          }}
+        >
+          <ArrowUpRight size={15} strokeWidth={2} />
+        </span>
+      </div>
+    </motion.div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   MODULE ROW (LIST VIEW)
+───────────────────────────────────────────────────────────────────────────── */
+function ModuleRow({ mod, index, onClick, isSettings, isEnabled, onToggle }: any) {
+  const Icon = mod.icon;
+  const r = RAMP[mod.ramp as keyof typeof RAMP];
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.99 }}
+      transition={{ delay: index * 0.03, duration: 0.3 }}
+      onClick={() => {
+        if (isSettings) onToggle(mod.id);
+        else onClick();
+      }}
+      className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 p-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl cursor-pointer"
+      style={{
+        boxShadow: '0 1px 2px rgba(0,0,0,0.02)',
+        opacity: isSettings && !isEnabled ? 0.6 : 1,
+        ...(isSettings && !isEnabled ? { filter: 'grayscale(0.6)' } : {})
+      }}
+    >
+      <div className="flex items-center gap-3 w-full sm:w-auto">
+        <div
+          className="shrink-0 flex items-center justify-center rounded-[10px] w-10 h-10"
+          style={{
+            background: r.bg,
+            border: `1px solid ${r.border}`,
+            color: r.icon,
+          }}
+        >
+          <Icon size={18} strokeWidth={2} />
+        </div>
+
+        <div className="flex-1 min-w-0 sm:hidden">
+          <div className="flex items-center gap-2 mb-1">
+             <h3 className="syne text-sm font-extrabold m-0 text-[var(--text-primary)] truncate">{mod.title}</h3>
+             <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full border whitespace-nowrap" style={{ background: r.bg, color: r.tag, borderColor: r.border }}>{mod.tag}</span>
+          </div>
+          <p className="text-xs text-[var(--text-muted)] m-0 truncate">{mod.desc}</p>
+        </div>
+        
+        {/* Right side stuff on mobile */}
+        <div className="flex items-center gap-3 shrink-0 ml-auto sm:hidden">
+          {isSettings ? (
+            <div
+              className="relative w-9 h-5 rounded-full transition-colors duration-200"
+              style={{ background: isEnabled ? 'var(--accent)' : 'var(--border)' }}
+            >
+              <div 
+                className="absolute top-[2px] w-4 h-4 rounded-full bg-white shadow-sm transition-all duration-200"
+                style={{ left: isEnabled ? '18px' : '2px' }} 
+              />
+            </div>
+          ) : (
+            <ArrowUpRight size={16} className="text-[var(--text-muted)]" />
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 min-w-0 hidden sm:block">
+         <div className="flex items-center gap-2 mb-1">
+            <h3 className="syne text-sm font-extrabold m-0 text-[var(--text-primary)] truncate">{mod.title}</h3>
+            <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full border whitespace-nowrap" style={{ background: r.bg, color: r.tag, borderColor: r.border }}>{mod.tag}</span>
+         </div>
+         <p className="text-xs text-[var(--text-muted)] m-0 truncate">{mod.desc}</p>
+      </div>
+
+      <div className="hidden sm:flex items-center gap-4 shrink-0">
+        <div className="flex items-center gap-1.5 hidden lg:flex">
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: mod.statColor }} />
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] whitespace-nowrap">{mod.stat}</span>
+        </div>
+
+        {isSettings ? (
+          <div
+            className="relative w-9 h-5 rounded-full transition-colors duration-200"
+            style={{ background: isEnabled ? 'var(--accent)' : 'var(--border)' }}
+          >
+            <div 
+              className="absolute top-[2px] w-4 h-4 rounded-full bg-white shadow-sm transition-all duration-200"
+              style={{ left: isEnabled ? '18px' : '2px' }} 
+            />
+          </div>
+        ) : (
+          <ArrowUpRight size={16} className="text-[var(--text-muted)]" />
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   FILTER PILL — with live count badge
+───────────────────────────────────────────────────────────────────────────── */
+function FilterPill({ label, active, count, onClick }: any) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '5px',
+        height: '30px',
+        padding: '0 12px',
+        borderRadius: '100px',
+        border: active ? '1px solid var(--accent)' : '1px solid var(--border)',
+        background: active ? 'var(--accent-dim)' : 'transparent',
+        color: active ? 'var(--accent)' : 'var(--text-muted)',
+        fontSize: '12px',
+        fontWeight: 600,
+        cursor: 'pointer',
+        transition: 'all .15s ease',
+        fontFamily: 'inherit',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {label}
+      <span
+        style={{
+          fontSize: '10px',
+          fontWeight: 700,
+          background: active ? 'var(--accent)' : 'var(--border)',
+          color: active ? '#fff' : 'var(--text-muted)',
+          borderRadius: '100px',
+          padding: '1px 5px',
+          lineHeight: 1.5,
+          transition: 'all .15s ease',
+          minWidth: '16px',
+          textAlign: 'center',
+        }}
+      >
+        {count}
+      </span>
+    </button>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   MAIN COMPONENT
+───────────────────────────────────────────────────────────────────────────── */
+export function Modules({ onNavigate, isSettings = false }: any) {
+  const [activeTag, setActiveTag] = useState('All');
+  const [query, setQuery]         = useState('');
+  const [viewMode, setViewMode]   = useState<'grid' | 'list'>('grid');
+  const { enabled: enabledModules, toggle: toggleModule, toggleAll } = useEnabledModules();
+
+  const filtered = modules.filter((m) => {
+    // In normal mode, only show enabled modules. In settings mode, show all.
+    if (!isSettings && !enabledModules.includes(m.id)) return false;
+
+    const matchTag    = activeTag === 'All' || m.tag === activeTag;
+    const q           = query.toLowerCase();
+    const matchSearch = !q || m.title.toLowerCase().includes(q) || m.desc.toLowerCase().includes(q) || m.tag.toLowerCase().includes(q);
+    return matchTag && matchSearch;
+  });
+
+  const countByTag = (tag: string) =>
+    modules.filter((m) => {
+      if (!isSettings && !enabledModules.includes(m.id)) return false;
+      return tag === 'All' || m.tag === tag;
+    }).length;
+
+  return (
+    <div
+      style={{
+        padding: 'clamp(24px, 4vw, 44px) clamp(16px, 4vw, 40px)',
+        width: '100%',
+        maxWidth: '1400px',
+        margin: '0 auto',
+        minHeight: '100%',
+      }}
+    >
+      {/* ── PAGE HEADER ────────────────────────────────────────────────────── */}
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, ease: [0.23, 1, 0.32, 1] }}
+        style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: '24px',
+          flexWrap: 'wrap',
+          marginBottom: '28px',
+        }}
+      >
+        <div style={{ flex: '1 1 300px' }}>
+          <h1
+            className="syne"
+            style={{
+              fontSize: 'clamp(22px, 3vw, 32px)',
+              fontWeight: 900,
+              color: 'var(--text-primary)',
+              margin: '0 0 8px',
+              letterSpacing: '-.025em',
+              lineHeight: 1.1,
+            }}
+          >
+            System Modules
+          </h1>
+          <p
+            style={{
+              fontSize: '13px',
+              color: 'var(--text-muted)',
+              lineHeight: 1.65,
+              margin: 0,
+              maxWidth: '440px',
+            }}
+          >
+            Access and manage every capability within the SISL portal.
+            Select a module below to get started.
+          </p>
+        </div>
+
+        {/* Header Actions */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+          {isSettings && (
+            <button
+              onClick={() => toggleAll()}
+              className="secondary-btn"
+              style={{ height: '40px' }}
+            >
+              {enabledModules.length === modules.length ? 'Disable All' : 'Enable All'}
+            </button>
+          )}
+
+          <div style={{ 
+            display: 'flex', 
+            background: 'var(--surface)', 
+            border: '1px solid var(--border)', 
+            borderRadius: '10px', 
+            padding: '4px',
+            height: '40px'
+          }}>
+             <button 
+               onClick={() => setViewMode('grid')} 
+               style={{
+                 width: '32px', height: '30px', 
+                 display: 'flex', alignItems: 'center', justifyContent: 'center',
+                 borderRadius: '6px', border: 'none', cursor: 'pointer',
+                 background: viewMode === 'grid' ? 'var(--bg-hover)' : 'transparent',
+                 color: viewMode === 'grid' ? 'var(--text-primary)' : 'var(--text-muted)'
+               }}
+             >
+                <LayoutGrid size={16} />
+             </button>
+             <button 
+               onClick={() => setViewMode('list')} 
+               style={{
+                 width: '32px', height: '30px', 
+                 display: 'flex', alignItems: 'center', justifyContent: 'center',
+                 borderRadius: '6px', border: 'none', cursor: 'pointer',
+                 background: viewMode === 'list' ? 'var(--bg-hover)' : 'transparent',
+                 color: viewMode === 'list' ? 'var(--text-primary)' : 'var(--text-muted)'
+               }}
+             >
+                <List size={16} />
+             </button>
+          </div>
+
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              borderRadius: '12px',
+              padding: '0 14px',
+              height: '40px',
+              width: 'clamp(190px, 24vw, 268px)',
+              flexShrink: 0,
+              transition: 'border-color .15s ease',
+            }}
+            onFocusCapture={(e) => (e.currentTarget.style.borderColor = 'var(--accent)')}
+            onBlurCapture={(e)  => (e.currentTarget.style.borderColor = 'var(--border)')}
+          >
+            <Search size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search modules…"
+              aria-label="Search modules"
+              style={{
+                border: 'none',
+                background: 'transparent',
+                outline: 'none',
+                fontSize: '13px',
+                color: 'var(--text-primary)',
+                width: '100%',
+                fontFamily: 'inherit',
+              }}
+            />
+            {query && (
+              <button
+                onClick={() => setQuery('')}
+                aria-label="Clear search"
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: 'var(--text-muted)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: 0,
+                  fontSize: '18px',
+                  lineHeight: 1,
+                  flexShrink: 0,
+                }}
+              >
+                ×
+              </button>
+            )}
+          </div>
+        </div>
+      </motion.div>
+
+      {/* ── COLOR LEGEND — explains what the 3 ramps mean ──────────────────── */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.08 }}
+        style={{
+          display: 'flex',
+          gap: '20px',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          marginBottom: '18px',
+          padding: '10px 16px',
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
+          borderRadius: '12px',
+        }}
+      >
+        <span
+          style={{
+            fontSize: '11px',
+            fontWeight: 700,
+            color: 'var(--text-muted)',
+            letterSpacing: '.05em',
+            textTransform: 'uppercase',
+            flexShrink: 0,
+          }}
+        >
+          Colour key
+        </span>
+
+        {[
+          { label: 'Business ops',   ramp: 'blue'  },
+          { label: 'People & growth', ramp: 'teal'  },
+          { label: 'Finance & data', ramp: 'amber' },
+        ].map(({ label, ramp }) => {
+          const r = RAMP[ramp as keyof typeof RAMP];
+          return (
+            <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span
+                style={{
+                  width: '10px', height: '10px', borderRadius: '3px',
+                  background: r.bg, border: `1px solid ${r.border}`,
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: '12px', color: r.tag, fontWeight: 600 }}>{label}</span>
+            </div>
+          );
+        })}
+
+        {/* Live count — right-aligned */}
+        <span
+          style={{
+            marginLeft: 'auto',
+            fontSize: '12px',
+            color: 'var(--text-muted)',
+            fontWeight: 500,
+            flexShrink: 0,
+          }}
+        >
+          {filtered.length} of {modules.length} modules
+        </span>
+      </motion.div>
+
+      {/* ── FILTER PILLS ───────────────────────────────────────────────────── */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.12 }}
+        style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '22px' }}
+      >
+        {TAGS.map((tag) => (
+          <FilterPill
+            key={tag}
+            label={tag}
+            active={activeTag === tag}
+            count={countByTag(tag)}
+            onClick={() => setActiveTag(tag)}
+          />
+        ))}
+      </motion.div>
+
+      {/* ── MODULE GRID/LIST ────────────────────────────────────────────────────── */}
+      <AnimatePresence mode="popLayout">
+        {filtered.length > 0 ? (
+          <motion.div
+            key="grid"
+            layout
+            style={{
+              display: viewMode === 'grid' ? 'grid' : 'flex',
+              flexDirection: viewMode === 'grid' ? 'row' : 'column',
+              gridTemplateColumns: viewMode === 'grid' ? 'repeat(auto-fill, minmax(260px, 1fr))' : 'none',
+              gap: '14px',
+            }}
+          >
+            {filtered.map((mod, i) => (
+              viewMode === 'grid' ? (
+                <ModuleCard
+                  key={mod.id}
+                  mod={mod}
+                  index={i}
+                  isSettings={isSettings}
+                  isEnabled={enabledModules.includes(mod.id)}
+                  onToggle={toggleModule}
+                  onClick={() => onNavigate?.(mod.id)}
+                />
+              ) : (
+                <ModuleRow
+                  key={mod.id}
+                  mod={mod}
+                  index={i}
+                  isSettings={isSettings}
+                  isEnabled={enabledModules.includes(mod.id)}
+                  onToggle={toggleModule}
+                  onClick={() => onNavigate?.(mod.id)}
+                />
+              )
+            ))}
+          </motion.div>
+        ) : (
+          <motion.div
+            key="empty"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '80px 20px',
+              textAlign: 'center',
+              gap: '10px',
+            }}
+          >
+            <Search size={32} style={{ color: 'var(--text-muted)', opacity: 0.3 }} />
+            <p
+              className="syne"
+              style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}
+            >
+              No modules found
+            </p>
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
+              Try a different search term or category filter.
+            </p>
+            <button
+              onClick={() => { setQuery(''); setActiveTag('All'); }}
+              style={{
+                marginTop: '10px',
+                padding: '8px 18px',
+                borderRadius: '10px',
+                border: '1px solid var(--border)',
+                background: 'var(--surface)',
+                color: 'var(--text-primary)',
+                fontSize: '13px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              Clear filters
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
