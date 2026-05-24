@@ -182,3 +182,85 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
     background-color: var(--bg) !important;
   }
 }
+
+/* ── Table flash prevention ─────────────────────────────────────────────── */
+/* Flex children default to min-width:auto, which lets a table push wider   */
+/* than its container for 1-2 frames on mount, flashing a scrollbar.        */
+/* min-width:0 allows the wrapper to shrink; overflow-x-auto still works.   */
+.overflow-x-auto { min-width: 0; }
+
+
+/* ── Sonner toast overrides ─────────────────────────────────────────────── */
+[data-sonner-toast] {
+  overflow: hidden;
+}
+
+/* Coloured left-accent strip per type */
+[data-sonner-toast]::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 4px;
+  border-radius: 12px 0 0 12px;
+  background: #9ca3af;
+}
+[data-sonner-toast][data-type='success']::before { background: #059669; }
+[data-sonner-toast][data-type='error']::before   { background: #dc2626; }
+[data-sonner-toast][data-type='warning']::before { background: #d97706; }
+[data-sonner-toast][data-type='info']::before    { background: #2563eb; }
+
+/* Nudge content right to clear the strip */
+[data-sonner-toast] [data-content] {
+  padding-left: 6px;
+}
+
+/* Title font */
+[data-sonner-toast] [data-title] {
+  font-family: "Syne", sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #111827;
+}
+
+/* Description */
+[data-sonner-toast] [data-description] {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+/* Icon colour per type */
+[data-sonner-toast][data-type='success'] [data-icon] { color: #059669; }
+[data-sonner-toast][data-type='error']   [data-icon] { color: #dc2626; }
+[data-sonner-toast][data-type='warning'] [data-icon] { color: #d97706; }
+[data-sonner-toast][data-type='info']    [data-icon] { color: #2563eb; }
+
+/* Close button */
+[data-sonner-toast] [data-close-button] {
+  background: #f1f5f9 !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 6px !important;
+  color: #6b7280 !important;
+  transition: background 0.15s;
+}
+[data-sonner-toast] [data-close-button]:hover {
+  background: #e2e8f0 !important;
+}
+
+/* Dark mode */
+.dark [data-sonner-toast] {
+  background: #1e293b !important;
+  border-color: #334155 !important;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.3), 0 1px 6px rgba(0,0,0,0.2) !important;
+}
+.dark [data-sonner-toast] [data-title]       { color: #f8fafc; }
+.dark [data-sonner-toast] [data-description] { color: #94a3b8; }
+.dark [data-sonner-toast] [data-close-button] {
+  background: #334155 !important;
+  border-color: #475569 !important;
+  color: #94a3b8 !important;
+}
+.dark [data-sonner-toast] [data-close-button]:hover {
+  background: #475569 !important;
+}

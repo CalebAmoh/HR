@@ -1,8 +1,11 @@
+const crypto = require('crypto');
 const helper = require('../helpers/dbQueryHelper');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
+const { sendWelcomeEmail } = require('../helpers/emailHelper');
+const { logActivity, fromReq } = require('./auditController');
 
 
 
@@ -87,9 +90,18 @@ const registerUser = asyncHandler(async (req, res) => {
     await helper.dynamicUpdateWithId('employee', empUpdate, employeeId);
   }
 
-  // Hash default password
+  // Fetch employee email for welcome email
+  const empData = await helper.selectRecordsWithQuery(
+    `SELECT CONCAT_WS(' ', firstName, lastName) AS name, work_email, email FROM employee WHERE id = ? LIMIT 1`,
+    [employeeId]
+  );
+  const emp = empData.data?.[0] ?? {};
+  const recipientEmail = emp.work_email || emp.email;
+
+  // Generate random password
+  const plainPassword  = crypto.randomBytes(8).toString('hex');
   const salt           = await bcrypt.genSalt(10);
-  const hashedPassword = await bcrypt.hash('pass1234', salt);
+  const hashedPassword = await bcrypt.hash(plainPassword, salt);
 
   // Create the users record (only valid columns)
   const result = await helper.dynamicInsert('users', {
@@ -123,6 +135,16 @@ const registerUser = asyncHandler(async (req, res) => {
     });
   }
 
+  // Send welcome email (non-blocking — don't fail registration if email fails)
+  if (recipientEmail) {
+    sendWelcomeEmail({
+      to:       recipientEmail,
+      name:     emp.name || username,
+      username: username || email,
+      password: plainPassword,
+    }).catch((err) => console.error('Welcome email failed:', err.message));
+  }
+
   // Return the new user with employee profile
   const newUser = await helper.selectRecordsWithQuery(`
     SELECT u.id, u.status, u.username, u.employeeId,
@@ -133,11 +155,9 @@ const registerUser = asyncHandler(async (req, res) => {
     LIMIT 1
   `, [newUserId]);
 
-  res.status(201).json({
-    status:  '201',
-    message: 'User registered successfully',
-    data:    newUser.data?.[0] ?? {},
-  });
+  const userData = newUser.data?.[0] ?? {};
+  logActivity({ module: 'Users', action: 'create', entityId: String(newUserId), entityName: userData.username || username, ...fromReq(req) });
+  res.status(201).json({ status: '201', message: 'User registered successfully', data: userData });
 });
 
 
@@ -158,15 +178,15 @@ const loginUser = asyncHandler(async (req, res) => {
     return res.status(400).json({ status: '400', message: validation.message });
   }
 
-  // Find user by username (which stores the email) joined with employee for profile data
+  // Find user by username OR employee email
   const userResult = await helper.selectRecordsWithQuery(`
     SELECT u.id, u.username, u.password, u.status, u.employeeId,
            e.email, e.firstName, e.lastName, e.phone
     FROM users u
     JOIN employee e ON e.id = u.employeeId
-    WHERE u.username = ?
+    WHERE u.username = ? OR e.email = ? OR e.work_email = ?
     LIMIT 1
-  `, [email]);
+  `, [email, email, email]);
   if (userResult.status === 'error' || !userResult.data?.length) {
     return res.status(401).json({ status: '401', message: 'Invalid email or password' });
   }
@@ -536,7 +556,8 @@ const updateUser = asyncHandler(async (req, res) => {
     status,
     roles,
     permissions,
-    posted_by
+    posted_by,
+    username,
   } = req.body;
 
   // ───────────────────────────
@@ -577,17 +598,14 @@ const updateUser = asyncHandler(async (req, res) => {
     if (empResult.status === 'error') {
       return res.status(500).json({ status: '500', message: empResult.message });
     }
-    // Keep username in sync if email changed
-    if (email) {
-      await helper.dynamicUpdateWithId('users', { username: email }, id);
-    }
   }
 
   // ───────────────────────────
-  // Update users-only fields (status, posted_by)
+  // Update users-only fields (status, username, posted_by)
   // ───────────────────────────
   const userData = {};
   if (status !== undefined && status !== null) userData.status    = status;
+  if (username)                                userData.username  = username;
   if (posted_by)                               userData.posted_by = posted_by;
 
   if (Object.keys(userData).length > 0) {
@@ -777,6 +795,7 @@ const deactivateUser = asyncHandler(async (req, res) => {
     data:  { revoked: true },
   });
 
+  logActivity({ module: 'Users', action: 'deactivate', entityId: String(id), entityName: existing.data[0].username, ...fromReq(req) });
   res.status(200).json({ status: '200', message: 'User deactivated successfully' });
 });
 
@@ -803,6 +822,7 @@ const activateUser = asyncHandler(async (req, res) => {
     return res.status(500).json({ status: '500', message: result.message });
   }
 
+  logActivity({ module: 'Users', action: 'activate', entityId: String(id), entityName: existing.data[0].username, ...fromReq(req) });
   res.status(200).json({ status: '200', message: 'User activated successfully' });
 });
 

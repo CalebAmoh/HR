@@ -6,7 +6,7 @@ export const inputClass =
 export const labelClass = 'block text-[13px] font-semibold text-slate-700 mb-1.5 syne';
 
 interface FormFieldProps {
-  label: string;
+  label: ReactNode;
   required?: boolean;
   className?: string;
   children: ReactNode;

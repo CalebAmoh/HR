@@ -71,6 +71,14 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
+    // Public routes (login, register) should never trigger a token refresh.
+    // A 401 here means wrong credentials, not an expired session.
+    const PUBLIC_ROUTES = ['/login', '/register'];
+    const reqUrl = original.url ?? '';
+    if (PUBLIC_ROUTES.some(p => reqUrl.endsWith(p))) {
+      return Promise.reject(error);
+    }
+
     // Already retried once — refresh token is also dead, log out
     if (original._retry) {
       logout();
@@ -122,8 +130,15 @@ api.interceptors.response.use(
 
     } catch (refreshError) {
       processQueue(refreshError, null);
-      logout(); // clears memory + sessionStorage + redirects to /
-      return Promise.reject(refreshError);
+      // Only redirect to login if the user actually had a session.
+      // Avoids a redirect loop when the refresh fires for an unauthenticated user.
+      const { getCurrentUser } = await import('./auth');
+      if (getCurrentUser()) {
+        logout();
+      }
+      // Return the original 401 error, not the refresh-token error,
+      // so callers (e.g. Login.tsx) see "Invalid credentials" not "Invalid refresh token".
+      return Promise.reject(error);
 
     } finally {
       isRefreshing = false;

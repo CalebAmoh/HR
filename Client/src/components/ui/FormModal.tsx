@@ -3,10 +3,13 @@ import { X, Save } from 'lucide-react';
 import { motion } from 'motion/react';
 
 const maxWidthMap = {
-  md: 'max-w-md',
-  lg: 'max-w-lg',
+  sm:  'max-w-sm',
+  md:  'max-w-md',
+  lg:  'max-w-lg',
   '2xl': 'max-w-2xl',
   '3xl': 'max-w-3xl',
+  '4xl': 'max-w-4xl',
+  '5xl': 'max-w-5xl',
 } as const;
 
 interface FormModalProps {

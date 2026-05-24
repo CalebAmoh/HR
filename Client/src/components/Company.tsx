@@ -1,64 +1,131 @@
-import { useState, useMemo } from 'react';
-import { FileEdit, Trash2, Filter, Plus, Download, X } from 'lucide-react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import { FileEdit, Trash2, Filter, Plus, Download, X, Building2, Network } from 'lucide-react';
 import { motion } from 'motion/react';
+import { toast } from 'sonner';
 import { ConfirmAlert } from './ConfirmAlert';
 import { CompanyStructureForm } from './CompanyStructureForm';
 import { Organogram } from './Organogram';
-import { useCrud } from '../hooks/useCrud';
 import { PageHeader } from './ui/PageHeader';
-import { TabBar } from './ui/TabBar';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
-
-const initialMockData = [
-  { id: 1, name: 'Headquarters', code: 'HQ-01', type: 'Company', details: 'Main office', address: '123 Main St', parent: 'None', manager: 'UNION ADMIN' },
-  { id: 2, name: 'Engineering', code: 'ENG-01', type: 'Department', details: 'Software development', address: '123 Main St', parent: 'Headquarters', manager: 'SAMUEL BANDOH' },
-  { id: 3, name: 'Human Resources', code: 'HR-01', type: 'Department', details: 'HR & Operations', address: '123 Main St', parent: 'Headquarters', manager: 'UNION ADMIN' },
-  { id: 4, name: 'Frontend Team', code: 'ENG-FE', type: 'Team', details: 'Web UI', address: '2nd Floor, 123 Main St', parent: 'Engineering', manager: 'MICHAEL CHEN' },
-  { id: 5, name: 'Backend Team', code: 'ENG-BE', type: 'Team', details: 'APIs', address: '123 Main St', parent: 'Engineering', manager: 'SARAH JENKS' },
-  { id: 6, name: 'Recruitment', code: 'HR-REC', type: 'Team', details: 'Talent Acquisition', address: '123 Main St', parent: 'Human Resources', manager: 'UNION ADMIN' },
-];
-
-const TABS = ['Company Structure', 'Organogram'];
+import api from '../../lib/api';
 
 export function Company() {
   const [activeTab, setActiveTab] = useState('Company Structure');
   const [searchQuery, setSearchQuery] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [typeFilter, setTypeFilter] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
-  const {
-    items: structures,
-    isFormOpen, setIsFormOpen,
-    isAlertOpen, setIsAlertOpen,
-    selectedItem: selectedStructure,
-    handleAddClick, handleEditClick, handleDeleteClick,
-    handleSave, handleConfirmDelete,
-  } = useCrud(initialMockData);
+  const [structures, setStructures] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [isFormOpen, setIsFormOpen] = useState(false);
+  const [isAlertOpen, setIsAlertOpen] = useState(false);
+  const [selectedStructure, setSelectedStructure] = useState<any>(null);
+
+  const fetchStructures = useCallback(async () => {
+    try {
+      const res = await api.get('/company/structures');
+      setStructures(res.data.data ?? []);
+    } catch {
+      toast.error('Failed to load structures');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchStructures(); }, [fetchStructures]);
+
+  useEffect(() => { setPage(1); }, [searchQuery, typeFilter, structures]);
 
   const filtered = useMemo(
     () =>
       structures.filter((s) => {
         const q = searchQuery.toLowerCase();
         return (
-          (s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)) &&
-          (!typeFilter || s.type === typeFilter)
+          (s.title?.toLowerCase().includes(q) || s.comp_code?.toLowerCase().includes(q)) &&
+          (!typeFilter || s.typeLabel === typeFilter)
         );
       }),
     [structures, searchQuery, typeFilter]
   );
 
+  const paged = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, page, pageSize]);
+
+  const typeOptions = useMemo(() => {
+    const seen = new Set<string>();
+    structures.forEach(s => { if (s.typeLabel) seen.add(s.typeLabel); });
+    return Array.from(seen).sort();
+  }, [structures]);
+
+  // Adapt shape so Organogram's name/parent/manager/type fields work
+  const organogramData = useMemo(() =>
+    structures.map(s => ({
+      ...s,
+      name:    s.title,
+      parent:  s.parentTitle ?? 'None',
+      manager: s.heads,
+      type:    s.typeLabel,
+    })),
+    [structures]
+  );
+
+  const handleAddClick = () => {
+    setSelectedStructure(null);
+    setIsFormOpen(true);
+  };
+
+  const handleEditClick = (row: any) => {
+    setSelectedStructure(row);
+    setIsFormOpen(true);
+  };
+
+  const handleDeleteClick = (row: any) => {
+    setSelectedStructure(row);
+    setIsAlertOpen(true);
+  };
+
+  const handleSave = async (formData: any, id?: string) => {
+    try {
+      if (id) {
+        await api.put(`/company/structures/${id}`, formData);
+        toast.success('Structure updated');
+      } else {
+        await api.post('/company/structures', formData);
+        toast.success('Structure created');
+      }
+      await fetchStructures();
+      setIsFormOpen(false);
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to save structure');
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!selectedStructure) return;
+    try {
+      await api.delete(`/company/structures/${selectedStructure.id}`);
+      toast.success('Structure deleted');
+      await fetchStructures();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to delete structure');
+    } finally {
+      setIsAlertOpen(false);
+    }
+  };
+
   const filterBar = (
     <>
       <div className="flex items-center gap-2">
         <label className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wide syne">Type:</label>
-        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="w-[140px] py-1 text-xs">
+        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="w-[160px] py-1 text-xs">
           <option value="">All Types</option>
-          <option value="Company">Company</option>
-          <option value="Branch">Branch</option>
-          <option value="Department">Department</option>
-          <option value="Unit">Unit</option>
-          <option value="Team">Team</option>
+          {typeOptions.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
       </div>
       {typeFilter && (
@@ -73,10 +140,17 @@ export function Company() {
     <div className="p-4 sm:p-6 md:p-6 w-full max-w-[1400px] mx-auto overflow-x-hidden flex flex-col h-full relative">
       <PageHeader title="Organization Structure" subtitle="Manage your company hierarchy, departments, and units." />
 
-      <TabBar tabs={TABS} activeTab={activeTab} onChange={setActiveTab} />
+      <div className="flex flex-wrap items-center gap-2 mt-2 mb-4">
+        <button onClick={() => setActiveTab('Company Structure')} className={`tab-btn flex items-center gap-2 ${activeTab === 'Company Structure' ? 'active' : ''}`}>
+          <Building2 size={13} /> Company Structure
+        </button>
+        <button onClick={() => setActiveTab('Organogram')} className={`tab-btn flex items-center gap-2 ${activeTab === 'Organogram' ? 'active' : ''}`}>
+          <Network size={13} /> Organogram
+        </button>
+      </div>
 
       {activeTab === 'Company Structure' ? (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden flex flex-col">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden flex flex-col min-h-0">
           <TableToolbar
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
@@ -106,29 +180,39 @@ export function Company() {
             }
           />
 
-          <div className="overflow-x-auto flex-1">
+          <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
             <table className="w-full border-collapse">
               <thead>
                 <tr>
-                  <th scope="col" className="th">Name</th>
-                  <th scope="col" className="th">Code</th>
-                  <th scope="col" className="th">Type</th>
-                  <th scope="col" className="th">Parent</th>
-                  <th scope="col" className="th">Manager</th>
-                  <th scope="col" className="th">Address</th>
-                  <th scope="col" className="th text-right"><span className="sr-only">Actions</span></th>
+                  <th className="th">Name</th>
+                  <th className="th">Code</th>
+                  <th className="th">Type</th>
+                  <th className="th">Parent</th>
+                  <th className="th">Manager</th>
+                  <th className="th">Address</th>
+                  <th className="th text-right"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.length > 0 ? (
-                  filtered.map((row, i) => (
-                    <motion.tr key={row.id} className="tr" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 + i * 0.06 }}>
-                      <td className="td font-medium text-[var(--text-primary)]">{row.name}</td>
-                      <td className="td">{row.code}</td>
-                      <td className="td font-medium text-[var(--text-secondary)]">{row.type}</td>
-                      <td className="td">{row.parent}</td>
-                      <td className="td">{row.manager || '—'}</td>
-                      <td className="td">{row.address}</td>
+                {loading ? (
+                  <tr>
+                    <td colSpan={7} className="td text-center py-10 text-[var(--text-muted)]">Loading...</td>
+                  </tr>
+                ) : paged.length > 0 ? (
+                  paged.map((row, i) => (
+                    <motion.tr
+                      key={row.id}
+                      className="tr"
+                      initial={{ opacity: 0, x: -8 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: 0.05 + i * 0.04 }}
+                    >
+                      <td className="td font-medium text-[var(--text-primary)]">{row.title}</td>
+                      <td className="td">{row.comp_code || '—'}</td>
+                      <td className="td">{row.typeLabel || '—'}</td>
+                      <td className="td">{row.parentTitle || '—'}</td>
+                      <td className="td">{row.heads || '—'}</td>
+                      <td className="td">{row.address || '—'}</td>
                       <td className="td">
                         <div className="flex items-center justify-end gap-1">
                           <button onClick={() => handleEditClick(row)} className="action-btn text-[var(--warning)]" title="Edit">
@@ -150,10 +234,17 @@ export function Company() {
             </table>
           </div>
 
-          <TablePagination total={structures.length} filtered={filtered.length} />
+          <TablePagination
+            total={structures.length}
+            filtered={filtered.length}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
+          />
         </div>
       ) : (
-        <Organogram data={structures} />
+        <Organogram data={organogramData} />
       )}
 
       {isFormOpen && (
@@ -161,13 +252,14 @@ export function Company() {
           onClose={() => setIsFormOpen(false)}
           initialData={selectedStructure}
           onSave={handleSave}
+          currentStructures={structures}
         />
       )}
 
       <ConfirmAlert
         isOpen={isAlertOpen}
         title="Delete Structure"
-        message={`Are you sure you want to delete ${selectedStructure?.name}? This action cannot be undone.`}
+        message={`Are you sure you want to delete "${selectedStructure?.title}"? This action cannot be undone.`}
         confirmText="Yes, Delete"
         onConfirm={handleConfirmDelete}
         onCancel={() => setIsAlertOpen(false)}

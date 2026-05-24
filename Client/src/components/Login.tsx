@@ -1,24 +1,45 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Mail, Lock, ArrowRight, ShieldCheck, Zap, Activity } from 'lucide-react';
+import { Mail, Lock, ArrowRight, ShieldCheck, Zap, Activity, AlertCircle } from 'lucide-react';
+import api from '@/lib/api';
+import { setSession } from '@/lib/auth';
+import { normalizeFromLogin } from '@/lib/permissions';
+import { AppUser, LoginResponseData } from '@/types/permissions';
+
+interface LoginResponse { status: string; message?: string; accessToken?: string; data?: LoginResponseData; }
 
 interface LoginProps {
-  onLogin: () => void;
+  onLogin: (user: AppUser) => void;
 }
 
 export function Login({ onLogin }: LoginProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    // Simulate login network request
-    setTimeout(() => {
+    setError(null);
+    try {
+      const response = await api.post<LoginResponse>('/login', { email: email.trim(), password });
+      const { status, accessToken, data } = response.data;
+      if (status !== '200' || !accessToken || !data) {
+        setError('Invalid email or password.');
+        return;
+      }
+      const appUser = normalizeFromLogin(data);
+      setSession(accessToken, appUser);
+      onLogin(appUser);
+    } catch (err: any) {
+      const serverMsg: string = err?.response?.data?.message ?? '';
+      // Never expose token/session internals to the user on the login screen
+      const isInternalError = /token|session|unauthorized|refresh/i.test(serverMsg);
+      setError(isInternalError ? 'Something went wrong. Please try again.' : (serverMsg || 'Invalid email or password.'));
+    } finally {
       setIsLoading(false);
-      onLogin();
-    }, 1200);
+    }
   };
 
   return (
@@ -146,6 +167,14 @@ export function Login({ onLogin }: LoginProps) {
                 </div>
               </div>
             </div>
+
+            {/* Error message */}
+            {error && (
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
 
             {/* Remember Me */}
             <div className="flex items-center mt-5">

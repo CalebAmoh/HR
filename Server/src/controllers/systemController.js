@@ -2,6 +2,13 @@ const { prisma }   = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond      = require('../helpers/respondHelper');
 
+function validateListCode(code) {
+    if (!code?.trim()) return 'Code is required';
+    if (!/^[A-Z0-9_]{1,20}$/i.test(code.trim()))
+        return 'Code must be 1–20 uppercase letters, digits, or underscores';
+    return null;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
    @desc    Get active values for a code list by its CODE string
              Used by select-field pickers throughout the app
@@ -9,7 +16,6 @@ const respond      = require('../helpers/respondHelper');
    @access  Private
 ───────────────────────────────────────────────────────────────────────────── */
 const getActiveValuesByCode = asyncHandler(async (req, res) => {
-    // const code = req.params.code?.toUpperCase();
     const code = req.params.code;
     if (!code) return respond.badReq(res, 'Code is required');
 
@@ -20,9 +26,9 @@ const getActiveValuesByCode = asyncHandler(async (req, res) => {
         if (!list) return respond.notFound(res, `No active code list found for code "${code}"`);
 
         const values = await prisma.CodeListValue.findMany({
-            where:   { codeListId: list.id },
+            where:   { codeListId: list.id, isActive: true },
             orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
-            select:  { id: true, label: true, code: true, description: true, sortOrder: true,isActive: true,isTeacher: true },
+            select:  { id: true, label: true, code: true, description: true, sortOrder: true, isActive: true },
         });
         return respond.ok(res, `Values for ${code} retrieved successfully`, values);
     } catch (err) {
@@ -36,14 +42,15 @@ const getActiveValuesByCode = asyncHandler(async (req, res) => {
    @access  Private
 ───────────────────────────────────────────────────────────────────────────── */
 const getCodeListValues = asyncHandler(async (req, res) => {
-    const { id } = req.params;
+    // Route: GET /system/code-lists/:code/values/all  (param named :code but is the code string)
+    const codeStr = req.params.code;
 
-    const list = await prisma.CodeList.findUnique({ where: { id } });
+    const list = await prisma.CodeList.findUnique({ where: { code: codeStr } });
     if (!list) return respond.notFound(res, 'Code list not found');
 
     try {
         const values = await prisma.CodeListValue.findMany({
-            where:   { codeListId: id },
+            where:   { codeListId: list.id },
             orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
         });
         return respond.ok(res, 'Code list values retrieved successfully', values);
@@ -65,28 +72,13 @@ const getCodeListValues = asyncHandler(async (req, res) => {
 ───────────────────────────────────────────────────────────────────────────── */
 const createCodeListValue = asyncHandler(async (req, res) => {
     const codeVal = req.params.code;
-    const { label, code, description, sortOrder, isTeacher } = req.body;
+    const { label, code, description, sortOrder } = req.body;
 
     if (!label?.trim()) return respond.badReq(res, 'Label is required');
 
     const list = await prisma.CodeList.findUnique({ where: { code: codeVal } });
     if (!list)          return respond.notFound(res, 'Code list not found');
     if (!list.isActive) return respond.badReq(res, `Cannot add values to an inactive code list ("${list.name}")`);
-
-    // isTeacher flag is only meaningful for JOBT values
-    let resolvedIsTeacher = false;
-    if (isTeacher !== undefined) {
-        if (typeof isTeacher !== 'boolean') {
-            return respond.badReq(res, 'isTeacher must be a boolean');
-        }
-        if (list.code !== 'JOBT' && isTeacher === true) {
-            return respond.badReq(
-                res,
-                'isTeacher can only be set to true on values within the JOBT code list'
-            );
-        }
-        resolvedIsTeacher = isTeacher;
-    }
 
     // If a value code is provided, validate its format and uniqueness within the list
     const upperCode = code?.trim().toUpperCase() || null;
@@ -126,7 +118,6 @@ const createCodeListValue = asyncHandler(async (req, res) => {
                 description: description?.trim() || null,
                 sortOrder:   resolvedSortOrder,
                 isActive:    true,
-                isTeacher:   resolvedIsTeacher,
             },
         });
         return respond.created(res, 'Value added successfully', value);
@@ -148,28 +139,20 @@ const createCodeListValue = asyncHandler(async (req, res) => {
          employee controller for manual adjustments.
 ───────────────────────────────────────────────────────────────────────────── */
 const updateCodeListValue = asyncHandler(async (req, res) => {
-    const { id, valueId } = req.params;
-    const { label, code, description, sortOrder, isActive, isTeacher } = req.body;
+    // Route: PUT /system/code-lists/:valueId/:id
+    // :valueId = codeListId, :id = value record id
+    const { id, valueId: codeListId } = req.params;
+    const { label, code, description, sortOrder, isActive } = req.body;
 
-    const value = await prisma.CodeListValue.findUnique({
-        where:  { id },
-        include: { codeList: { select: { code: true,id: true } } },   // so we can check the parent list's code
-    });
-    if (!value)                  return respond.notFound(res, 'Value not found');
-    if (value.codeListId !== value.codeList.id) return respond.badReq(res, 'Value does not belong to this code list');
-    
+    const value = await prisma.CodeListValue.findUnique({ where: { id } });
+    if (!value)                         return respond.notFound(res, 'Value not found');
+    if (value.codeListId !== codeListId) return respond.badReq(res, 'Value does not belong to this code list');
+
     const data = {};
-    
-    console.log("this values's value", value);
+
     if (label !== undefined) {
-        // NOTE: For case-insensitive match, use mode: 'insensitive' if supported by your Prisma version and DB.
-        // This code uses case-sensitive match for compatibility.
         const clash = await prisma.CodeListValue.findFirst({
-            where: {
-                codeListId: id,
-                label: label.trim(), // case-sensitive match
-                id: { not: valueId },
-            },
+            where: { codeListId, label: label.trim(), id: { not: id } },
         });
         if (clash) return respond.badReq(res, `"${label.trim()}" already exists in this code list`);
         data.label = label.trim();
@@ -181,7 +164,7 @@ const updateCodeListValue = asyncHandler(async (req, res) => {
             if (!/^[A-Z0-9_]{1,20}$/.test(upperCode))
                 return respond.badReq(res, 'Value code must be 1–20 uppercase letters, digits, or underscores');
             const clash = await prisma.CodeListValue.findFirst({
-                where: { codeListId: id, code: upperCode, id: { not: valueId } },
+                where: { codeListId, code: upperCode, id: { not: id } },
             });
             if (clash) return respond.badReq(res, `Code "${upperCode}" already exists in this list`);
         }
@@ -202,27 +185,10 @@ const updateCodeListValue = asyncHandler(async (req, res) => {
         data.isActive = isActive;
     }
 
-    if (isTeacher !== undefined) {
-        if (typeof isTeacher !== 'boolean') {
-            return respond.badReq(res, 'isTeacher must be a boolean');
-        }
-        // Only allow true on values belonging to the JOBT code list
-        if (value.codeList?.code !== 'JOBT' && isTeacher === true) {
-            return respond.badReq(
-                res,
-                'isTeacher can only be set to true on values within the JOBT code list'
-            );
-        }
-        data.isTeacher = isTeacher;
-    }
-
     if (Object.keys(data).length === 0) return respond.badReq(res, 'No changes provided');
 
     try {
-        const updated = await prisma.CodeListValue.update({
-            where: { id },
-            data,
-        });
+        const updated = await prisma.CodeListValue.update({ where: { id }, data });
         return respond.ok(res, 'Value updated successfully', updated);
     } catch (err) {
         return respond.error(res, 'Failed to update value', err);

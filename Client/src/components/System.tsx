@@ -1,41 +1,24 @@
-import { useState, useMemo } from 'react';
-import { createCodeList } from '../../lib/codeLists';
-import { Search, FileEdit, Trash2, Filter, Plus, Download, X, Building2, Tag, List, ChevronDown } from 'lucide-react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
+import { codeLists, CodeList, CodeListValue } from '../../lib/codeLists';
+import { TablePagination } from './ui/TablePagination';
+import { Search, FileEdit, Trash2, Filter, Plus, Download, X, Building2, Tag, List, ChevronDown, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ConfirmAlert } from './ConfirmAlert';
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   INITIAL DATA
+   INITIAL DATA — App Setup (local only, no API yet)
 ───────────────────────────────────────────────────────────────────────────── */
 const initialAppSetup = {
   id: 1,
-  companyName: 'SISL Global Solutions',
-  logoName: 'sisl_logo.png',
+  companyName: 'UNION SYSTEMS Global Solutions',
+  logoName: 'usg_logo.png',
 };
 
-const initialCodes = [
-  { id: 1, code: 'DEPT',      description: 'Department Categories' },
-  { id: 2, code: 'JOB_TITLE', description: 'Job Title Classifications' },
-  { id: 3, code: 'EMP_TYPE',  description: 'Employment Type Categories' },
-  { id: 4, code: 'LEAVE_TYPE',description: 'Leave Type Definitions' },
-];
-
-const initialCodeValues = [
-  { id: 1, codeId: 1, value: 'ENGINEERING',      description: 'Engineering Department' },
-  { id: 2, codeId: 1, value: 'HUMAN_RESOURCES',  description: 'Human Resources Department' },
-  { id: 3, codeId: 1, value: 'FINANCE',           description: 'Finance Department' },
-  { id: 4, codeId: 2, value: 'SOFTWARE_ENG',      description: 'Software Engineer' },
-  { id: 5, codeId: 2, value: 'HR_MANAGER',        description: 'HR Manager' },
-  { id: 6, codeId: 3, value: 'PERMANENT',         description: 'Permanent Employment' },
-  { id: 7, codeId: 3, value: 'CONTRACT',          description: 'Contract Employment' },
-  { id: 8, codeId: 4, value: 'ANNUAL',            description: 'Annual Leave' },
-  { id: 9, codeId: 4, value: 'SICK',              description: 'Sick Leave' },
-];
-
 /* ─────────────────────────────────────────────────────────────────────────────
-   SHARED MODAL — mirrors the modal pattern used across the app
+   SHARED MODAL
 ───────────────────────────────────────────────────────────────────────────── */
-function Modal({ title, onClose, onSave, saveLabel = 'Save', children }) {
+function Modal({ title, onClose, onSave, saveLabel = 'Save', saving = false, children }) {
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
       <motion.div
@@ -62,8 +45,10 @@ function Modal({ title, onClose, onSave, saveLabel = 'Save', children }) {
           {children}
         </div>
         <div className="px-6 py-4 border-t border-[var(--border)] flex justify-end gap-2.5">
-          <button className="secondary-btn" onClick={onClose}>Cancel</button>
-          <button className="primary-btn" onClick={onSave}>{saveLabel}</button>
+          <button className="secondary-btn" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="primary-btn" onClick={onSave} disabled={saving}>
+            {saving ? 'Saving...' : saveLabel}
+          </button>
         </div>
       </motion.div>
     </div>
@@ -85,27 +70,77 @@ export function System() {
 
   /* ── Data ─────────────────────────────────────────────────────────────── */
   const [appSetup, setAppSetup]         = useState(initialAppSetup);
-  const [codes, setCodes]               = useState(initialCodes);
-  const [codeValues, setCodeValues]     = useState(initialCodeValues);
+  const [codes, setCodes]               = useState<CodeList[]>([]);
+  const [codeValues, setCodeValues]     = useState<CodeListValue[]>([]);
+  const [loading, setLoading]           = useState(false);
+  const [valuesLoaded, setValuesLoaded] = useState(false);
 
   /* ── Search / filter ─────────────────────────────────────────────────── */
   const [searchQuery, setSearchQuery]   = useState('');
   const [showFilters, setShowFilters]   = useState(false);
-  const [codeFilter, setCodeFilter]     = useState('');   // code values filter only
+  const [codeFilter, setCodeFilter]     = useState('');
 
   /* ── Form / modal state ───────────────────────────────────────────────── */
   const [isFormOpen, setIsFormOpen]     = useState(false);
+  const [saving, setSaving]             = useState(false);
   const [isAlertOpen, setIsAlertOpen]   = useState(false);
-  const [selectedItem, setSelectedItem] = useState(null);
+  const [selectedItem, setSelectedItem] = useState<any>(null);
 
   /* ── App Setup form state ─────────────────────────────────────────────── */
   const [setupForm, setSetupForm]       = useState({ companyName: '', logoName: '' });
 
   /* ── Code Creation form state ─────────────────────────────────────────── */
-  const [codeForm, setCodeForm]         = useState({ code: '', description: '' });
+  const [codeForm, setCodeForm]         = useState({ name: '', code: '', description: '' });
 
   /* ── Code Values form state ───────────────────────────────────────────── */
-  const [valForm, setValForm]           = useState({ codeId: '', value: '', description: '' });
+  const [valForm, setValForm]           = useState({ codeListId: '', label: '', description: '' });
+
+  /* ── Pagination ───────────────────────────────────────────────────────── */
+  const [codesPage, setCodesPage]       = useState(1);
+  const [codesPageSize, setCodesPageSize] = useState(10);
+  const [valuesPage, setValuesPage]     = useState(1);
+  const [valuesPageSize, setValuesPageSize] = useState(10);
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     DATA FETCHING
+  ───────────────────────────────────────────────────────────────────────── */
+  const fetchCodes = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await codeLists.getAll();
+      setCodes(res.data?.data ?? []);
+    } catch {
+      toast.error('Failed to load code lists');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const fetchAllValues = useCallback(async (currentCodes: CodeList[]) => {
+    if (currentCodes.length === 0) return;
+    try {
+      const results = await Promise.all(
+        currentCodes.map((c) => codeLists.getById(c.id))
+      );
+      const all: CodeListValue[] = results.flatMap(
+        (r) => r.data?.data?.values ?? []
+      );
+      setCodeValues(all);
+      setValuesLoaded(true);
+    } catch {
+      toast.error('Failed to load code values');
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchCodes();
+  }, [fetchCodes]);
+
+  useEffect(() => {
+    if (activeTab === 'Parameter Creation' && subTab === 'Code Values' && !valuesLoaded && codes.length > 0) {
+      fetchAllValues(codes);
+    }
+  }, [activeTab, subTab, valuesLoaded, codes, fetchAllValues]);
 
   /* ─────────────────────────────────────────────────────────────────────────
      DERIVED / FILTERED DATA
@@ -118,18 +153,33 @@ export function System() {
   const filteredCodes = useMemo(() =>
     codes.filter((c) =>
       c.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.description.toLowerCase().includes(searchQuery.toLowerCase())
+      (c.name ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (c.description ?? '').toLowerCase().includes(searchQuery.toLowerCase())
     ), [codes, searchQuery]);
 
   const filteredCodeValues = useMemo(() =>
     codeValues.filter((v) => {
       const matchesSearch =
-        v.value.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        v.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (codeMap[v.codeId] ?? '').toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesFilter = codeFilter ? v.codeId === Number(codeFilter) : true;
+        v.label.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (v.description ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (codeMap[v.codeListId] ?? '').toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesFilter = codeFilter ? v.codeListId === codeFilter : true;
       return matchesSearch && matchesFilter;
     }), [codeValues, searchQuery, codeFilter, codeMap]);
+
+  // Reset pages when filters or tab changes
+  useEffect(() => { setCodesPage(1); }, [searchQuery, codes]);
+  useEffect(() => { setValuesPage(1); }, [searchQuery, codeFilter, codeValues]);
+
+  const pagedCodes = useMemo(() => {
+    const start = (codesPage - 1) * codesPageSize;
+    return filteredCodes.slice(start, start + codesPageSize);
+  }, [filteredCodes, codesPage, codesPageSize]);
+
+  const pagedValues = useMemo(() => {
+    const start = (valuesPage - 1) * valuesPageSize;
+    return filteredCodeValues.slice(start, start + valuesPageSize);
+  }, [filteredCodeValues, valuesPage, valuesPageSize]);
 
   /* ─────────────────────────────────────────────────────────────────────────
      HANDLERS — App Setup
@@ -142,6 +192,7 @@ export function System() {
   const handleSaveSetup = () => {
     setAppSetup((prev) => ({ ...prev, ...setupForm }));
     setIsFormOpen(false);
+    toast.success('App setup updated');
   };
 
   /* ─────────────────────────────────────────────────────────────────────────
@@ -149,49 +200,52 @@ export function System() {
   ───────────────────────────────────────────────────────────────────────── */
   const handleAddCode = () => {
     setSelectedItem(null);
-    setCodeForm({ code: '', description: '' });
+    setCodeForm({ name: '', code: '', description: '' });
     setIsFormOpen(true);
   };
 
-  const handleEditCode = (item) => {
+  const handleEditCode = (item: CodeList) => {
     setSelectedItem(item);
-    setCodeForm({ code: item.code, description: item.description });
+    setCodeForm({ name: item.name, code: item.code, description: item.description ?? '' });
     setIsFormOpen(true);
-  };
-
-  const handleDeleteCodeClick = (item) => {
-    setSelectedItem(item);
-    setIsAlertOpen(true);
   };
 
   const handleSaveCode = async () => {
-    if (!codeForm.code.trim()) return;
-    if (selectedItem) {
-      setCodes(codes.map((c) => (c.id === selectedItem.id ? { ...c, ...codeForm } : c)));
-      setIsFormOpen(false);
-    } else {
-      try {
-        // Call backend API to create code list
-        const res = await createCodeList({ code: codeForm.code, description: codeForm.description });
-        // Optionally, use the returned data (e.g., id from backend)
-        const newCode = res.data?.data || { id: Date.now(), ...codeForm };
-        setCodes([...codes, newCode]);
-      } catch (err) {
-        // Optionally handle error (e.g., show notification)
-        // For now, fallback to local add
-        setCodes([...codes, { id: Date.now(), ...codeForm }]);
+    if (!codeForm.code.trim() || !codeForm.name.trim()) {
+      toast.error('Name and Code are required');
+      return;
+    }
+    setSaving(true);
+    try {
+      if (selectedItem) {
+        const res = await codeLists.update(selectedItem.id, {
+          name: codeForm.name,
+          description: codeForm.description || undefined,
+        });
+        const updated = res.data?.data;
+        if (updated) {
+          setCodes((prev) => prev.map((c) => (c.id === selectedItem.id ? updated : c)));
+        }
+        toast.success('Code list updated');
+      } else {
+        const res = await codeLists.create({
+          name: codeForm.name,
+          code: codeForm.code,
+          description: codeForm.description || undefined,
+        });
+        const created = res.data?.data;
+        if (created) {
+          setCodes((prev) => [...prev, created]);
+        }
+        toast.success('Code list created');
       }
       setIsFormOpen(false);
+    } catch (err: any) {
+      const msg = err?.response?.data?.message ?? 'Failed to save code list';
+      toast.error(msg);
+    } finally {
+      setSaving(false);
     }
-  };
-
-  const handleConfirmDeleteCode = () => {
-    if (selectedItem) {
-      setCodes(codes.filter((c) => c.id !== selectedItem.id));
-      setCodeValues(codeValues.filter((v) => v.codeId !== selectedItem.id));
-    }
-    setIsAlertOpen(false);
-    setSelectedItem(null);
   };
 
   /* ─────────────────────────────────────────────────────────────────────────
@@ -199,44 +253,80 @@ export function System() {
   ───────────────────────────────────────────────────────────────────────── */
   const handleAddValue = () => {
     setSelectedItem(null);
-    setValForm({ codeId: codes[0]?.id ?? '', value: '', description: '' });
+    setValForm({ codeListId: codes[0]?.id ?? '', label: '', description: '' });
     setIsFormOpen(true);
   };
 
-  const handleEditValue = (item) => {
+  const handleEditValue = (item: CodeListValue) => {
     setSelectedItem(item);
-    setValForm({ codeId: item.codeId, value: item.value, description: item.description });
+    setValForm({ codeListId: item.codeListId, label: item.label, description: item.description ?? '' });
     setIsFormOpen(true);
   };
 
-  const handleDeleteValueClick = (item) => {
+  const handleDeleteValueClick = (item: CodeListValue) => {
     setSelectedItem(item);
     setIsAlertOpen(true);
   };
 
-  const handleSaveValue = () => {
-    if (!valForm.value.trim() || !valForm.codeId) return;
-    const payload = { ...valForm, codeId: Number(valForm.codeId) };
-    if (selectedItem) {
-      setCodeValues(codeValues.map((v) => (v.id === selectedItem.id ? { ...v, ...payload } : v)));
-    } else {
-      setCodeValues([...codeValues, { id: Date.now(), ...payload }]);
+  const handleSaveValue = async () => {
+    if (!valForm.label.trim() || !valForm.codeListId) {
+      toast.error('Code list and label are required');
+      return;
     }
-    setIsFormOpen(false);
+    setSaving(true);
+    try {
+      if (selectedItem) {
+        const res = await codeLists.updateValue(
+          selectedItem.codeListId,
+          selectedItem.id,
+          { label: valForm.label, description: valForm.description || undefined }
+        );
+        const updated = res.data?.data;
+        if (updated) {
+          setCodeValues((prev) => prev.map((v) => (v.id === selectedItem.id ? updated : v)));
+        }
+        toast.success('Value updated');
+      } else {
+        const parentCode = codes.find((c) => c.id === valForm.codeListId);
+        if (!parentCode) { toast.error('Code list not found'); setSaving(false); return; }
+        const res = await codeLists.createValue(parentCode.code, {
+          label: valForm.label,
+          description: valForm.description || undefined,
+        });
+        const created = res.data?.data;
+        if (created) {
+          setCodeValues((prev) => [...prev, created]);
+        }
+        toast.success('Value added');
+      }
+      setIsFormOpen(false);
+    } catch (err: any) {
+      const msg = err?.response?.data?.message ?? 'Failed to save value';
+      toast.error(msg);
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleConfirmDeleteValue = () => {
-    if (selectedItem) {
-      setCodeValues(codeValues.filter((v) => v.id !== selectedItem.id));
+  const handleConfirmDeactivateValue = async () => {
+    if (!selectedItem) return;
+    try {
+      await codeLists.deactivateValue(selectedItem.codeListId, selectedItem.id);
+      setCodeValues((prev) => prev.filter((v) => v.id !== selectedItem.id));
+      toast.success(`"${selectedItem.label}" deactivated`);
+    } catch (err: any) {
+      const msg = err?.response?.data?.message ?? 'Failed to deactivate value';
+      toast.error(msg);
+    } finally {
+      setIsAlertOpen(false);
+      setSelectedItem(null);
     }
-    setIsAlertOpen(false);
-    setSelectedItem(null);
   };
 
   /* ─────────────────────────────────────────────────────────────────────────
-     TAB SWITCH — reset shared UI state
+     TAB SWITCH
   ───────────────────────────────────────────────────────────────────────── */
-  const switchTab = (tab) => {
+  const switchTab = (tab: string) => {
     setActiveTab(tab);
     setSearchQuery('');
     setCodeFilter('');
@@ -245,40 +335,35 @@ export function System() {
     setIsSubDropOpen(false);
   };
 
-  const switchSubTab = (tab) => {
+  const switchSubTab = (tab: string) => {
     setSubTab(tab);
     setSearchQuery('');
     setCodeFilter('');
     setShowFilters(false);
     setIsFormOpen(false);
     setIsSubDropOpen(false);
+    if (tab === 'Code Values' && !valuesLoaded) {
+      fetchAllValues(codes);
+    }
   };
 
   /* ─────────────────────────────────────────────────────────────────────────
      DERIVED DISPLAY STATE
   ───────────────────────────────────────────────────────────────────────── */
-  // Which save handler, confirm-delete, and modal title to use based on
-  // active tab + sub-tab — keeps the JSX clean
   const currentSave = activeTab === 'App Setup'
     ? handleSaveSetup
     : subTab === 'Code Creation'
       ? handleSaveCode
       : handleSaveValue;
 
-  const currentConfirmDelete = subTab === 'Code Creation'
-    ? handleConfirmDeleteCode
-    : handleConfirmDeleteValue;
-
   const modalTitle = activeTab === 'App Setup'
     ? 'Edit App Setup'
     : subTab === 'Code Creation'
-      ? (selectedItem ? 'Edit Code' : 'Add New Code')
+      ? (selectedItem ? 'Edit Code List' : 'Add Code List')
       : (selectedItem ? 'Edit Code Value' : 'Add Code Value');
 
-  const deleteTitle   = subTab === 'Code Creation' ? 'Delete Code' : 'Delete Code Value';
-  const deleteMessage = subTab === 'Code Creation'
-    ? 'Deleting this code will also remove all its associated values. This cannot be undone.'
-    : 'Are you sure you want to delete this code value? This cannot be undone.';
+  const deleteTitle   = 'Deactivate Code Value';
+  const deleteMessage = 'This will deactivate the value. It will no longer appear in selection lists but existing records are preserved.';
 
   const hasActiveFilter = codeFilter !== '';
 
@@ -312,7 +397,7 @@ export function System() {
       </div>
 
       {/* Main card */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden flex flex-col flex-1 max-h-min drop-shadow-sm">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden flex flex-col flex-1 min-h-0 drop-shadow-sm">
 
         {/* ── Toolbar area ─────────────────────────────────────────────────── */}
         <div className="flex flex-col border-b border-[var(--border)]">
@@ -321,7 +406,6 @@ export function System() {
             {/* Left side — action buttons */}
             <div className="grid grid-cols-3 sm:flex items-center gap-2 w-full sm:w-auto">
 
-              {/* App Setup — Edit only (no Add, no Filter, no Download) */}
               {activeTab === 'App Setup' && (
                 <button onClick={openEditSetup} className="primary-btn shrink-0">
                   <FileEdit className="w-[14px] h-[14px]" />
@@ -330,7 +414,6 @@ export function System() {
                 </button>
               )}
 
-              {/* Parameter Creation — Add + Filter + Download */}
               {activeTab === 'Parameter Creation' && (
                 <>
                   <button
@@ -342,7 +425,6 @@ export function System() {
                     <Plus className="w-[14px] h-[14px]" />
                   </button>
 
-                  {/* Filter button — only visible on Code Values */}
                   {subTab === 'Code Values' && (
                     <button
                       onClick={() => setShowFilters(!showFilters)}
@@ -359,7 +441,21 @@ export function System() {
                     <Download className="w-[14px] h-[14px]" />
                   </button>
 
-                  {/* Sub-tab dropdown — lives in the toolbar row */}
+                  {/* Refresh button */}
+                  <button
+                    onClick={() => {
+                      setValuesLoaded(false);
+                      fetchCodes().then(() => {
+                        if (subTab === 'Code Values') setValuesLoaded(false);
+                      });
+                    }}
+                    className="secondary-btn shrink-0"
+                    title="Refresh"
+                  >
+                    <RefreshCw className="w-[14px] h-[14px]" />
+                  </button>
+
+                  {/* Sub-tab dropdown */}
                   <div className="relative sm:ml-2">
                     <button
                       onClick={() => setIsSubDropOpen(!isSubDropOpen)}
@@ -407,7 +503,7 @@ export function System() {
               )}
             </div>
 
-            {/* Right side — search (hidden on App Setup) */}
+            {/* Right side — search */}
             {activeTab === 'Parameter Creation' && (
               <div className="search-wrap w-full sm:w-auto sm:min-w-[240px]">
                 <Search size={14} />
@@ -436,7 +532,7 @@ export function System() {
                   <option value="">All Codes</option>
                   {codes.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.code} — {c.description}
+                      {c.code} — {c.name}
                     </option>
                   ))}
                 </select>
@@ -454,198 +550,196 @@ export function System() {
         </div>
 
         {/* ── Table area ───────────────────────────────────────────────────── */}
-        <div className="overflow-x-auto flex-1">
-          <table className="w-full border-collapse">
-            <thead>
-              <tr>
-                {/* App Setup columns */}
+        <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-[var(--text-muted)] text-sm">
+              Loading...
+            </div>
+          ) : (
+            <table className="w-full border-collapse">
+              <thead>
+                <tr>
+                  {activeTab === 'App Setup' && (
+                    <>
+                      <th scope="col" className="th">#</th>
+                      <th scope="col" className="th">Company Name</th>
+                      <th scope="col" className="th">Logo File</th>
+                    </>
+                  )}
+
+                  {activeTab === 'Parameter Creation' && subTab === 'Code Creation' && (
+                    <>
+                      <th scope="col" className="th">#</th>
+                      <th scope="col" className="th">Code</th>
+                      <th scope="col" className="th">Name</th>
+                      <th scope="col" className="th">Description</th>
+                      <th scope="col" className="th text-center">Values</th>
+                    </>
+                  )}
+
+                  {activeTab === 'Parameter Creation' && subTab === 'Code Values' && (
+                    <>
+                      <th scope="col" className="th">#</th>
+                      <th scope="col" className="th">Code</th>
+                      <th scope="col" className="th">Label</th>
+                      <th scope="col" className="th">Description</th>
+                    </>
+                  )}
+
+                  <th scope="col" className="th text-right">
+                    <span className="sr-only">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {/* ── App Setup ─────────────────────────────────────────────── */}
                 {activeTab === 'App Setup' && (
-                  <>
-                    <th scope="col" className="th">#</th>
-                    <th scope="col" className="th">Company Name</th>
-                    <th scope="col" className="th">Logo File</th>
-                  </>
-                )}
-
-                {/* Code Creation columns */}
-                {activeTab === 'Parameter Creation' && subTab === 'Code Creation' && (
-                  <>
-                    <th scope="col" className="th">#</th>
-                    <th scope="col" className="th">Code</th>
-                    <th scope="col" className="th">Description</th>
-                  </>
-                )}
-
-                {/* Code Values columns */}
-                {activeTab === 'Parameter Creation' && subTab === 'Code Values' && (
-                  <>
-                    <th scope="col" className="th">#</th>
-                    <th scope="col" className="th">Code</th>
-                    <th scope="col" className="th">Value</th>
-                    <th scope="col" className="th">Description</th>
-                  </>
-                )}
-
-                <th scope="col" className="th text-right">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {/* ── App Setup — always exactly one row ─────────────────────── */}
-              {activeTab === 'App Setup' && (
-                <motion.tr
-                  className="tr"
-                  initial={{ opacity: 0, x: -8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.1 }}
-                >
-                  <td className="td text-[var(--text-muted)] text-[12px]">1</td>
-                  <td className="td font-medium text-[var(--text-primary)]">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-[32px] h-[32px] rounded-[9px] bg-[var(--accent-dim)] border border-[var(--border)] flex items-center justify-center text-[var(--accent)] shrink-0">
-                        <Building2 size={15} strokeWidth={1.8} />
+                  <motion.tr
+                    className="tr"
+                    initial={{ opacity: 0, x: -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.1 }}
+                  >
+                    <td className="td text-[var(--text-muted)] text-[12px]">1</td>
+                    <td className="td font-medium text-[var(--text-primary)]">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-[32px] h-[32px] rounded-[9px] bg-[var(--accent-dim)] border border-[var(--border)] flex items-center justify-center text-[var(--accent)] shrink-0">
+                          <Building2 size={15} strokeWidth={1.8} />
+                        </div>
+                        {appSetup.companyName}
                       </div>
-                      {appSetup.companyName}
-                    </div>
-                  </td>
-                  <td className="td">
-                    <span className="font-mono text-[11px] text-[var(--text-muted)] bg-[var(--bg)] px-2 py-0.5 rounded border border-[var(--border)]">
-                      {appSetup.logoName}
-                    </span>
-                  </td>
-                  <td className="td">
-                    <div className="flex items-center justify-end gap-1">
-                      <button
-                        onClick={openEditSetup}
-                        className="action-btn text-[var(--warning)]"
-                        title="Edit"
+                    </td>
+                    <td className="td">
+                      <span className="font-mono text-[11px] text-[var(--text-muted)] bg-[var(--bg)] px-2 py-0.5 rounded border border-[var(--border)]">
+                        {appSetup.logoName}
+                      </span>
+                    </td>
+                    <td className="td">
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={openEditSetup} className="action-btn text-[var(--warning)]" title="Edit">
+                          <FileEdit size={14} />
+                        </button>
+                      </div>
+                    </td>
+                  </motion.tr>
+                )}
+
+                {/* ── Code Creation rows ─────────────────────────────────────── */}
+                {activeTab === 'Parameter Creation' && subTab === 'Code Creation' && (
+                  pagedCodes.length > 0 ? (
+                    pagedCodes.map((row, i) => (
+                      <motion.tr
+                        key={row.id} className="tr"
+                        initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: 0.05 + i * 0.04 }}
                       >
-                        <FileEdit size={14} />
-                      </button>
-                    </div>
-                  </td>
-                </motion.tr>
-              )}
-
-              {/* ── Code Creation rows ─────────────────────────────────────── */}
-              {activeTab === 'Parameter Creation' && subTab === 'Code Creation' && (
-                filteredCodes.length > 0 ? (
-                  filteredCodes.map((row, i) => (
-                    <motion.tr
-                      key={row.id} className="tr"
-                      initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: 0.1 + i * 0.06 }}
-                    >
-                      <td className="td text-[var(--text-muted)] text-[12px]">{i + 1}</td>
-                      <td className="td font-medium text-[var(--text-primary)]">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-[28px] h-[28px] rounded-[8px] bg-[var(--accent-dim)] border border-[var(--border)] flex items-center justify-center text-[var(--accent)] shrink-0">
-                            <Tag size={12} strokeWidth={1.8} />
+                        <td className="td text-[var(--text-muted)] text-[12px]">{i + 1}</td>
+                        <td className="td font-medium text-[var(--text-primary)]">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-[28px] h-[28px] rounded-[8px] bg-[var(--accent-dim)] border border-[var(--border)] flex items-center justify-center text-[var(--accent)] shrink-0">
+                              <Tag size={12} strokeWidth={1.8} />
+                            </div>
+                            <span className="font-mono text-[12px] font-bold text-[var(--text-primary)] bg-[var(--bg)] px-2 py-0.5 rounded border border-[var(--border)]">
+                              {row.code}
+                            </span>
                           </div>
-                          <span className="font-mono text-[12px] font-bold text-[var(--text-primary)] bg-[var(--bg)] px-2 py-0.5 rounded border border-[var(--border)]">
-                            {row.code}
+                        </td>
+                        <td className="td font-medium text-[var(--text-primary)]">{row.name}</td>
+                        <td className="td text-[var(--text-secondary)]">{row.description ?? '—'}</td>
+                        <td className="td text-center">
+                          <span className="inline-flex items-center justify-center min-w-[24px] h-[20px] px-2 rounded-full text-[11px] font-bold bg-[var(--accent-dim)] text-[var(--accent)]">
+                            {row._count?.values ?? 0}
                           </span>
-                        </div>
+                        </td>
+                        <td className="td">
+                          <div className="flex items-center justify-end gap-1">
+                            <button onClick={() => handleEditCode(row)} className="action-btn text-[var(--warning)]" title="Edit">
+                              <FileEdit size={14} />
+                            </button>
+                          </div>
+                        </td>
+                      </motion.tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={6} className="td text-center py-10 text-[var(--text-muted)]">
+                        No code lists found.
                       </td>
-                      <td className="td">{row.description}</td>
-                      <td className="td">
-                        <div className="flex items-center justify-end gap-1">
-                          <button onClick={() => handleEditCode(row)} className="action-btn text-[var(--warning)]" title="Edit">
-                            <FileEdit size={14} />
-                          </button>
-                        </div>
-                      </td>
-                    </motion.tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={4} className="td text-center py-10 text-[var(--text-muted)]">
-                      No codes found.
-                    </td>
-                  </tr>
-                )
-              )}
+                    </tr>
+                  )
+                )}
 
-              {/* ── Code Values rows ───────────────────────────────────────── */}
-              {activeTab === 'Parameter Creation' && subTab === 'Code Values' && (
-                filteredCodeValues.length > 0 ? (
-                  filteredCodeValues.map((row, i) => (
-                    <motion.tr
-                      key={row.id} className="tr"
-                      initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: 0.1 + i * 0.06 }}
-                    >
-                      <td className="td text-[var(--text-muted)] text-[12px]">{i + 1}</td>
-                      <td className="td">
-                        <span className="font-mono text-[11px] font-bold text-[var(--accent)] bg-[var(--accent-dim)] px-2 py-0.5 rounded border border-[var(--border)]">
-                          {codeMap[row.codeId] ?? '—'}
-                        </span>
+                {/* ── Code Values rows ───────────────────────────────────────── */}
+                {activeTab === 'Parameter Creation' && subTab === 'Code Values' && (
+                  pagedValues.length > 0 ? (
+                    pagedValues.map((row, i) => (
+                      <motion.tr
+                        key={row.id} className="tr"
+                        initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: 0.05 + i * 0.04 }}
+                      >
+                        <td className="td text-[var(--text-muted)] text-[12px]">{i + 1}</td>
+                        <td className="td">
+                          <span className="font-mono text-[11px] font-bold text-[var(--accent)] bg-[var(--accent-dim)] px-2 py-0.5 rounded border border-[var(--border)]">
+                            {codeMap[row.codeListId] ?? '—'}
+                          </span>
+                        </td>
+                        <td className="td font-medium text-[var(--text-primary)]">
+                          <span className="font-mono text-[12px] bg-[var(--bg)] px-2 py-0.5 rounded border border-[var(--border)]">
+                            {row.label}
+                          </span>
+                        </td>
+                        <td className="td text-[var(--text-secondary)]">{row.description ?? '—'}</td>
+                        <td className="td">
+                          <div className="flex items-center justify-end gap-1">
+                            <button onClick={() => handleEditValue(row)} className="action-btn text-[var(--warning)]" title="Edit">
+                              <FileEdit size={14} />
+                            </button>
+                            <button onClick={() => handleDeleteValueClick(row)} className="action-btn text-[var(--danger)]" title="Deactivate">
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
+                      </motion.tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={5} className="td text-center py-10 text-[var(--text-muted)]">
+                        No code values found.
                       </td>
-                      <td className="td font-medium text-[var(--text-primary)]">
-                        <span className="font-mono text-[12px] bg-[var(--bg)] px-2 py-0.5 rounded border border-[var(--border)]">
-                          {row.value}
-                        </span>
-                      </td>
-                      <td className="td">{row.description}</td>
-                      <td className="td">
-                        <div className="flex items-center justify-end gap-1">
-                          <button onClick={() => handleEditValue(row)} className="action-btn text-[var(--warning)]" title="Edit">
-                            <FileEdit size={14} />
-                          </button>
-                          <button onClick={() => handleDeleteValueClick(row)} className="action-btn text-[var(--danger)]" title="Delete">
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      </td>
-                    </motion.tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={5} className="td text-center py-10 text-[var(--text-muted)]">
-                      No code values found.
-                    </td>
-                  </tr>
-                )
-              )}
-            </tbody>
-          </table>
+                    </tr>
+                  )
+                )}
+              </tbody>
+            </table>
+          )}
         </div>
 
         {/* ── Pagination footer ────────────────────────────────────────────── */}
-        <div className="px-4 py-3 border-t border-[var(--border)] flex flex-col sm:flex-row items-center justify-between gap-3 bg-[var(--surface)]">
-          <div className="text-[12px] text-[var(--text-muted)]">
-            {activeTab === 'App Setup' && (
-              <>
-                Showing{' '}
-                <span className="font-bold text-[var(--text-secondary)]">1</span> to{' '}
-                <span className="font-bold text-[var(--text-secondary)]">1</span> of{' '}
-                <span className="font-bold text-[var(--text-secondary)]">1</span> entries
-              </>
-            )}
-            {activeTab === 'Parameter Creation' && subTab === 'Code Creation' && (
-              <>
-                Showing{' '}
-                <span className="font-bold text-[var(--text-secondary)]">
-                  {filteredCodes.length > 0 ? 1 : 0}
-                </span> to{' '}
-                <span className="font-bold text-[var(--text-secondary)]">{filteredCodes.length}</span> of{' '}
-                <span className="font-bold text-[var(--text-secondary)]">{codes.length}</span> entries
-              </>
-            )}
-            {activeTab === 'Parameter Creation' && subTab === 'Code Values' && (
-              <>
-                Showing{' '}
-                <span className="font-bold text-[var(--text-secondary)]">
-                  {filteredCodeValues.length > 0 ? 1 : 0}
-                </span> to{' '}
-                <span className="font-bold text-[var(--text-secondary)]">{filteredCodeValues.length}</span> of{' '}
-                <span className="font-bold text-[var(--text-secondary)]">{codeValues.length}</span> entries
-              </>
-            )}
-          </div>
-        </div>
+        {activeTab === 'App Setup' && (
+          <TablePagination total={1} filtered={1} />
+        )}
+        {activeTab === 'Parameter Creation' && subTab === 'Code Creation' && (
+          <TablePagination
+            total={codes.length}
+            filtered={filteredCodes.length}
+            page={codesPage}
+            pageSize={codesPageSize}
+            onPageChange={setCodesPage}
+            onPageSizeChange={(s) => { setCodesPageSize(s); setCodesPage(1); }}
+          />
+        )}
+        {activeTab === 'Parameter Creation' && subTab === 'Code Values' && (
+          <TablePagination
+            total={codeValues.length}
+            filtered={filteredCodeValues.length}
+            page={valuesPage}
+            pageSize={valuesPageSize}
+            onPageChange={setValuesPage}
+            onPageSizeChange={(s) => { setValuesPageSize(s); setValuesPage(1); }}
+          />
+        )}
       </div>
 
       {/* ── MODALS ───────────────────────────────────────────────────────────── */}
@@ -673,8 +767,7 @@ export function System() {
               />
               {setupForm.logoName && (
                 <p className="text-[11px] text-[var(--text-muted)] mt-1.5">
-                  Current file:{' '}
-                  <span className="font-mono">{setupForm.logoName}</span>
+                  Current file: <span className="font-mono">{setupForm.logoName}</span>
                 </p>
               )}
             </div>
@@ -683,11 +776,10 @@ export function System() {
 
         {/* Code Creation form modal */}
         {isFormOpen && activeTab === 'Parameter Creation' && subTab === 'Code Creation' && (
-          <Modal title={modalTitle} onClose={() => setIsFormOpen(false)} onSave={currentSave}>
+          <Modal title={modalTitle} onClose={() => setIsFormOpen(false)} onSave={currentSave} saving={saving}>
             <div>
-              <label className="label">Code</label>
+              <label className="label">Code <span className="text-[var(--danger)]">*</span></label>
               {selectedItem ? (
-                /* Editing — code is locked */
                 <div className="flex items-center gap-2 h-[38px] px-3 rounded-[10px] border border-[var(--border)] bg-[var(--surface-hover)] cursor-not-allowed">
                   <Tag size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
                   <span className="font-mono text-[13px] font-bold" style={{ color: 'var(--text-muted)' }}>
@@ -698,7 +790,6 @@ export function System() {
                   </span>
                 </div>
               ) : (
-                /* Adding new — code is editable */
                 <input
                   type="text"
                   value={codeForm.code}
@@ -709,12 +800,21 @@ export function System() {
               )}
             </div>
             <div>
+              <label className="label">Name <span className="text-[var(--danger)]">*</span></label>
+              <input
+                type="text"
+                value={codeForm.name}
+                onChange={(e) => setCodeForm({ ...codeForm, name: e.target.value })}
+                placeholder="e.g. Department"
+              />
+            </div>
+            <div>
               <label className="label">Description</label>
               <input
                 type="text"
                 value={codeForm.description}
                 onChange={(e) => setCodeForm({ ...codeForm, description: e.target.value })}
-                placeholder="Enter a description"
+                placeholder="Optional description"
               />
             </div>
           </Modal>
@@ -722,29 +822,29 @@ export function System() {
 
         {/* Code Values form modal */}
         {isFormOpen && activeTab === 'Parameter Creation' && subTab === 'Code Values' && (
-          <Modal title={modalTitle} onClose={() => setIsFormOpen(false)} onSave={currentSave}>
+          <Modal title={modalTitle} onClose={() => setIsFormOpen(false)} onSave={currentSave} saving={saving}>
             <div>
-              <label className="label">Code</label>
+              <label className="label">Code List <span className="text-[var(--danger)]">*</span></label>
               <select
-                value={valForm.codeId}
-                onChange={(e) => setValForm({ ...valForm, codeId: e.target.value })}
+                value={valForm.codeListId}
+                onChange={(e) => setValForm({ ...valForm, codeListId: e.target.value })}
+                disabled={!!selectedItem}
               >
-                <option value="">Select a code</option>
+                <option value="">Select a code list</option>
                 {codes.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.code} — {c.description}
+                    {c.code} — {c.name}
                   </option>
                 ))}
               </select>
             </div>
             <div>
-              <label className="label">Value</label>
+              <label className="label">Label <span className="text-[var(--danger)]">*</span></label>
               <input
                 type="text"
-                value={valForm.value}
-                onChange={(e) => setValForm({ ...valForm, value: e.target.value.toUpperCase() })}
-                placeholder="e.g. ENGINEERING"
-                className="font-mono"
+                value={valForm.label}
+                onChange={(e) => setValForm({ ...valForm, label: e.target.value })}
+                placeholder="e.g. Engineering Department"
               />
             </div>
             <div>
@@ -753,20 +853,20 @@ export function System() {
                 type="text"
                 value={valForm.description}
                 onChange={(e) => setValForm({ ...valForm, description: e.target.value })}
-                placeholder="Enter a description"
+                placeholder="Optional description"
               />
             </div>
           </Modal>
         )}
       </AnimatePresence>
 
-      {/* Confirm delete alert */}
+      {/* Confirm deactivate alert */}
       <ConfirmAlert
         isOpen={isAlertOpen}
         title={deleteTitle}
         message={deleteMessage}
-        confirmText="Yes, Delete"
-        onConfirm={currentConfirmDelete}
+        confirmText="Yes, Deactivate"
+        onConfirm={handleConfirmDeactivateValue}
         onCancel={() => { setIsAlertOpen(false); setSelectedItem(null); }}
         variant="danger"
       />

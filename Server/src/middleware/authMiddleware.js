@@ -38,11 +38,11 @@ const checkToken = asyncHandler(async (req, res, next) => {
   // Verify token — throws if expired or tampered
   const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-  // Fetch user — exclude password
+  // Fetch user — email lives on employee, not users
   const userResult = await helper.selectRecordsWithCondition(
     'users',
     { id: decoded.id },
-    { select: { id: true, username: true, email: true, status: true } }
+    { select: { id: true, username: true, status: true } }
   );
 
   if (userResult.status === 'error' || userResult.data.length === 0) {
@@ -160,11 +160,11 @@ const handleRefreshToken = asyncHandler(async (req, res) => {
     return res.status(403).json({ status: '403', message: 'Refresh token is invalid or expired' });
   }
 
-  // 6. Fetch the user
+  // 6. Fetch the user — email lives on employee, not users
   const userResult = await helper.selectRecordsWithCondition(
     'users',
     { id: decoded.id },
-    { select: { id: true, username: true, email: true, status: true } }
+    { select: { id: true, username: true, status: true } }
   );
 
   if (userResult.status === 'error' || userResult.data.length === 0) {

@@ -18,8 +18,8 @@ const app = express(); //create express app
 app.use(credentials); 				//handle options credentials check - before CORS!
 app.use(cors(corsOptions));			//cross origin resource sharing setup 
 
-app.use(express.json()); 			//parse json bodies
-app.use(express.urlencoded({ extended: false })); //parse urlencoded bodies
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: false, limit: '50mb' }));
 app.use(cookieParser());
 app.use(morgan(process.env.LOG_LEVEL));
 

@@ -38,7 +38,7 @@ export function TableToolbar({
           />
         </div>
       </div>
-      {showFilters && filterBar && (
+      {filterBar && (
         <div className="px-5 py-3 bg-[var(--surface-hover)] border-t border-[var(--border)] flex items-center gap-4">
           {filterBar}
         </div>

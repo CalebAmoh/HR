@@ -1,223 +1,611 @@
-import React, { useState } from 'react';
-import { UserPlus, X, UploadCloud, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { UserPlus, X, UploadCloud, FileCheck, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
+import api from '../../lib/api';
+import { getSettings } from '../../lib/settings';
+import { Combobox } from './EmployeeTabs';
 
-interface EmployeeFormFullProps {
+interface Props {
   onClose: () => void;
-  onSave: (employee: any) => void;
+  onSave: (data: any, id?: string) => void;
   initialData?: any | null;
 }
 
 const STEPS = [
-  { id: 'personal', label: 'Personal' },
-  { id: 'employment', label: 'Employment' },
-  { id: 'financial', label: 'Financial' },
-  { id: 'documents', label: 'Documents' },
+  { id: 'personal',   label: 'Personal'    },
+  { id: 'employment', label: 'Employment'  },
+  { id: 'nextofkin',  label: 'Next of Kin' },
+  { id: 'financial',  label: 'Financial'   },
+  { id: 'documents',  label: 'Documents'   },
 ];
 
-export function EmployeeFormFull({ onClose, onSave, initialData }: EmployeeFormFullProps) {
-  const [currentStepIndex, setCurrentStepIndex] = useState(0);
-  const [formData, setFormData] = useState<any>(initialData || {
-    number: `E${Math.floor(Math.random() * 100000).toString().padStart(5, '0')}`,
-    firstName: '', lastName: '', gender: '', nationality: '', religion: ''
-  });
+const MARITAL_STATUSES = ['Single', 'Married', 'Divorced', 'Widowed', 'Separated'];
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
-  };
+const SectionHeader = ({ title }: { title: string }) => (
+  <h3 className="syne font-extrabold text-[var(--accent)] uppercase tracking-wider mb-6 text-[12px]">{title}</h3>
+);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (currentStepIndex < STEPS.length - 1) {
-      setCurrentStepIndex(currentStepIndex + 1);
-    } else {
-      onSave(formData);
-      onClose();
-    }
-  };
-
-  const FormField = ({ label, name, type = "text", required, options, disabled, colSpan = 1, rows, placeholder }: any) => (
-    <div className={`col-span-1 border-0 ${colSpan === 2 ? 'md:col-span-2' : ''}`}>
-      <label className="label">
-        {label} {required && <span className="text-[var(--danger)]">*</span>}
-      </label>
-      {type === 'select' ? (
-        <select 
-          name={name} 
-          required={required} 
-          disabled={disabled}
-          value={formData[name] || ''} 
-          onChange={handleChange} 
-        >
-          {options?.map((opt: any, i: number) => (
-            <option key={i} value={typeof opt === 'string' ? opt : opt.value}>
-              {typeof opt === 'string' ? opt : opt.label}
-            </option>
-          ))}
-        </select>
-      ) : type === 'textarea' ? (
-        <textarea 
-          name={name} 
-          required={required} 
-          disabled={disabled}
-          rows={rows || 3}
-          value={formData[name] || ''} 
-          onChange={handleChange} 
-          placeholder={placeholder}
-          className="resize-none"
-        />
-      ) : (
-        <input 
-          type={type} 
-          name={name} 
-          required={required} 
-          disabled={disabled}
-          value={formData[name] || ''} 
-          onChange={handleChange} 
-          placeholder={placeholder}
-        />
-      )}
+function Field({ label, required, className, children }: {
+  label: string; required?: boolean; className?: string; children: React.ReactNode;
+}) {
+  return (
+    <div className={`col-span-1 ${className ?? ''}`}>
+      <label className="label">{label}{required && <span className="text-[var(--danger)]"> *</span>}</label>
+      {children}
     </div>
   );
+}
 
-  const SectionHeader = ({ title }: { title: string }) => (
-    <h3 className="syne font-extrabold text-[var(--accent)] uppercase tracking-wider mb-6 text-[12px]">{title}</h3>
-  );
+export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
+  const isEdit = !!initialData;
 
-  const renderStepContent = () => {
-    switch (currentStepIndex) {
-      case 0: // Personal
-        return (
-          <div>
-            <SectionHeader title="Personal Information" />
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-6">
-              <FormField label="First name" name="firstName" required placeholder="First name" />
-              <FormField label="Last name" name="lastName" required placeholder="Last name" />
-              <FormField label="Middle name" name="middleName" placeholder="Middle name (optional)" />
-              <FormField label="Date of birth" name="dob" type="date" placeholder="mm/dd/yyyy" />
-              <FormField label="Gender" name="gender" type="select" options={[{label: 'Select gender', value: ''}, {label: 'Male', value: 'M'}, {label: 'Female', value: 'F'}, {label: 'Other', value: 'Other'}]} />
-              <FormField label="Nationality" name="nationality" type="select" options={['Select nationality', 'Ghanaian', 'Nigerian', 'American', 'Afghan']} />
-              <FormField label="Religion" name="religion" type="select" options={['Select religion', 'Christian', 'Muslim', 'Other']} />
-              <FormField label="Phone" name="phone" type="tel" required placeholder="Phone number" />
-              <FormField label="Email" name="email" type="email" required placeholder="Email address" />
-              <FormField label="Address" name="address1" placeholder="Street address" />
-            </div>
-          </div>
-        );
-      case 1: // Employment
-        return (
-          <div>
-             <SectionHeader title="Employment Details" />
-             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-6">
-                <FormField label="Employee Number" name="number" disabled />
-                <FormField label="Employment Status" name="empStatus" type="select" required options={['Select...', 'Full Time Contract', 'Part Time', 'Probation']} />
-                <FormField label="Job Title" name="jobTitle" required placeholder="Job title" />
-                <FormField label="Department" name="department" type="select" options={['Select...', 'SME', 'HR', 'IT']} />
-                <FormField label="Branch" name="branch" type="select" required options={['Select...', 'HEAD OFFICE', 'BRANCH A']} />
-                <FormField label="Supervisor" name="supervisor" type="select" options={['Select...', 'UNION ADMIN']} />
-                <FormField label="Recruitment Date" name="recruitDate" type="date" required />
-                <FormField label="Start Date" name="startDate" type="date" required />
-             </div>
-          </div>
-        );
-      case 2: // Financial
-        return (
-          <div>
-             <SectionHeader title="Financial Information" />
-             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-6">
-                <FormField label="Name of Bank" name="bankName" placeholder="Bank name" />
-                <FormField label="Bank Account No." name="bankAccount" required placeholder="Account number" />
-                <FormField label="Tax Identification Number (TIN)" name="tin" placeholder="TIN" />
-                <FormField label="Social Security No." name="ssn" placeholder="SSN" />
-                <FormField label="Pay Grade" name="payGrade" type="select" options={['Select...', 'Grade A', 'Grade B', 'Grade C']} />
-                <FormField label="Notch" name="notch" type="select" options={['Select...', 'Notch 1', 'Notch 2', 'Notch 3']} />
-             </div>
-          </div>
-        );
-      case 3: // Documents
-        return (
-          <div>
-             <SectionHeader title="Documents & Attachments" />
-             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-6 mb-8">
-                <FormField label="National ID (NIN)" name="nin" placeholder="National ID" />
-                <FormField label="NIN Expiry Date" name="ninExpiry" type="date" />
-             </div>
-             <div className="space-y-4">
-                {['Profile Image', 'Fit & Proper Attachment', 'Police Clearance Report'].map((label, i) => (
-                  <div key={i} className="flex items-center justify-between p-4 border border-[#ced4da] rounded-[4px] bg-white hover:border-[#004b7c]/40 transition-colors">
-                    <span className="text-[13px] font-medium text-slate-800">{label}</span>
-                    <label className="cursor-pointer inline-flex items-center px-3 py-1.5 border border-[#ced4da] shadow-sm text-[12px] font-medium rounded-[4px] text-slate-700 bg-white hover:bg-slate-50 transition-colors">
-                      <UploadCloud className="w-4 h-4 mr-2 text-slate-500" />
-                      Browse File
-                      <input type="file" className="sr-only" />
-                    </label>
-                  </div>
-                ))}
-              </div>
-          </div>
-        );
-      default:
-        return null;
+  const [step, setStep] = useState(0);
+  const autoGenEmpNum = getSettings().employees.autoGenerateNumber;
+
+  const [form, setForm] = useState<any>(() => ({
+    // Employment number (manual entry when auto-gen is off)
+    employee_id:      '',
+    // Personal
+    titleId:          '',
+    firstName:        '',
+    middleName:       '',
+    lastName:         '',
+    genderId:         '',
+    dateOfBirth:      '',
+    place_of_birth:   '',
+    nationalityId:    '',
+    religionId:       '',
+    marital_status:   '',
+    spouse_name:      '',
+    father_name:      '',
+    mother_name:      '',
+    address1:         '',
+    city:             '',
+    country:          '',
+    // Contact
+    work_email:       '',
+    personal_email:   '',
+    mobilePhone:      '',
+    // Employment
+    jobTitleId:         '',
+    employmentStatusId: '',
+    staff_level:        '',
+    staff_role:         '',
+    ssn_num:            '',
+    departmentId:       '',
+    branchId:           '',
+    unitId:             '',
+    outletId:           '',
+    supervisorId:       '',
+    hireDate:           '',
+    confirmationDate:   '',
+    // Next of Kin
+    nxt_kin_fname:    '',
+    nxt_kin_phone:    '',
+    nxt_kin_email:    '',
+    nxt_kin_address:  '',
+    // Financial
+    bankAccount:      '',
+    paygradeId:       '',
+    notcheId:         '',
+    // Documents
+    nationalIdNumber: '',
+    nationalIdExpiry: '',
+    passportNumber:   '',
+    passportExpiry:   '',
+    driverLicenseNum: '',
+    driverLicenseExp: '',
+    ...(initialData ? {
+      titleId:          initialData.title?.id         ?? '',
+      firstName:        initialData.firstName          ?? '',
+      middleName:       initialData.middleName         ?? '',
+      lastName:         initialData.lastName           ?? '',
+      genderId:         initialData.gender?.id         ?? '',
+      dateOfBirth:      initialData.dateOfBirth  ? initialData.dateOfBirth.slice(0, 10)  : '',
+      place_of_birth:   initialData.place_of_birth     ?? '',
+      nationalityId:    initialData.nationality?.id    ?? '',
+      religionId:       initialData.religion?.id       ?? '',
+      marital_status:   initialData.marital_status     ?? '',
+      spouse_name:      initialData.spouse_name        ?? '',
+      father_name:      initialData.father_name        ?? '',
+      mother_name:      initialData.mother_name        ?? '',
+      address1:         initialData.address1           ?? '',
+      city:             initialData.city               ?? '',
+      country:          initialData.country            ?? '',
+      work_email:       initialData.work_email         ?? initialData.email ?? '',
+      personal_email:   initialData.personal_email     ?? '',
+      mobilePhone:      initialData.mobilePhone        ?? '',
+      jobTitleId:         initialData.jobTitle?.id       ?? '',
+      employmentStatusId: initialData.employmentStatus?.id ?? '',
+      staff_level:        initialData.staff_level        ?? '',
+      staff_role:         initialData.staff_role         ?? '',
+      ssn_num:            initialData.ssn_num            ?? '',
+      departmentId:       initialData.department?.id     ?? '',
+      branchId:           initialData.branch?.id         ?? '',
+      unitId:             initialData.unit?.id            ?? '',
+      outletId:           initialData.outlet?.id          ?? '',
+      supervisorId:       initialData.supervisor?.id      ?? '',
+      hireDate:           initialData.hireDate       ? initialData.hireDate.slice(0, 10)       : '',
+      confirmationDate:   initialData.confirmationDate ? initialData.confirmationDate.slice(0, 10) : '',
+      nxt_kin_fname:    initialData.nxt_kin_fname    ?? '',
+      nxt_kin_phone:    initialData.nxt_kin_phone    ?? '',
+      nxt_kin_email:    initialData.nxt_kin_email    ?? '',
+      nxt_kin_address:  initialData.nxt_kin_address  ?? '',
+      bankAccount:      initialData.bankAccount      ?? '',
+      paygradeId:       initialData.paygradeId?.toString()  ?? '',
+      notcheId:         initialData.notcheId?.toString()    ?? '',
+      nationalIdNumber: initialData.nationalIdNumber ?? '',
+      nationalIdExpiry: initialData.nationalIdExpiry ? initialData.nationalIdExpiry.slice(0, 10) : '',
+      passportNumber:   initialData.passportNumber   ?? '',
+      passportExpiry:   initialData.passportExpiry   ? initialData.passportExpiry.slice(0, 10)   : '',
+      driverLicenseNum: initialData.driverLicenseNum ?? '',
+      driverLicenseExp: initialData.driverLicenseExp ? initialData.driverLicenseExp.slice(0, 10) : '',
+    } : {}),
+  }));
+
+  // ── Document upload state ─────────────────────────────────────────────────
+  const [docNames, setDocNames] = useState({
+    fit_and_proper:   initialData?.fit_and_proper   ? 'Uploaded' : '',
+    policeClearance:  initialData?.policeClearance  ? 'Uploaded' : '',
+    medicalClearance: initialData?.medicalClearance ? 'Uploaded' : '',
+  });
+  const [docUploading, setDocUploading] = useState<Record<string, boolean>>({});
+
+  const handleDocUpload = async (field: string, file: File | null) => {
+    if (!file) {
+      set(field, '');
+      setDocNames(p => ({ ...p, [field]: '' }));
+      return;
+    }
+    setDocUploading(p => ({ ...p, [field]: true }));
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await api.post('/employees/documents/upload', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      const filename = res.data.data?.filename;
+      set(field, filename);
+      setDocNames(p => ({ ...p, [field]: file.name }));
+    } catch {
+      toast.error(`Failed to upload ${file.name}`);
+    } finally {
+      setDocUploading(p => ({ ...p, [field]: false }));
     }
   };
 
+  // ── Code lists & structure data ────────────────────────────────────────────
+  const [cl, setCl] = useState({
+    titles: [] as any[], genders: [] as any[], nationalities: [] as any[],
+    religions: [] as any[], empStatuses: [] as any[], jobTitles: [] as any[],
+    staffLevels: [] as any[], staffRoles: [] as any[],
+  });
+  const [structures, setStructures]   = useState<any[]>([]);
+  const [supervisors, setSupervisors] = useState<any[]>([]);
+  const [paygrades, setPaygrades]     = useState<any[]>([]);
+  const [notches, setNotches]         = useState<any[]>([]);
+
+  useEffect(() => {
+    Promise.all([
+      api.get('/system/code-lists/TIT/values'),
+      api.get('/system/code-lists/GEN/values'),
+      api.get('/system/code-lists/NAT/values'),
+      api.get('/system/code-lists/REG/values'),
+      api.get('/system/code-lists/EMPS/values'),
+      api.get('/system/code-lists/JOBT/values'),
+      api.get('/system/code-lists/STAFL/values'),
+      api.get('/system/code-lists/STAFR/values'),
+      api.get('/company/structures'),
+      api.get('/employees/active'),
+      api.get('/employees/paygrades'),
+      api.get('/employees/notches'),
+    ]).then(([t, g, n, r, e, j, sl, sr, s, sup, pg, nc]) => {
+      setCl({
+        titles:       t.data.data  ?? [],
+        genders:      g.data.data  ?? [],
+        nationalities: n.data.data ?? [],
+        religions:    r.data.data  ?? [],
+        empStatuses:  e.data.data  ?? [],
+        jobTitles:    j.data.data  ?? [],
+        staffLevels:  sl.data.data ?? [],
+        staffRoles:   sr.data.data ?? [],
+      });
+      setStructures(s.data.data    ?? []);
+      setSupervisors(sup.data.data ?? []);
+      setPaygrades(pg.data.data    ?? []);
+      setNotches(nc.data.data      ?? []);
+    }).catch(() => {});
+  }, []);
+
+  const departments = useMemo(() => structures.filter(s => s.typeLabel === 'Department'), [structures]);
+  const branches    = useMemo(() => structures.filter(s => ['Branch', 'Head Office'].includes(s.typeLabel)), [structures]);
+  const units       = useMemo(() => structures.filter(s => s.typeLabel === 'Unit'),   [structures]);
+  const outlets     = useMemo(() => structures.filter(s => s.typeLabel === 'Outlet'), [structures]);
+
+  const selectedPaygrade   = useMemo(() => paygrades.find(p => p.id === form.paygradeId), [paygrades, form.paygradeId]);
+  const filteredNotches    = useMemo(() =>
+    form.paygradeId && selectedPaygrade
+      ? notches.filter(n => n.paygrade === selectedPaygrade.name)
+      : [],
+  [notches, form.paygradeId, selectedPaygrade]);
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  const set = (name: string, value: string) => setForm((p: any) => ({ ...p, [name]: value }));
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
+    set(e.target.name, e.target.value);
+
+  const clSelect = (name: string, options: any[], placeholder: string, required?: boolean, label?: string) => (
+    <Field label={label ?? placeholder} required={required}>
+      <select name={name} value={form[name]} onChange={handleChange}>
+        <option value="">— {placeholder} —</option>
+        {options.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+      </select>
+    </Field>
+  );
+
+  const structSelect = (name: string, list: any[], placeholder: string, required?: boolean, label?: string) => (
+    <Field label={label ?? placeholder} required={required}>
+      <select name={name} value={form[name]} onChange={handleChange}>
+        <option value="">— {placeholder} —</option>
+        {list.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
+      </select>
+    </Field>
+  );
+
+  // ── Validation & submit ────────────────────────────────────────────────────
+  const handleFinish = () => {
+    if (!form.firstName?.trim())      return toast.error('First name is required');
+    if (!form.lastName?.trim())       return toast.error('Last name is required');
+    if (!form.work_email?.trim())     return toast.error('Work email is required');
+    if (!form.jobTitleId)             return toast.error('Job title is required');
+    if (!form.employmentStatusId)     return toast.error('Employment status is required');
+    if (!isEdit && !autoGenEmpNum && !form.employee_id?.trim())
+      return toast.error('Employee number is required when auto-generate is off');
+    if (!form.paygradeId)             return toast.error('Pay grade is required');
+    if (!form.notcheId)               return toast.error('Salary notch is required');
+
+    const payload: any = { ...form };
+
+    ['titleId', 'genderId', 'nationalityId', 'religionId', 'staff_level', 'staff_role',
+     'departmentId', 'branchId', 'unitId', 'outletId', 'supervisorId'].forEach(k => {
+      if (!payload[k]) payload[k] = null;
+    });
+    ['dateOfBirth', 'hireDate', 'confirmationDate',
+     'nationalIdExpiry', 'passportExpiry', 'driverLicenseExp'].forEach(k => {
+      if (!payload[k]) payload[k] = null;
+    });
+
+    onSave(payload, initialData?.id?.toString());
+  };
+
+  // ── Step navigation ────────────────────────────────────────────────────────
+  const goNext = () => {
+    if (step === STEPS.length - 1) handleFinish();
+    else setStep(s => s + 1);
+  };
+  const goPrev = () => setStep(s => Math.max(0, s - 1));
+
+  // ── Step content ───────────────────────────────────────────────────────────
+  const renderStep = () => {
+    switch (step) {
+      case 0: return (
+        <div className="space-y-8">
+          <div>
+            <SectionHeader title="Personal Information" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
+              {clSelect('titleId', cl.titles, 'Select Title', false, 'Title')}
+              <Field label="First Name" required>
+                <input name="firstName" value={form.firstName} onChange={handleChange} placeholder="First name" />
+              </Field>
+              <Field label="Middle Name">
+                <input name="middleName" value={form.middleName} onChange={handleChange} placeholder="Middle name (optional)" />
+              </Field>
+              <Field label="Last Name" required>
+                <input name="lastName" value={form.lastName} onChange={handleChange} placeholder="Last name" />
+              </Field>
+              {clSelect('genderId', cl.genders, 'Select Gender', false, 'Gender')}
+              <Field label="Date of Birth">
+                <input type="date" name="dateOfBirth" value={form.dateOfBirth} onChange={handleChange} />
+              </Field>
+              <Field label="Place of Birth">
+                <input name="place_of_birth" value={form.place_of_birth} onChange={handleChange} placeholder="City or town of birth" />
+              </Field>
+              {clSelect('nationalityId', cl.nationalities, 'Select Nationality', false, 'Nationality')}
+              {clSelect('religionId', cl.religions, 'Select Religion', false, 'Religion')}
+              <Field label="Marital Status">
+                <select name="marital_status" value={form.marital_status} onChange={handleChange}>
+                  <option value="">— Select —</option>
+                  {MARITAL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </Field>
+              {form.marital_status === 'Married' && (
+                <Field label="Spouse Name">
+                  <input name="spouse_name" value={form.spouse_name} onChange={handleChange} placeholder="Spouse full name" />
+                </Field>
+              )}
+              <Field label="Father's Name">
+                <input name="father_name" value={form.father_name} onChange={handleChange} placeholder="Father's full name" />
+              </Field>
+              <Field label="Mother's Name">
+                <input name="mother_name" value={form.mother_name} onChange={handleChange} placeholder="Mother's full name" />
+              </Field>
+            </div>
+          </div>
+
+          <div>
+            <SectionHeader title="Contact & Address" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
+              <Field label="Work Email" required>
+                <input type="email" name="work_email" value={form.work_email} onChange={handleChange} placeholder="Company email address" />
+              </Field>
+              <Field label="Personal Email">
+                <input type="email" name="personal_email" value={form.personal_email} onChange={handleChange} placeholder="Personal email address" />
+              </Field>
+              <Field label="Mobile Phone">
+                <input type="tel" name="mobilePhone" value={form.mobilePhone} onChange={handleChange} placeholder="Mobile number" />
+              </Field>
+              <Field label="Address" className="md:col-span-2">
+                <input name="address1" value={form.address1} onChange={handleChange} placeholder="Street address" />
+              </Field>
+              <Field label="City">
+                <input name="city" value={form.city} onChange={handleChange} placeholder="City" />
+              </Field>
+              <Field label="Country">
+                <input name="country" value={form.country} onChange={handleChange} placeholder="Country" />
+              </Field>
+            </div>
+          </div>
+        </div>
+      );
+
+      case 1: return (
+        <div>
+          <SectionHeader title="Employment Details" />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
+            {/* Employee ID — always the first field */}
+            {isEdit ? (
+              <Field label="Employee ID">
+                <input value={initialData?.employee_id ?? '—'} disabled />
+              </Field>
+            ) : autoGenEmpNum ? (
+              <Field label="Employee ID">
+                <input value="" disabled placeholder="Auto-generated on save" />
+              </Field>
+            ) : (
+              <Field label="Employee ID" required>
+                <input
+                  name="employee_id"
+                  value={form.employee_id}
+                  onChange={handleChange}
+                  placeholder="e.g. EMP-2026-0001"
+                />
+              </Field>
+            )}
+            {clSelect('employmentStatusId', cl.empStatuses, 'Select Status', true, 'Employment Status')}
+            {clSelect('jobTitleId', cl.jobTitles, 'Select Job Title', true, 'Job Title')}
+            {clSelect('staff_level', cl.staffLevels, 'Select Staff Level', false, 'Staff Level')}
+            {clSelect('staff_role', cl.staffRoles, 'Select Staff Role', false, 'Staff Role')}
+            {structSelect('departmentId', departments, 'Select Department', false, 'Department')}
+            {structSelect('branchId', branches, 'Select Branch', false, 'Branch')}
+            {structSelect('unitId', units, 'Select Unit', false, 'Unit')}
+            {structSelect('outletId', outlets, 'Select Outlet', false, 'Outlet')}
+            <Field label="Supervisor">
+              <select name="supervisorId" value={form.supervisorId} onChange={handleChange}>
+                <option value="">— Select Supervisor —</option>
+                {supervisors
+                  .filter(s => !initialData || s.id !== initialData.id?.toString())
+                  .map(s => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}{s.employee_id ? ` (${s.employee_id})` : ''}
+                    </option>
+                  ))}
+              </select>
+            </Field>
+            <Field label="SSN">
+              <input name="ssn_num" value={form.ssn_num} onChange={handleChange} placeholder="Social security number" />
+            </Field>
+            <Field label="Hire Date">
+              <input type="date" name="hireDate" value={form.hireDate} onChange={handleChange} />
+            </Field>
+            <Field label="Confirmation Date">
+              <input type="date" name="confirmationDate" value={form.confirmationDate} onChange={handleChange} />
+            </Field>
+          </div>
+        </div>
+      );
+
+      case 2: return (
+        <div>
+          <SectionHeader title="Next of Kin" />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
+            <Field label="Full Name">
+              <input name="nxt_kin_fname" value={form.nxt_kin_fname} onChange={handleChange} placeholder="Next of kin full name" />
+            </Field>
+            <Field label="Phone Number">
+              <input type="tel" name="nxt_kin_phone" value={form.nxt_kin_phone} onChange={handleChange} placeholder="Phone number" />
+            </Field>
+            <Field label="Email Address">
+              <input type="email" name="nxt_kin_email" value={form.nxt_kin_email} onChange={handleChange} placeholder="Email address" />
+            </Field>
+            <Field label="Address" className="md:col-span-2">
+              <input name="nxt_kin_address" value={form.nxt_kin_address} onChange={handleChange} placeholder="Residential address" />
+            </Field>
+          </div>
+        </div>
+      );
+
+      case 3: return (
+        <div>
+          <SectionHeader title="Financial Information" />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
+            <Field label="Bank Account Number" className="md:col-span-2">
+              <input name="bankAccount" value={form.bankAccount} onChange={handleChange} placeholder="Bank account number" />
+            </Field>
+            <Field label="Pay Grade" required>
+              <Combobox
+                options={paygrades.map(p => ({
+                  id: String(p.id),
+                  label: p.name + (p.currency ? ` (${p.currency})` : ''),
+                }))}
+                value={form.paygradeId}
+                onChange={id => { set('paygradeId', id); set('notcheId', ''); }}
+                placeholder="Search paygrade..."
+              />
+            </Field>
+            <Field label="Salary Notch" required>
+              <Combobox
+                options={filteredNotches.map(n => ({
+                  id: String(n.id),
+                  label: n.name + (n.amount ? ` — ${n.currency ?? ''} ${Number(n.amount).toLocaleString()}` : ''),
+                }))}
+                value={form.notcheId}
+                onChange={id => set('notcheId', id)}
+                placeholder={form.paygradeId ? 'Search notch...' : 'Select a paygrade first...'}
+              />
+            </Field>
+          </div>
+        </div>
+      );
+
+      case 4: return (
+        <div className="space-y-8">
+          <div>
+            <SectionHeader title="Identity Documents" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
+              <Field label="National ID Number">
+                <input name="nationalIdNumber" value={form.nationalIdNumber} onChange={handleChange} placeholder="NIN / National ID" />
+              </Field>
+              <Field label="National ID Expiry">
+                <input type="date" name="nationalIdExpiry" value={form.nationalIdExpiry} onChange={handleChange} />
+              </Field>
+              <Field label="Passport Number">
+                <input name="passportNumber" value={form.passportNumber} onChange={handleChange} placeholder="Passport number" />
+              </Field>
+              <Field label="Passport Expiry">
+                <input type="date" name="passportExpiry" value={form.passportExpiry} onChange={handleChange} />
+              </Field>
+              <Field label="Driver's License Number">
+                <input name="driverLicenseNum" value={form.driverLicenseNum} onChange={handleChange} placeholder="License number" />
+              </Field>
+              <Field label="Driver's License Expiry">
+                <input type="date" name="driverLicenseExp" value={form.driverLicenseExp} onChange={handleChange} />
+              </Field>
+            </div>
+          </div>
+
+          <div>
+            <SectionHeader title="Clearance Documents" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
+              {(['fit_and_proper', 'policeClearance', 'medicalClearance'] as const).map(field => {
+                const labels: Record<string, string> = {
+                  fit_and_proper:   'Fit & Proper Form',
+                  policeClearance:  'Police Clearance',
+                  medicalClearance: 'Medical Clearance',
+                };
+                const fileName = docNames[field];
+                return (
+                  <div key={field} className="col-span-1">
+                    <label className="label">{labels[field]}</label>
+                    <label className={`flex items-center gap-3 border rounded-lg px-4 py-3 cursor-pointer transition-colors ${
+                      docUploading[field]
+                        ? 'border-[var(--border)] bg-[var(--surface-hover)] opacity-60 cursor-wait'
+                        : fileName
+                          ? 'border-[var(--accent)] bg-[var(--accent-dim)]'
+                          : 'border-[var(--border)] bg-[var(--surface-hover)] hover:border-[var(--accent)]'
+                    }`}>
+                      <input
+                        type="file"
+                        accept=".pdf,.jpg,.jpeg,.png"
+                        className="hidden"
+                        disabled={!!docUploading[field]}
+                        onChange={e => handleDocUpload(field, e.target.files?.[0] ?? null)}
+                      />
+                      {docUploading[field] ? (
+                        <>
+                          <UploadCloud size={15} className="text-[var(--accent)] shrink-0 animate-pulse" />
+                          <span className="text-[13px] text-[var(--accent)]">Uploading…</span>
+                        </>
+                      ) : fileName ? (
+                        <>
+                          <FileCheck size={15} className="text-[var(--accent)] shrink-0" />
+                          <span className="text-[13px] font-medium text-[var(--accent)] truncate flex-1">{fileName}</span>
+                          <button
+                            type="button"
+                            onClick={e => { e.preventDefault(); handleDocUpload(field, null); }}
+                            className="p-0.5 text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <UploadCloud size={15} className="text-[var(--text-muted)] shrink-0" />
+                          <span className="text-[13px] text-[var(--text-muted)]">Upload file (PDF / image)</span>
+                        </>
+                      )}
+                    </label>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+        </div>
+      );
+
+      default: return null;
+    }
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] shadow-2xl w-full max-w-[800px] flex flex-col max-h-[90vh]">
-        
+
         {/* Header */}
-        <div className="flex items-start justify-between px-8 py-6 border-b border-[var(--border)] bg-[var(--surface-hover)] shrink-0 rounded-t-[16px]">
+        <div className="flex items-start justify-between px-8 py-5 border-b border-[var(--border)] bg-[var(--surface-hover)] shrink-0 rounded-t-[16px]">
           <div className="flex items-center gap-4">
             <div className="p-2.5 bg-[var(--surface)] rounded-xl border border-[var(--border)]">
-               <UserPlus className="w-5 h-5 text-[var(--accent)]" />
+              <UserPlus className="w-5 h-5 text-[var(--accent)]" />
             </div>
             <div>
               <h2 className="text-xl font-bold text-[var(--text-primary)] syne">
-                {initialData ? 'Edit employee' : 'Add new employee'}
+                {isEdit ? 'Edit Employee' : 'Add New Employee'}
               </h2>
               <p className="text-[13px] text-[var(--text-muted)] mt-0.5 font-medium">
-                {initialData ? 'Update personnel records' : 'Add newly employed personnel to the system'}
+                {isEdit ? 'Update personnel record' : 'New employee will be created as pending approval'}
               </p>
             </div>
           </div>
-          <button 
-            onClick={onClose}
-            className="p-2 text-[var(--text-muted)] hover:text-[var(--danger)] hover:bg-[var(--danger-dim)] rounded-full transition-colors"
-          >
+          <button onClick={onClose} className="p-2 text-[var(--text-muted)] hover:text-[var(--danger)] hover:bg-[var(--danger-dim)] rounded-full transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Stepper */}
-        <div className="px-4 sm:px-6 py-4 flex items-center justify-between shrink-0 border-b border-[var(--border)]">
-          {STEPS.map((step, index) => {
-            const isActive = index === currentStepIndex;
-            const isCompleted = index < currentStepIndex;
-            
+        <div className="px-6 py-4 flex items-center justify-between shrink-0 border-b border-[var(--border)] overflow-x-auto">
+          {STEPS.map((s, i) => {
+            const active    = i === step;
+            const completed = i < step;
             return (
-              <div key={step.id} className={`flex items-center ${index < STEPS.length - 1 ? 'flex-1' : ''}`}>
-                <div 
-                  className={`flex items-center gap-1 sm:gap-1.5 md:gap-2 px-2 py-1.5 rounded-full text-[9px] sm:text-[10px] md:text-[12px] font-bold transition-colors cursor-pointer shrink-0 ${
-                    isActive 
-                      ? 'bg-[var(--accent)] text-white' 
-                      : isCompleted
-                        ? 'text-[var(--accent)] bg-[var(--accent-dim)] hover:bg-[var(--accent)] hover:text-white'
-                        : 'text-[var(--text-muted)]'
+              <div key={s.id} className={`flex items-center ${i < STEPS.length - 1 ? 'flex-1' : ''}`}>
+                <button
+                  onClick={() => i <= step && setStep(i)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold transition-colors shrink-0 ${
+                    active    ? 'bg-[var(--accent)] text-white' :
+                    completed ? 'text-[var(--accent)] bg-[var(--accent-dim)] hover:bg-[var(--accent)] hover:text-white' :
+                                'text-[var(--text-muted)]'
                   }`}
-                  onClick={() => setCurrentStepIndex(index)}
                 >
-                  <span className={`w-4 h-4 sm:w-5 sm:h-5 md:w-5 md:h-5 flex items-center justify-center rounded-full text-[9px] font-extrabold shrink-0 ${
-                    isActive 
-                      ? 'bg-white/20' 
-                      : isCompleted
-                        ? 'text-inherit opacity-70'
-                        : 'bg-[var(--surface-hover)] border border-[var(--border)] text-[var(--text-muted)]'
-                  }`}>
-                    {index + 1}
-                  </span>
-                  <span className="whitespace-nowrap mr-1">{step.label}</span>
-                </div>
-                {index < STEPS.length - 1 && (
-                  <div className={`h-[2px] mx-1 sm:mx-2 flex-1 min-w-[2px] ${isCompleted ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`} />
+                  <span className={`w-5 h-5 flex items-center justify-center rounded-full text-[9px] font-extrabold shrink-0 ${
+                    active    ? 'bg-white/20' :
+                    completed ? 'opacity-70' :
+                                'bg-[var(--surface-hover)] border border-[var(--border)]'
+                  }`}>{i + 1}</span>
+                  <span className="hidden sm:inline whitespace-nowrap">{s.label}</span>
+                </button>
+                {i < STEPS.length - 1 && (
+                  <div className={`h-[2px] mx-2 flex-1 min-w-[12px] ${completed ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`} />
                 )}
               </div>
             );
@@ -226,28 +614,28 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: EmployeeFormF
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-8">
-          <form id="employee-stepper-form" onSubmit={handleSubmit}>
-            {renderStepContent()}
-          </form>
+          {renderStep()}
         </div>
 
         {/* Footer */}
-        <div className="px-8 py-5 border-t border-[var(--border)] flex items-center justify-end gap-3 shrink-0 bg-[var(--surface-hover)] rounded-b-[16px]">
-          <button 
-            type="button"
-            onClick={onClose}
-            className="secondary-btn"
-          >
-            Cancel
-          </button>
-          <button 
-            type="submit"
-            form="employee-stepper-form"
-            className="primary-btn"
-          >
-            {currentStepIndex < STEPS.length - 1 ? 'Next' : 'Complete'}
-          </button>
+        <div className="px-8 py-5 border-t border-[var(--border)] flex items-center justify-between shrink-0 bg-[var(--surface-hover)] rounded-b-[16px]">
+          <button onClick={onClose} className="secondary-btn">Cancel</button>
+          <div className="flex items-center gap-3">
+            {step > 0 && (
+              <button onClick={goPrev} className="secondary-btn">Back</button>
+            )}
+            <button
+              onClick={goNext}
+              disabled={Object.values(docUploading).some(Boolean)}
+              className="primary-btn disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {Object.values(docUploading).some(Boolean)
+                ? 'Uploading…'
+                : step < STEPS.length - 1 ? 'Next' : (isEdit ? 'Save Changes' : 'Create Employee')}
+            </button>
+          </div>
         </div>
+
       </div>
     </div>
   );
