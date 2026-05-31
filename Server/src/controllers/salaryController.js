@@ -41,11 +41,12 @@ async function exec(sql, ...params) {
   return prisma.$executeRawUnsafe(sql, ...params);
 }
 
-// ── Auto-add is_notch_linked column if missing ────────────────────────────────
+// ── Auto-add missing columns ───────────────────────────────────────────────────
 (async () => {
   try {
     const { prisma: _p } = require('../helpers/dbQueryHelper');
     await _p.$executeRawUnsafe(`ALTER TABLE salarycomponent ADD COLUMN is_notch_linked TINYINT(1) NOT NULL DEFAULT 0`).catch(() => {});
+    await _p.$executeRawUnsafe(`ALTER TABLE paymenttype ADD COLUMN generate_payslip TINYINT(1) NOT NULL DEFAULT 1`).catch(() => {});
   } catch (e) { /* ignore */ }
 })();
 
@@ -304,6 +305,14 @@ const createEmployeeSalaryComponent = asyncHandler(async (req, res) => {
   const componentId = toBigInt(component);
   if (!employeeId) return respond.badReq(res, 'Employee is required');
   if (!componentId) return respond.badReq(res, 'Component is required');
+
+  const duplicate = await query(
+    'SELECT id FROM employeesalary WHERE employee = ? AND component = ? LIMIT 1',
+    employeeId,
+    componentId
+  );
+  if (duplicate.length) return respond.conflict(res, 'This salary component is already assigned to the employee');
+
   const amountValue = toDecimalString(amount);
   const originalAmount = amountValue === null ? null : String(Math.round(Number(amountValue)));
   const row = await prisma.employeesalary.create({
@@ -337,6 +346,15 @@ const updateEmployeeSalaryComponent = asyncHandler(async (req, res) => {
   const componentId = toBigInt(component);
   if (!employeeId) return respond.badReq(res, 'Employee is required');
   if (!componentId) return respond.badReq(res, 'Component is required');
+
+  const duplicate = await query(
+    'SELECT id FROM employeesalary WHERE employee = ? AND component = ? AND id <> ? LIMIT 1',
+    employeeId,
+    componentId,
+    id
+  );
+  if (duplicate.length) return respond.conflict(res, 'This salary component is already assigned to the employee');
+
   const amountValue = toDecimalString(amount);
   const row = await prisma.employeesalary.update({
     where: { id },
@@ -542,30 +560,37 @@ const deletePaygrade = asyncHandler(async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const getPaymentTypes = asyncHandler(async (_req, res) => {
-  const rows = await prisma.paymenttype.findMany({ orderBy: { name: 'asc' } });
-  respond.ok(res, 'Payment types retrieved', serialize(rows));
+  const rows = await query('SELECT id, name, description, generate_payslip FROM paymenttype ORDER BY name ASC');
+  respond.ok(res, 'Payment types retrieved', rows);
 });
 
 const createPaymentType = asyncHandler(async (req, res) => {
-  const { name, description } = req.body;
+  const { name, description, generate_payslip } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Payment type is required');
-  const row = await prisma.paymenttype.create({ data: { name: name.trim(), description: description?.trim() || null } });
-  respond.created(res, 'Payment type created', serialize(row));
+  const gp = generate_payslip === undefined ? 1 : (generate_payslip ? 1 : 0);
+  const [{ nextId }] = await query('SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM paymenttype');
+  await exec('INSERT INTO paymenttype (id, name, description, generate_payslip) VALUES (?, ?, ?, ?)',
+    nextId, name.trim(), description?.trim() || null, gp);
+  const [row] = await query('SELECT id, name, description, generate_payslip FROM paymenttype WHERE id = ?', nextId);
+  respond.created(res, 'Payment type created', row);
 });
 
 const updatePaymentType = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid payment type ID');
-  const { name, description } = req.body;
+  const { name, description, generate_payslip } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Payment type is required');
-  const row = await prisma.paymenttype.update({ where: { id }, data: { name: name.trim(), description: description?.trim() || null } });
-  respond.ok(res, 'Payment type updated', serialize(row));
+  const gp = generate_payslip === undefined ? 1 : (generate_payslip ? 1 : 0);
+  await exec('UPDATE paymenttype SET name=?, description=?, generate_payslip=? WHERE id=?',
+    name.trim(), description?.trim() || null, gp, id);
+  const [row] = await query('SELECT id, name, description, generate_payslip FROM paymenttype WHERE id = ?', id);
+  respond.ok(res, 'Payment type updated', row);
 });
 
 const deletePaymentType = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid payment type ID');
-  await prisma.paymenttype.delete({ where: { id } });
+  await exec('DELETE FROM paymenttype WHERE id = ?', id);
   respond.ok(res, 'Payment type deleted', null);
 });
 

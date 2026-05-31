@@ -90,6 +90,9 @@ async function exec(sql, ...params) {
     // GL posting branch code for this column (used during payroll finalization)
     await exec(`ALTER TABLE payrollcolumns ADD COLUMN posting_branch VARCHAR(20) NULL`).catch(() => {});
 
+    // Short display name shown on payslips instead of the full column name
+    await exec(`ALTER TABLE payrollcolumns ADD COLUMN payslip_label VARCHAR(100) NULL`).catch(() => {});
+
     await exec(`CREATE TABLE IF NOT EXISTS payfrequencies (
       id INT AUTO_INCREMENT PRIMARY KEY,
       name VARCHAR(100) NOT NULL,
@@ -130,7 +133,8 @@ const getPayrollColumns = asyncHandler(async (_req, res) => {
            salarycomponent_gl, posting_column, posting_branch, calculation_hook,
            deduction_group, salary_components, calculation_columns,
            add_columns, sub_columns, calculation_function, calculation_rule,
-           COALESCE(visible, 1) AS visible, COALESCE(include_in_net, 1) AS include_in_net
+           COALESCE(visible, 1) AS visible, COALESCE(include_in_net, 1) AS include_in_net,
+           payslip_label
     FROM payrollcolumns
     ORDER BY COALESCE(colorder, 9999) ASC, name ASC
   `);
@@ -142,7 +146,7 @@ const createPayrollColumn = asyncHandler(async (req, res) => {
     name, function_type = 'Simple', enabled = 'Yes', editable = 'Yes', colorder, default_value, payment_deduction,
     salarycomponent_gl, posting_column, posting_branch, calculation_hook, deduction_group,
     salary_components, calculation_columns, add_columns, sub_columns, calculation_function,
-    calculation_rule, visible = 1, include_in_net = 1,
+    calculation_rule, visible = 1, include_in_net = 1, payslip_label,
   } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
 
@@ -158,8 +162,8 @@ const createPayrollColumn = asyncHandler(async (req, res) => {
       id, name, function_type, enabled, editable, colorder, default_value, payment_deduction,
       salarycomponent_gl, posting_column, posting_branch, calculation_hook, deduction_group,
       salary_components, calculation_columns, add_columns, sub_columns, calculation_function,
-      calculation_rule, visible, include_in_net
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      calculation_rule, visible, include_in_net, payslip_label
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     nextId, name.trim(), function_type, enabled, editable,
     colorderVal,
     default_value?.trim() || null,
@@ -176,7 +180,8 @@ const createPayrollColumn = asyncHandler(async (req, res) => {
     calculation_function?.trim() || null,
     calculation_rule ? parseInt(calculation_rule) : null,
     visible !== undefined && visible !== '' ? parseInt(visible) : 1,
-    include_in_net !== undefined && include_in_net !== '' ? parseInt(include_in_net) : 1
+    include_in_net !== undefined && include_in_net !== '' ? parseInt(include_in_net) : 1,
+    payslip_label?.trim() || null
   );
   const [created] = await query(`
     SELECT id, name, COALESCE(function_type,'Simple') AS function_type,
@@ -185,7 +190,8 @@ const createPayrollColumn = asyncHandler(async (req, res) => {
            salarycomponent_gl, posting_column, posting_branch, calculation_hook,
            deduction_group, salary_components, calculation_columns,
            add_columns, sub_columns, calculation_function, calculation_rule,
-           COALESCE(visible, 1) AS visible, COALESCE(include_in_net, 1) AS include_in_net
+           COALESCE(visible, 1) AS visible, COALESCE(include_in_net, 1) AS include_in_net,
+           payslip_label
     FROM payrollcolumns WHERE id = ?`, nextId);
   respond.created(res, 'Payroll column created', created);
 });
@@ -197,7 +203,7 @@ const updatePayrollColumn = asyncHandler(async (req, res) => {
     name, function_type, enabled, editable, colorder, default_value, payment_deduction,
     salarycomponent_gl, posting_column, posting_branch, calculation_hook, deduction_group,
     salary_components, calculation_columns, add_columns, sub_columns, calculation_function,
-    calculation_rule, visible, include_in_net,
+    calculation_rule, visible, include_in_net, payslip_label,
   } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
 
@@ -212,7 +218,7 @@ const updatePayrollColumn = asyncHandler(async (req, res) => {
       name=?, function_type=?, enabled=?, editable=?, colorder=?, default_value=?, payment_deduction=?,
       salarycomponent_gl=?, posting_column=?, posting_branch=?, calculation_hook=?, deduction_group=?,
       salary_components=?, calculation_columns=?, add_columns=?, sub_columns=?, calculation_function=?,
-      calculation_rule=?, visible=?, include_in_net=?
+      calculation_rule=?, visible=?, include_in_net=?, payslip_label=?
     WHERE id=?`,
     name.trim(), function_type || 'Simple', enabled || 'Yes', editable || 'Yes',
     colorder !== undefined && colorder !== '' ? parseInt(colorder) : null,
@@ -231,6 +237,7 @@ const updatePayrollColumn = asyncHandler(async (req, res) => {
     calculation_rule ? parseInt(calculation_rule) : null,
     visible !== undefined && visible !== '' ? parseInt(visible) : 1,
     include_in_net !== undefined && include_in_net !== '' ? parseInt(include_in_net) : 1,
+    payslip_label?.trim() || null,
     id
   );
   const [updated] = await query(`
@@ -240,7 +247,8 @@ const updatePayrollColumn = asyncHandler(async (req, res) => {
            salarycomponent_gl, posting_column, posting_branch, calculation_hook,
            deduction_group, salary_components, calculation_columns,
            add_columns, sub_columns, calculation_function, calculation_rule,
-           COALESCE(visible, 1) AS visible, COALESCE(include_in_net, 1) AS include_in_net
+           COALESCE(visible, 1) AS visible, COALESCE(include_in_net, 1) AS include_in_net,
+           payslip_label
     FROM payrollcolumns WHERE id = ?`, id);
   respond.ok(res, 'Payroll column updated', updated);
 });
@@ -603,6 +611,8 @@ const deletePayrollEmployee = asyncHandler(async (req, res) => {
       show_position      TINYINT(1) NOT NULL DEFAULT 1,
       show_bank_account  TINYINT(1) NOT NULL DEFAULT 0,
       visible_columns    TEXT NULL,
+      net_columns        TEXT NULL,
+      payment_type_id    BIGINT NULL,
       updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
   `).catch(() => {});
@@ -610,14 +620,17 @@ const deletePayrollEmployee = asyncHandler(async (req, res) => {
   await exec(`ALTER TABLE payslip_settings ADD COLUMN template_name VARCHAR(100) NOT NULL DEFAULT 'Default'`).catch(() => {});
   await exec(`ALTER TABLE payslip_settings ADD COLUMN deduction_group_id BIGINT NULL`).catch(() => {});
   await exec(`ALTER TABLE payslip_settings ADD COLUMN visible_columns TEXT NULL`).catch(() => {});
+  await exec(`ALTER TABLE payslip_settings ADD COLUMN net_columns TEXT NULL`).catch(() => {});
+  await exec(`ALTER TABLE payslip_settings ADD COLUMN payment_type_id BIGINT NULL`).catch(() => {});
   // Rename the fixed-id seed row to 'Default' if it exists
   await exec(`UPDATE payslip_settings SET template_name='Default' WHERE id=1 AND template_name=''`).catch(() => {});
 })();
 
 const PAYSLIP_SELECT = `
-  SELECT ps.*, cg.name AS group_name
+  SELECT ps.*, cg.name AS group_name, pt.name AS type_name
   FROM payslip_settings ps
   LEFT JOIN calculationgroups cg ON cg.id = ps.deduction_group_id
+  LEFT JOIN paymenttype pt ON pt.id = ps.payment_type_id
   ORDER BY ps.id ASC
 `;
 
@@ -627,23 +640,25 @@ const getPayslipTemplates = asyncHandler(async (_req, res) => {
 });
 
 const createPayslipTemplate = asyncHandler(async (req, res) => {
-  const { template_name, deduction_group_id, company_name, company_address, company_logo_url,
+  const { template_name, deduction_group_id, payment_type_id, company_name, company_address, company_logo_url,
           header_note, footer_note, accent_color, show_emp_id, show_department,
-          show_position, show_bank_account, visible_columns } = req.body;
+          show_position, show_bank_account, visible_columns, net_columns } = req.body;
   if (!template_name?.trim()) return respond.badReq(res, 'Template name is required');
   await exec(
     `INSERT INTO payslip_settings
-       (template_name, deduction_group_id, company_name, company_address, company_logo_url,
+       (template_name, deduction_group_id, payment_type_id, company_name, company_address, company_logo_url,
         header_note, footer_note, accent_color, show_emp_id, show_department,
-        show_position, show_bank_account, visible_columns)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        show_position, show_bank_account, visible_columns, net_columns)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     template_name.trim(),
     deduction_group_id ? BigInt(deduction_group_id) : null,
+    payment_type_id ? BigInt(payment_type_id) : null,
     company_name || null, company_address || null, company_logo_url || null,
     header_note || null, footer_note || null, accent_color || '#3B82F6',
     show_emp_id ? 1 : 0, show_department ? 1 : 0,
     show_position ? 1 : 0, show_bank_account ? 1 : 0,
-    visible_columns ? JSON.stringify(visible_columns) : null
+    visible_columns?.length ? JSON.stringify(visible_columns) : null,
+    net_columns?.length ? JSON.stringify(net_columns) : null
   );
   const rows = await query(PAYSLIP_SELECT);
   respond.created(res, 'Template created', rows[rows.length - 1] ?? null);
@@ -652,24 +667,26 @@ const createPayslipTemplate = asyncHandler(async (req, res) => {
 const updatePayslipTemplate = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const { template_name, deduction_group_id, company_name, company_address, company_logo_url,
+  const { template_name, deduction_group_id, payment_type_id, company_name, company_address, company_logo_url,
           header_note, footer_note, accent_color, show_emp_id, show_department,
-          show_position, show_bank_account, visible_columns } = req.body;
+          show_position, show_bank_account, visible_columns, net_columns } = req.body;
   if (!template_name?.trim()) return respond.badReq(res, 'Template name is required');
   await exec(
     `UPDATE payslip_settings SET
-       template_name=?, deduction_group_id=?, company_name=?, company_address=?,
+       template_name=?, deduction_group_id=?, payment_type_id=?, company_name=?, company_address=?,
        company_logo_url=?, header_note=?, footer_note=?, accent_color=?,
        show_emp_id=?, show_department=?, show_position=?, show_bank_account=?,
-       visible_columns=?
+       visible_columns=?, net_columns=?
      WHERE id=?`,
     template_name.trim(),
     deduction_group_id ? BigInt(deduction_group_id) : null,
+    payment_type_id ? BigInt(payment_type_id) : null,
     company_name || null, company_address || null, company_logo_url || null,
     header_note || null, footer_note || null, accent_color || '#3B82F6',
     show_emp_id ? 1 : 0, show_department ? 1 : 0,
     show_position ? 1 : 0, show_bank_account ? 1 : 0,
-    visible_columns ? JSON.stringify(visible_columns) : null,
+    visible_columns?.length ? JSON.stringify(visible_columns) : null,
+    net_columns?.length ? JSON.stringify(net_columns) : null,
     id
   );
   const [row] = await query(`${PAYSLIP_SELECT.replace('ORDER BY ps.id ASC', 'WHERE ps.id = ?')}`, id);

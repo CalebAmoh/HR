@@ -1,10 +1,11 @@
 import { useState, useEffect, type ComponentType } from 'react';
-import { Download, FileSpreadsheet, FileText, Receipt, X } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { Download, FileSpreadsheet, FileText, Receipt, X, Stethoscope, Printer } from 'lucide-react';
+import { motion } from 'motion/react';
 import { toast } from 'sonner';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { FormModal } from './ui/FormModal';
+import { AnimatePresence } from 'motion/react';
 import api from '../../lib/api';
 
 interface PayslipRun {
@@ -25,8 +26,52 @@ interface Report {
   actionLabel?: string;
 }
 
+function exportCSV(filename: string, headers: string[], rows: (string | number)[][]) {
+  const csv = [headers, ...rows]
+    .map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: `${filename}.csv` });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function printTable(title: string, headers: string[], rows: (string | number)[][]) {
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const html = `<!DOCTYPE html><html><head><title>${esc(title)}</title>
+    <style>body{font-family:sans-serif;padding:20px}h2{margin-bottom:16px}
+    table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:8px 12px;font-size:13px}
+    th{background:#f3f4f6;font-weight:600;text-align:left}tr:nth-child(even){background:#f9fafb}
+    @media print{button{display:none}}</style></head><body>
+    <h2>${esc(title)}</h2><table>
+    <thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc(String(c ?? ''))}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table></body></html>`;
+  const w = window.open('', '_blank');
+  if (!w) return;
+  w.document.write(html);
+  w.document.close();
+  w.print();
+}
+
 export function UserReports() {
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Medical statement modal state
+  const [medOpen,    setMedOpen]    = useState(false);
+  const [medData,    setMedData]    = useState<any>(null);
+  const [medLoading, setMedLoading] = useState(false);
+
+  function openMedStatement() {
+    setMedOpen(true);
+    if (!medData && !medLoading) {
+      setMedLoading(true);
+      api.get('/medical/my-enquiry')
+        .then(r => setMedData(r.data.data ?? null))
+        .catch(() => {})
+        .finally(() => setMedLoading(false));
+    }
+  }
 
   // Payslip modal state
   const [payslipOpen,   setPayslipOpen]   = useState(false);
@@ -104,6 +149,14 @@ export function UserReports() {
       name: 'My Tax Documents',
       description: 'End-of-year tax summary documents and declarations.',
       icon: FileText,
+    },
+    {
+      id: 5,
+      name: 'My Medical Statement',
+      description: 'View your medical limit, amount utilised, remaining balance, and full records history.',
+      icon: Stethoscope,
+      action: openMedStatement,
+      actionLabel: 'View Statement',
     },
   ];
 
@@ -193,6 +246,89 @@ export function UserReports() {
         </motion.div>
       </div>
 
+      {/* My Medical Statement modal */}
+      <AnimatePresence>
+        {medOpen && (
+          <FormModal title="My Medical Statement" subtitle="Medical limit balance and records history"
+            maxWidth="3xl" onClose={() => setMedOpen(false)} onSave={() => setMedOpen(false)} saveLabel="Close">
+            {medLoading ? (
+              <p className="text-center text-[var(--text-muted)] text-sm py-8">Loading…</p>
+            ) : !medData ? (
+              <p className="text-center text-[var(--text-muted)] text-sm py-8">No employee record linked to your account.</p>
+            ) : (() => {
+              const fmt = (v: any) => v != null ? parseFloat(String(v)).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '—';
+              const cur = medData.currency ?? '';
+              return (
+                <div className="space-y-5">
+                  <div className="grid grid-cols-3 gap-3">
+                    {[
+                      { label: 'Medical Limit',     value: medData.medical_limit    != null ? `${cur} ${fmt(medData.medical_limit)}`    : '—' },
+                      { label: 'Amount Utilised',   value: `${cur} ${fmt(medData.amount_utilized)}` },
+                      { label: 'Remaining Balance', value: medData.limit_balance    != null ? `${cur} ${fmt(medData.limit_balance)}`   : '—' },
+                    ].map(c => (
+                      <div key={c.label} className="rounded-[12px] border border-[var(--border)] px-4 py-3 bg-[var(--bg)]">
+                        <p className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1">{c.label}</p>
+                        <p className="text-[16px] font-extrabold syne text-[var(--text-primary)]">{c.value}</p>
+                      </div>
+                    ))}
+                  </div>
+                  {(medData.staff_records?.length > 0 || medData.dependent_records?.length > 0) ? (() => {
+                    const recHeaders = ['Type', 'Date', 'Illness', 'Cost', 'Status'];
+                    const staffRows  = (medData.staff_records ?? []).map((r: any) => ['Staff', r.admission_date?.slice(0,10) ?? '', r.illness_type ?? '', fmt(r.cost), r.status ?? '']);
+                    const depRows    = (medData.dependent_records ?? []).map((r: any) => ['Dependent', r.date_attended?.slice(0,10) ?? '', r.illness_type ?? '', fmt(r.cost), r.status ?? '']);
+                    const allRecRows = [...staffRows, ...depRows];
+                    return (
+                      <>
+                        <div className="flex justify-end gap-2 mb-2">
+                          <button onClick={() => printTable('My Medical Statement', recHeaders, allRecRows)}
+                            className="secondary-btn !py-1.5 !px-3 !text-[12px]">
+                            <Printer size={13} />Print
+                          </button>
+                          <button onClick={() => exportCSV('my-medical-statement', recHeaders, allRecRows)}
+                            className="secondary-btn !py-1.5 !px-3 !text-[12px]">
+                            <Download size={13} />Export CSV
+                          </button>
+                        </div>
+                        <div className="overflow-x-auto rounded-[10px] border border-[var(--border)]">
+                          <table className="w-full border-collapse text-sm">
+                            <thead><tr>
+                              <th className="th">Type</th><th className="th">Date</th>
+                              <th className="th">Illness</th><th className="th">Cost</th><th className="th">Status</th>
+                            </tr></thead>
+                            <tbody>
+                              {(medData.staff_records ?? []).map((r: any, i: number) => (
+                                <tr key={`s${i}`} className="tr">
+                                  <td className="td"><span className="pill pill-accent text-[10px]">Staff</span></td>
+                                  <td className="td">{r.admission_date?.slice(0,10)}</td>
+                                  <td className="td">{r.illness_type}</td>
+                                  <td className="td">{fmt(r.cost)}</td>
+                                  <td className="td"><span className={`pill text-[11px] ${r.status === 'Approved' ? 'pill-success' : r.status === 'Rejected' ? 'pill-danger' : r.status === 'Pending Approval' ? 'pill-warning' : ''}`}>{r.status}</span></td>
+                                </tr>
+                              ))}
+                              {(medData.dependent_records ?? []).map((r: any, i: number) => (
+                                <tr key={`d${i}`} className="tr">
+                                  <td className="td"><span className="pill text-[10px]">Dependent</span></td>
+                                  <td className="td">{r.date_attended?.slice(0,10)}</td>
+                                  <td className="td">{r.illness_type}</td>
+                                  <td className="td">{fmt(r.cost)}</td>
+                                  <td className="td"><span className={`pill text-[11px] ${r.status === 'Approved' ? 'pill-success' : r.status === 'Rejected' ? 'pill-danger' : r.status === 'Pending Approval' ? 'pill-warning' : ''}`}>{r.status}</span></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    );
+                  })() : (
+                    <p className="text-center text-[var(--text-muted)] text-sm py-4">No records on file.</p>
+                  )}
+                </div>
+              );
+            })()}
+          </FormModal>
+        )}
+      </AnimatePresence>
+
       {/* My Payslips modal */}
       <AnimatePresence>
         {payslipOpen && (
@@ -204,7 +340,6 @@ export function UserReports() {
             onSave={() => setPayslipOpen(false)}
             saveLabel="Close"
           >
-            {/* inner search */}
             <div className="mb-4">
               <div className="search-wrap w-full">
                 <FileText size={13} />

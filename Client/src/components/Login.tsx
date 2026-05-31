@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Mail, Lock, ArrowRight, ShieldCheck, Zap, Activity, AlertCircle } from 'lucide-react';
+import { User, Lock, ArrowRight, ShieldCheck, Zap, Activity, AlertCircle } from 'lucide-react';
 import api from '@/lib/api';
 import { setSession } from '@/lib/auth';
 import { normalizeFromLogin } from '@/lib/permissions';
@@ -126,20 +126,20 @@ export function Login({ onLogin }: LoginProps) {
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <div className="space-y-4">
-              {/* Email Input */}
+              {/* Email / Username Input */}
               <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5 ml-0.5 syne tracking-wide">Email Address</label>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5 ml-0.5 syne tracking-wide">Email or Username</label>
                 <div className="relative group">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 group-focus-within:text-[var(--accent)] transition-colors z-10">
-                    <Mail className="h-5 w-5" />
+                    <User className="h-5 w-5" />
                   </div>
                   <input
-                    type="email"
+                    type="text"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
                     className="!pl-11 !py-3 font-medium text-[14px]"
-                    placeholder="admin@sisl.com"
+                    placeholder="admin@sisl.com or EMP-00004"
                   />
                 </div>
               </div>

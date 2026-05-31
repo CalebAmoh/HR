@@ -245,7 +245,8 @@ const getUserAccess = asyncHandler(async (req, res) => {
 // @access  Admin
 // ─────────────────────────────────────────────
 const addRole = asyncHandler(async (req, res) => {
-  const { name, guard_name, description, is_system, permission_ids } = req.body;
+  const { name, guard_name = 'api', description, is_system } = req.body;
+  const permission_ids = req.body.permission_ids ?? req.body.permissions;
 
   const validation = helper.checkForNullOrEmpty([
     { name: 'Role Name', value: name },
@@ -322,7 +323,8 @@ const addRole = asyncHandler(async (req, res) => {
 // ─────────────────────────────────────────────
 const updateRole = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { name, guard_name, description, status, permission_ids } = req.body;
+  const { name, guard_name, description, status } = req.body;
+  const permission_ids = req.body.permission_ids ?? req.body.permissions;
 
   const validation = helper.checkForNullOrEmpty([{ name: 'Role ID', value: id }]);
   if (validation.status === 'error') {

@@ -18,7 +18,7 @@ const registerUser = asyncHandler(async (req, res) => {
   const {
     employeeId,               // required — CUID of the existing employee record
     username,
-    firstname, middlename, lastname, phone, email, qualification,
+    firstname, middlename, lastname, phone, email,
     status = '1', posted_by = 0,
     roles = [], permissions = [],
   } = req.body;
@@ -84,7 +84,6 @@ const registerUser = asyncHandler(async (req, res) => {
   if (lastname)      empUpdate.lastName       = lastname;
   if (phone)         empUpdate.phone          = phone;
   if (email)         empUpdate.email          = email;
-  if (qualification) empUpdate.qualification  = qualification;
 
   if (Object.keys(empUpdate).length > 0) {
     await helper.dynamicUpdateWithId('employee', empUpdate, employeeId);
@@ -148,7 +147,7 @@ const registerUser = asyncHandler(async (req, res) => {
   // Return the new user with employee profile
   const newUser = await helper.selectRecordsWithQuery(`
     SELECT u.id, u.status, u.username, u.employeeId,
-           e.email, e.firstName, e.lastName, e.middleName, e.phone, e.qualification
+           e.email, e.firstName, e.lastName, e.middleName, e.phone
     FROM users u
     JOIN employee e ON e.id = u.employeeId
     WHERE u.id = ?
@@ -171,19 +170,19 @@ const loginUser = asyncHandler(async (req, res) => {
 
   // Validate fields
   const validation = helper.checkForNullOrEmpty([
-    { name: 'Email',    value: email },
-    { name: 'Password', value: password },
+    { name: 'Email or username', value: email },
+    { name: 'Password',          value: password },
   ]);
   if (validation.status === 'error') {
     return res.status(400).json({ status: '400', message: validation.message });
   }
 
-  // Find user by username OR employee email
+  // Find user by username OR employee email (LEFT JOIN so username-only accounts still match)
   const userResult = await helper.selectRecordsWithQuery(`
     SELECT u.id, u.username, u.password, u.status, u.employeeId,
            e.email, e.firstName, e.lastName, e.phone
     FROM users u
-    JOIN employee e ON e.id = u.employeeId
+    LEFT JOIN employee e ON e.id = u.employeeId
     WHERE u.username = ? OR e.email = ? OR e.work_email = ?
     LIMIT 1
   `, [email, email, email]);
@@ -349,7 +348,6 @@ const getAllUsers = asyncHandler(async (req, res) => {
     CONCAT_WS(' ', e.firstName, e.lastName) AS name,
     e.phone,
     e.email,
-    e.qualification,
 
     -- Roles as JSON array
     CONCAT(
@@ -408,8 +406,7 @@ const getAllUsers = asyncHandler(async (req, res) => {
     e.lastName,
     e.middleName,
     e.phone,
-    e.email,
-    e.qualification
+    e.email
 `);
 
   if (result.status === 'error') {
@@ -449,7 +446,6 @@ const getUserById = asyncHandler(async (req, res) => {
       CONCAT_WS(' ', e.firstName, e.lastName) AS name,
       e.phone,
       e.email,
-      e.qualification,
 
       -- Roles + permissions per role (subquery)
       COALESCE(
@@ -539,11 +535,6 @@ const getUserById = asyncHandler(async (req, res) => {
 // @route   PUT /:id
 // @access  Private
 // ─────────────────────────────────────────────
-// ─────────────────────────────────────────────
-// @desc    Update user
-// @route   PUT /:id
-// @access  Private
-// ─────────────────────────────────────────────
 const updateUser = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const {
@@ -552,7 +543,6 @@ const updateUser = asyncHandler(async (req, res) => {
     lastname,
     phone,
     email,
-    qualification,
     status,
     roles,
     permissions,
@@ -591,7 +581,6 @@ const updateUser = asyncHandler(async (req, res) => {
   if (lastname)      employeeData.lastName       = lastname;
   if (phone)         employeeData.phone          = phone;
   if (email)         employeeData.email          = email;
-  if (qualification) employeeData.qualification  = qualification;
 
   if (Object.keys(employeeData).length > 0) {
     const empResult = await helper.dynamicUpdateWithId('employee', employeeData, employeeId);
@@ -693,7 +682,7 @@ const updateUser = asyncHandler(async (req, res) => {
   // ───────────────────────────
   const updatedUser = await helper.selectRecordsWithQuery(`
     SELECT u.id, u.status, u.username, u.employeeId,
-           e.email, e.firstName, e.lastName, e.middleName, e.phone, e.qualification
+           e.email, e.firstName, e.lastName, e.middleName, e.phone
     FROM users u
     JOIN employee e ON e.id = u.employeeId
     WHERE u.id = ?
@@ -721,17 +710,32 @@ const changePassword = asyncHandler(async (req, res) => {
   const id = req.params.id ?? req.user?.id;
   const { currentPassword, newPassword } = req.body;
 
-  const validation = helper.checkForNullOrEmpty([
-    { name: 'Current Password', value: currentPassword },
-    { name: 'New Password',     value: newPassword },
-  ]);
-  if (validation.status === 'error') {
-    return res.status(400).json({ status: '400', message: validation.message });
-  }
+  const isSelf = String(id) === String(req.user.id);
+  const isAdmin = req.user.roles.includes('super-admin') || req.user.roles.includes('admin') || req.user.permissions.includes('change_user_password');
 
-  // Prevent reusing the same password
-  if (currentPassword === newPassword) {
-    return res.status(400).json({ status: '400', message: 'New password must be different from current password' });
+  if (isSelf) {
+    const validation = helper.checkForNullOrEmpty([
+      { name: 'Current Password', value: currentPassword },
+      { name: 'New Password',     value: newPassword },
+    ]);
+    if (validation.status === 'error') {
+      return res.status(400).json({ status: '400', message: validation.message });
+    }
+    // Prevent reusing the same password
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ status: '400', message: 'New password must be different from current password' });
+    }
+  } else {
+    // Admin resetting someone else's password
+    if (!isAdmin) {
+      return res.status(403).json({ status: '403', message: 'Unauthorized to change this user\'s password' });
+    }
+    const validation = helper.checkForNullOrEmpty([
+      { name: 'New Password',     value: newPassword },
+    ]);
+    if (validation.status === 'error') {
+      return res.status(400).json({ status: '400', message: validation.message });
+    }
   }
 
   // Get user with password
@@ -742,10 +746,12 @@ const changePassword = asyncHandler(async (req, res) => {
 
   const user = userResult.data[0];
 
-  // Verify current password
-  const isMatch = await bcrypt.compare(currentPassword, user.password);
-  if (!isMatch) {
-    return res.status(401).json({ status: '401', message: 'Current password is incorrect' });
+  if (isSelf) {
+    // Verify current password
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ status: '401', message: 'Current password is incorrect' });
+    }
   }
 
   // Hash and save new password

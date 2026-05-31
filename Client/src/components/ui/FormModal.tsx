@@ -18,6 +18,8 @@ interface FormModalProps {
   onClose: () => void;
   onSave: () => void;
   saveLabel?: string;
+  secondaryAction?: { label: string; onClick: () => void };
+  footerActions?: ReactNode;
   maxWidth?: keyof typeof maxWidthMap;
   scrollable?: boolean;
   children: ReactNode;
@@ -29,6 +31,8 @@ export function FormModal({
   onClose,
   onSave,
   saveLabel = 'Save',
+  secondaryAction,
+  footerActions,
   maxWidth = '2xl',
   scrollable = true,
   children,
@@ -59,13 +63,23 @@ export function FormModal({
           {children}
         </div>
 
-        <div className="px-6 py-4 border-t border-[var(--border)] bg-slate-50/50 flex justify-end gap-3 shrink-0">
-          <button onClick={onClose} className="secondary-btn shadow-sm">
-            Cancel
-          </button>
-          <button onClick={onSave} className="primary-btn shadow-sm flex items-center gap-2">
-            <Save size={16} /> {saveLabel}
-          </button>
+        <div className="px-6 py-4 border-t border-[var(--border)] bg-slate-50/50 flex items-center justify-between gap-3 shrink-0">
+          <div className="flex gap-2">
+            {footerActions}
+          </div>
+          <div className="flex gap-3">
+            <button onClick={onClose} className="secondary-btn shadow-sm">
+              Cancel
+            </button>
+            {secondaryAction && (
+              <button onClick={secondaryAction.onClick} className="secondary-btn shadow-sm">
+                {secondaryAction.label}
+              </button>
+            )}
+            <button onClick={onSave} className="primary-btn shadow-sm flex items-center gap-2">
+              <Save size={16} /> {saveLabel}
+            </button>
+          </div>
         </div>
       </motion.div>
     </div>

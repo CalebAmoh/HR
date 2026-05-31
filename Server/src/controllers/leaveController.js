@@ -1,0 +1,2270 @@
+const { prisma }        = require('../helpers/dbQueryHelper');
+const asyncHandler      = require('../middleware/asyncHandler');
+const respond           = require('../helpers/respondHelper');
+const { sendLeaveEmail } = require('../helpers/emailHelper');
+const { logActivity, fromReq } = require('./auditController');
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function toBigInt(val) {
+  if (!val && val !== 0) return null;
+  try { return BigInt(val); } catch { return null; }
+}
+
+function toInt(val) {
+  const n = parseInt(val, 10);
+  return isNaN(n) ? null : n;
+}
+
+function s(obj) {
+  if (typeof obj === 'bigint')               return obj.toString();
+  if (obj instanceof Date)                   return obj.toISOString();
+  if (Array.isArray(obj))                    return obj.map(s);
+  if (obj !== null && typeof obj === 'object') {
+    if (typeof obj.toFixed === 'function')   return obj.toString();
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) out[k] = s(v);
+    return out;
+  }
+  return obj;
+}
+
+async function safeAlter(sql) {
+  try { await prisma.$executeRawUnsafe(sql); } catch {}
+}
+
+// Whole months from dateA to dateB (positive if B > A)
+function monthsDiff(dateA, dateB) {
+  const a = new Date(dateA);
+  const b = new Date(dateB);
+  return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
+}
+
+// ── One-time schema patches ───────────────────────────────────────────────────
+
+(async () => {
+  await safeAlter(`ALTER TABLE employeeleaves ADD COLUMN submitted_by BIGINT NULL`);
+  await safeAlter(`ALTER TABLE employeeleaves ADD COLUMN approved_by BIGINT NULL`);
+  await safeAlter(`ALTER TABLE employeeleaves ADD COLUMN rejection_reason TEXT NULL`);
+  await safeAlter(`ALTER TABLE employeeleaves ADD COLUMN leave_tax VARCHAR(30) NULL`);
+  await safeAlter(`ALTER TABLE employeeleaves ADD COLUMN api_response TEXT NULL`);
+  await safeAlter(`ALTER TABLE employeeleaves ADD COLUMN branch VARCHAR(50) NULL`);
+  await safeAlter(`ALTER TABLE employeeleaves MODIFY COLUMN allowance_status VARCHAR(50) NULL`);
+  await safeAlter(`ALTER TABLE employeeleaves MODIFY COLUMN status VARCHAR(50) NULL DEFAULT 'Draft'`);
+  await safeAlter(`ALTER TABLE leaveperiods ADD COLUMN name VARCHAR(100) NOT NULL DEFAULT ''`);
+  await safeAlter(`ALTER TABLE holidays ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'Full_Day'`);
+  await safeAlter(`ALTER TABLE workdays ADD COLUMN country BIGINT NULL`);
+  await safeAlter(`ALTER TABLE leavetypes ADD COLUMN leave_allowance VARCHAR(3) NOT NULL DEFAULT 'No'`);
+  await safeAlter(`ALTER TABLE leavetypes ADD COLUMN leave_allowance_once VARCHAR(3) NOT NULL DEFAULT 'No'`);
+  await safeAlter(`ALTER TABLE leaverules ADD COLUMN leave_allowance VARCHAR(3) NOT NULL DEFAULT 'No'`);
+  await safeAlter(`ALTER TABLE leaverules ADD COLUMN leave_allowance_once VARCHAR(3) NOT NULL DEFAULT 'No'`);
+  // Paygrade-based leave group assignment (replaces manual leavegroupemployees)
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS leavegrouppaygrades (
+      id BIGINT PRIMARY KEY,
+      leave_group BIGINT NOT NULL,
+      paygrade_id BIGINT NOT NULL,
+      created DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_lg_pg (leave_group, paygrade_id)
+    )
+  `).catch(() => {});
+  // Many-to-many: leave type ↔ leave groups
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS leavetype_groups (
+      id BIGINT PRIMARY KEY,
+      leave_type_id BIGINT NOT NULL,
+      leave_group_id BIGINT NOT NULL,
+      UNIQUE KEY uq_ltg (leave_type_id, leave_group_id)
+    )
+  `).catch(() => {});
+})();
+
+// ── Working days calculator ───────────────────────────────────────────────────
+
+async function getWorkingDays(dateStart, dateEnd) {
+  const holidays = await prisma.$queryRawUnsafe(
+    `SELECT dateh FROM holidays`
+  ).catch(() => []);
+  const holidaySet = new Set(
+    holidays.map(h => {
+      const d = h.dateh instanceof Date ? h.dateh : new Date(h.dateh);
+      return d.toISOString().split('T')[0];
+    })
+  );
+
+  // Use Prisma model so enum @map values are returned as Prisma names (e.g. 'Non_working_Day' not 'Non-working Day')
+  const workdays = await prisma.workdays.findMany({ select: { name: true, status: true } }).catch(() => []);
+  const workdayMap = {};
+  for (const w of workdays) workdayMap[w.name.toLowerCase()] = w.status;
+
+  const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const days = [];
+  const cur  = new Date(dateStart);
+  const end  = new Date(dateEnd);
+  while (cur <= end) {
+    const dayName = DAY_NAMES[cur.getDay()];
+    const dateStr = cur.toISOString().split('T')[0];
+    const wd = workdayMap[dayName] ?? 'Full_Day';
+    if (wd !== 'Non_working_Day' && !holidaySet.has(dateStr)) {
+      days.push({ date: dateStr, type: wd === 'Half_Day' ? 'Half_Day' : 'Full_Day' });
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+  return days;
+}
+
+// ── Leave balance calculator ──────────────────────────────────────────────────
+
+async function calcBalance(employeeId, leaveTypeId, leavePeriodId, empProfile) {
+  const [typeRow, periodRow] = await Promise.all([
+    prisma.leavetypes.findUnique({ where: { id: toBigInt(leaveTypeId) } }).catch(() => null),
+    prisma.leaveperiods.findUnique({ where: { id: toBigInt(leavePeriodId) } }).catch(() => null),
+  ]);
+
+  // Find matching rule for this employee + leave type (raw SQL — avoids stale Prisma client types)
+  const emp = empProfile ?? (await prisma.$queryRawUnsafe(
+    `SELECT jobTitleId AS job_title_id, departmentId, employmentStatusId AS emp_status_id, paygradeId, hireDate
+     FROM employee WHERE id=?`, toBigInt(employeeId)
+  ).catch(() => []))[0] ?? {};
+  const allRules = await prisma.$queryRawUnsafe(
+    `SELECT * FROM leaverules WHERE leave_type=?`, toBigInt(leaveTypeId)
+  ).catch(() => []);
+  const ruleMatch = allRules.find(r => {
+    if (r.employee          && String(r.employee)          !== String(employeeId        ?? '')) return false;
+    if (r.leave_period      && String(r.leave_period)      !== String(leavePeriodId     ?? '')) return false;
+    if (r.job_title         && String(r.job_title)         !== String(emp.job_title_id  ?? '')) return false;
+    if (r.department        && String(r.department)        !== String(emp.departmentId  ?? '')) return false;
+    if (r.employment_status && String(r.employment_status) !== String(emp.emp_status_id ?? '')) return false;
+    if (r.leave_group       && String(r.leave_group)       !== String(emp.paygradeId    ?? '')) return false;
+    if (r.exp_days) {
+      const days = emp.hireDate ? Math.floor((Date.now() - new Date(emp.hireDate).getTime()) / 86400000) : 0;
+      if (days < Number(r.exp_days)) return false;
+    }
+    return true;
+  });
+
+  // Rule overrides type where present
+  const effectiveRow = {
+    default_per_year:                   ruleMatch?.default_per_year                   ?? typeRow?.default_per_year,
+    propotionate_on_joined_date:        ruleMatch?.propotionate_on_joined_date        ?? typeRow?.propotionate_on_joined_date,
+    leave_accrue:                       ruleMatch?.leave_accrue                       ?? typeRow?.leave_accrue,
+    accrual_frequency:                  ruleMatch?.accrual_frequency                  ?? typeRow?.accrual_frequency ?? 'Monthly',
+    accrual_rate:                       ruleMatch?.accrual_rate                       ?? typeRow?.accrual_rate      ?? null,
+    carried_forward_leave_availability: ruleMatch?.carried_forward_leave_availability ?? typeRow?.carried_forward_leave_availability ?? 365,
+  };
+  const baseAllocated = parseFloat(effectiveRow.default_per_year) || 0;
+
+  // Starting balance override (e.g. from carry-forward)
+  const sb = await prisma.$queryRawUnsafe(
+    `SELECT amount FROM leavestartingbalance WHERE employee=? AND leave_type=? AND leave_period=?`,
+    toBigInt(employeeId), toBigInt(leaveTypeId), toBigInt(leavePeriodId)
+  ).catch(() => []);
+  const startBalance = sb.length ? parseFloat(sb[0].amount) : null;
+
+  // Check if the CF availability window has expired.
+  // Values ≤ 12 are legacy month-counts (from old parseInt of "X Months" label); convert to days.
+  let cfExpired = false;
+  if (startBalance !== null && periodRow) {
+    const rawAvail    = parseInt(effectiveRow.carried_forward_leave_availability) || 365;
+    const cfAvailDays = rawAvail <= 12 ? rawAvail * 30 : rawAvail;
+    const expiryDate  = new Date(new Date(periodRow.date_start).getTime() + cfAvailDays * 86400000);
+    if (new Date() > expiryDate) cfExpired = true;
+  }
+
+  let totalAllocated;
+  if (startBalance !== null && !cfExpired) {
+    // CF window still open — use the full starting balance (base + carried days)
+    totalAllocated = startBalance;
+  } else {
+    // No starting balance or CF window has closed — work from the base allocation only
+    totalAllocated = baseAllocated;
+
+    // ── Proportionate on joined date ──────────────────────────────────────────
+    if (effectiveRow.propotionate_on_joined_date === 'Yes' && periodRow) {
+      // Use hireDate already on emp — joined_date is on a different table and caused silent SQL failure
+      const joinDate    = emp.hireDate ? new Date(emp.hireDate) : null;
+      const periodStart = new Date(periodRow.date_start);
+      const periodEnd   = new Date(periodRow.date_end);
+
+      if (joinDate && joinDate > periodStart && joinDate <= periodEnd) {
+        const totalMonths   = monthsDiff(periodStart, periodEnd) || 1;
+        const remainMonths  = monthsDiff(joinDate, periodEnd);
+        const ratio         = Math.max(0, Math.min(1, remainMonths / totalMonths));
+        totalAllocated = Math.round(baseAllocated * ratio);
+      }
+    }
+
+    // ── Leave accrual ─────────────────────────────────────────────────────────
+    if (effectiveRow.leave_accrue === 'Yes' && periodRow) {
+      const periodStart   = new Date(periodRow.date_start);
+      const periodEnd     = new Date(periodRow.date_end);
+      const today         = new Date();
+      const refDate       = today < periodEnd ? today : periodEnd;
+      const totalMonths   = monthsDiff(periodStart, periodEnd) || 1;
+      const elapsedMonths = Math.max(0, monthsDiff(periodStart, refDate));
+
+      const frequency  = effectiveRow.accrual_frequency || 'Monthly';
+      const rate       = parseFloat(effectiveRow.accrual_rate) || 0;
+      // unitMonths: how many months per accrual grant
+      const unitMonths = frequency === 'Quarterly' ? 3 : frequency === 'Bi-annually' ? 6 : 1;
+
+      if (rate > 0) {
+        // Rate-based: employee earns `rate` days per completed unit
+        const completedUnits = Math.floor(elapsedMonths / unitMonths);
+        totalAllocated = Math.min(Math.floor(rate * completedUnits), totalAllocated);
+      } else if (unitMonths === 1) {
+        // Monthly, no rate: continuous linear ratio (original behaviour)
+        const ratio = Math.min(1, elapsedMonths / totalMonths);
+        totalAllocated = Math.floor(totalAllocated * ratio);
+      } else {
+        // Quarterly / Bi-annually, no rate: divide allocation evenly across units
+        const totalUnits     = Math.ceil(totalMonths / unitMonths);
+        const completedUnits = Math.floor(elapsedMonths / unitMonths);
+        const daysPerUnit    = totalAllocated / (totalUnits || 1);
+        totalAllocated = Math.min(Math.floor(daysPerUnit * completedUnits), totalAllocated);
+      }
+    }
+  }
+
+  const usedRows = await prisma.$queryRawUnsafe(
+    `SELECT COUNT(*) AS cnt FROM employeeleavedays eld
+     JOIN employeeleaves el ON el.id = eld.employee_leave
+     WHERE el.employee=? AND el.leave_type=? AND el.leave_period=? AND el.status='Approved'`,
+    toBigInt(employeeId), toBigInt(leaveTypeId), toBigInt(leavePeriodId)
+  ).catch(() => [{ cnt: 0 }]);
+  const used = parseInt(usedRows[0]?.cnt ?? 0);
+
+  const pendRows = await prisma.$queryRawUnsafe(
+    `SELECT COUNT(*) AS cnt FROM employeeleavedays eld
+     JOIN employeeleaves el ON el.id = eld.employee_leave
+     WHERE el.employee=? AND el.leave_type=? AND el.leave_period=?
+       AND el.status IN ('Draft', 'Pending', 'Pending Approval', 'Pending HR Approval')`,
+    toBigInt(employeeId), toBigInt(leaveTypeId), toBigInt(leavePeriodId)
+  ).catch(() => [{ cnt: 0 }]);
+  const pending = parseInt(pendRows[0]?.cnt ?? 0);
+
+  return { allocated: totalAllocated, used, pending, balance: totalAllocated - used - pending };
+}
+
+// ── Allowance settings (stored in `settings` table, category='leave_allowance') ─
+
+const ALLOW_KEYS = [
+  'leave_allow_enabled',      // Yes|No
+  'leave_allow_tax_gl',       // Tax suspense GL account
+  'leave_allow_debit_gl',     // Main debit GL fallback
+  'leave_allow_annual_factor',// Basic × 12 × factor = Gross Leave Allowance (default 0.3)
+  'leave_allow_tax_rate',     // Tax rate on taxable portion (default 0.3)
+];
+
+const ALLOW_DEFAULTS = {
+  leave_allow_enabled:       'No',
+  leave_allow_tax_gl:        '',
+  leave_allow_debit_gl:      '',
+  leave_allow_annual_factor: '0.3',
+  leave_allow_tax_rate:      '0.3',
+};
+
+async function getAllowanceSettings() {
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT name, value FROM settings WHERE category='leave_allowance'`
+  ).catch(() => []);
+  const map = { ...ALLOW_DEFAULTS };
+  for (const r of rows) map[r.name] = r.value ?? map[r.name];
+  return map;
+}
+
+async function calcLeaveAllowance(employeeId, settings) {
+  const annualFactor = parseFloat(settings.leave_allow_annual_factor) || 0.3;
+  const taxRate      = parseFloat(settings.leave_allow_tax_rate) || 0.3;
+
+  const empRows = await prisma.$queryRawUnsafe(
+    `SELECT notcheId FROM employee WHERE id=?`, toBigInt(employeeId)
+  ).catch(() => []);
+  const notcheId = empRows[0]?.notcheId;
+  if (!notcheId) return { amount: 0, leave_tax: 0 };
+
+  const notchRows = await prisma.$queryRawUnsafe(
+    `SELECT amount FROM notches WHERE id=?`, toBigInt(notcheId)
+  ).catch(() => []);
+  const basicSalary = parseFloat(notchRows[0]?.amount) || 0;
+  if (!basicSalary) return { amount: 0, leave_tax: 0 };
+
+  // Gross Leave Allowance
+  const sgla       = basicSalary * 12 * annualFactor;
+  // Deductible = basic (no additional component in simplified version)
+  const deductible = basicSalary;
+  const taxable    = Math.max(0, sgla - deductible);
+  const tax        = taxable * taxRate;
+  const net        = deductible + (taxable - tax);
+
+  return { amount: Math.round(net * 100) / 100, leave_tax: Math.round(tax * 100) / 100 };
+}
+
+// Internal: posts GL unconditionally (called from processLeaveAllowance and approveAllowanceLeave)
+async function postLeaveGL(leaveId) {
+  const s = await getAllowanceSettings();
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT el.*, e.bankAccount AS emp_bank_acc
+     FROM employeeleaves el
+     LEFT JOIN employee e ON e.id = el.employee
+     WHERE el.id=?`, toBigInt(leaveId)
+  );
+  if (!rows.length) return;
+  const leave      = rows[0];
+  const amount     = parseFloat(leave.amount)    || 0;
+  const taxAmount  = parseFloat(leave.leave_tax) || 0;
+  if (!amount) return;
+  const custAccount = (leave.emp_acc_no || leave.emp_bank_acc || '').trim();
+  if (!custAccount) throw new Error('No bank account on record for this employee');
+
+  const transRef    = Date.now();
+  const documentRef = Math.random().toString(36).substring(2, 4).toUpperCase() + String(transRef);
+  const logEntry    = JSON.stringify({
+    documentRef, amount, leave_tax: taxAmount,
+    debit_gl:    (leave.leave_gl || s.leave_allow_debit_gl || '').trim(),
+    tax_gl:      s.leave_allow_tax_gl || '',
+    credit_acct: custAccount,
+    employee:    String(leave.employee),
+    posted_at:   new Date().toISOString(),
+  });
+  await prisma.$executeRawUnsafe(
+    `UPDATE employeeleaves SET documentref=?, allowance_status='Paid', api_response=? WHERE id=?`,
+    documentRef, logEntry.substring(0, 500), toBigInt(leaveId)
+  );
+}
+
+async function processLeaveAllowance(leaveId) {
+  try {
+    const s = await getAllowanceSettings();
+    if (s.leave_allow_enabled !== 'Yes') return;
+
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT el.*, e.bankAccount AS emp_bank_acc, e.branchId AS emp_branch_id
+       FROM employeeleaves el
+       LEFT JOIN employee e ON e.id = el.employee
+       WHERE el.id=?`, toBigInt(leaveId)
+    ).catch(() => []);
+    if (!rows.length) return;
+    const leave = rows[0];
+
+    if (leave.allowance_status === 'Paid') return;
+    if (leave.allowance_status === 'Pre-enable Skip') return;
+    if (leave.req_allowance !== 'Yes') return;
+
+    const amount = parseFloat(leave.amount) || 0;
+    if (!amount) return;
+
+    const custAccount = (leave.emp_acc_no || leave.emp_bank_acc || '').trim();
+    if (!custAccount) return;
+
+    // Threshold check — hold for financial approver if amount exceeds limit
+    const ts           = await getThresholdSettings();
+    const threshEnabled = ts.threshold_enabled === 'Yes';
+    const threshAmount  = parseFloat(ts.threshold_amount) || 0;
+
+    if (threshEnabled && threshAmount > 0 && amount > threshAmount) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE employeeleaves SET allowance_status='Pending Financial Approval' WHERE id=?`,
+        toBigInt(leaveId)
+      );
+      return;
+    }
+
+    // ── Once-per-period check ─────────────────────────────────────────────
+    const typeOnceRows = await prisma.$queryRawUnsafe(
+      `SELECT leave_allowance_once FROM leavetypes WHERE id=?`, toBigInt(leave.leave_type)
+    ).catch(() => []);
+    if (typeOnceRows[0]?.leave_allowance_once === 'Yes') {
+      const alreadyPaid = await prisma.$queryRawUnsafe(
+        `SELECT 1 FROM employeeleaves
+         WHERE employee=? AND leave_type=? AND leave_period=?
+           AND allowance_status='Paid' AND id!=?
+         LIMIT 1`,
+        toBigInt(leave.employee), toBigInt(leave.leave_type), toBigInt(leave.leave_period), toBigInt(leaveId)
+      ).catch(() => []);
+      if (alreadyPaid.length > 0) {
+        await prisma.$executeRawUnsafe(
+          `UPDATE employeeleaves SET allowance_status='Already Paid This Period' WHERE id=?`,
+          toBigInt(leaveId)
+        );
+        return;
+      }
+    }
+
+    // All checks passed — schedule GL posting for the leave start date
+    await prisma.$executeRawUnsafe(
+      `UPDATE employeeleaves SET allowance_status='GL Scheduled' WHERE id=?`,
+      toBigInt(leaveId)
+    );
+  } catch (err) {
+    console.error('[leave-allowance]', err.message);
+  }
+}
+
+// Post GL and clean up sibling once-per-period leaves — called by cron and financial approval
+async function postLeaveGLWithCleanup(leaveId) {
+  try {
+    await postLeaveGL(leaveId);
+  } catch (err) {
+    console.error(`[postLeaveGL] Failed for leave ${leaveId}:`, err.message);
+    await prisma.$executeRawUnsafe(
+      `UPDATE employeeleaves SET allowance_status='Failed GL Posting', api_response=? WHERE id=?`,
+      err.message.substring(0, 500), toBigInt(leaveId)
+    ).catch(() => {});
+    return;
+  }
+
+  const leaveRow = await prisma.$queryRawUnsafe(
+    `SELECT employee, leave_type, leave_period FROM employeeleaves WHERE id=?`, toBigInt(leaveId)
+  ).then(r => r[0]).catch(() => null);
+  if (!leaveRow) return;
+
+  const typeOnceRows = await prisma.$queryRawUnsafe(
+    `SELECT leave_allowance_once FROM leavetypes WHERE id=?`, toBigInt(leaveRow.leave_type)
+  ).catch(() => []);
+  if (typeOnceRows[0]?.leave_allowance_once === 'Yes') {
+    await prisma.$executeRawUnsafe(
+      `UPDATE employeeleaves
+       SET amount=NULL, req_allowance=NULL, allowance_status='Already Paid This Period'
+       WHERE employee=? AND leave_type=? AND leave_period=?
+         AND allowance_status IN ('GL Scheduled', '')
+         AND id != ?`,
+      toBigInt(leaveRow.employee), toBigInt(leaveRow.leave_type), toBigInt(leaveRow.leave_period), toBigInt(leaveId)
+    ).catch(() => {});
+  }
+}
+
+// Called by cron — posts GL for all leaves whose start date has arrived
+exports.runDailyLeaveGL = async function () {
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  const due = await prisma.$queryRawUnsafe(
+    `SELECT id FROM employeeleaves WHERE allowance_status='GL Scheduled' AND date_start <= ?`,
+    today
+  ).catch(() => []);
+  if (!due.length) return;
+  console.log(`[leave-cron] Processing GL for ${due.length} leave(s)`);
+  for (const row of due) {
+    await postLeaveGLWithCleanup(toBigInt(row.id));
+  }
+};
+
+exports.retryLeaveGL = asyncHandler(async (req, res) => {
+  const isAdmin = req.user?.roles?.some(r => ['admin', 'super-admin'].includes(r));
+  if (!isAdmin) return respond.badReq(res, 'Only HR/admin can retry GL posting');
+
+  const id   = toBigInt(req.params.id);
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT id, allowance_status FROM employeeleaves WHERE id=?`, id
+  ).catch(() => []);
+  const current = rows[0] ?? null;
+  if (!current) return respond.notFound(res, 'Leave not found');
+  if (current.allowance_status !== 'Failed GL Posting')
+    return respond.badReq(res, 'Leave GL posting has not failed — no retry needed');
+
+  await prisma.$executeRawUnsafe(
+    `UPDATE employeeleaves SET allowance_status='GL Scheduled' WHERE id=?`, id
+  );
+  await postLeaveGLWithCleanup(id);
+
+  const updated = await prisma.$queryRawUnsafe(
+    `SELECT allowance_status FROM employeeleaves WHERE id=?`, id
+  ).then(r => r[0]).catch(() => null);
+
+  if (updated?.allowance_status === 'Paid') {
+    return respond.ok(res, 'GL posting succeeded');
+  } else {
+    return respond.ok(res, 'GL posting failed again — check server logs', { allowance_status: updated?.allowance_status });
+  }
+});
+
+exports.getLeaveAllowanceSettings = asyncHandler(async (req, res) => {
+  respond.ok(res, 'Leave allowance settings', await getAllowanceSettings());
+});
+
+exports.updateLeaveAllowanceSettings = asyncHandler(async (req, res) => {
+  // Detect transition from disabled → enabled so we can protect existing leaves
+  let beingEnabled = false;
+  if (req.body.leave_allow_enabled === 'Yes') {
+    const prev = await prisma.$queryRawUnsafe(
+      `SELECT value FROM settings WHERE name='leave_allow_enabled' AND category='leave_allowance'`
+    ).catch(() => []);
+    if (!prev.length || prev[0].value !== 'Yes') beingEnabled = true;
+  }
+
+  for (const key of ALLOW_KEYS) {
+    if (req.body[key] === undefined) continue;
+    const val = String(req.body[key]);
+    const existing = await prisma.$queryRawUnsafe(
+      `SELECT id FROM settings WHERE name=? AND category='leave_allowance'`, key
+    ).catch(() => []);
+    if (existing.length) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE settings SET value=? WHERE name=? AND category='leave_allowance'`, val, key
+      );
+    } else {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO settings (id, name, value, category) VALUES (?,?,?,'leave_allowance')`,
+        BigInt(Date.now() + Math.floor(Math.random() * 10000)), key, val
+      );
+    }
+  }
+
+  // Mark all existing unprocessed approved leaves so they are skipped by processLeaveAllowance.
+  // Only leaves approved from this point forward will receive allowances.
+  // Note: no req_allowance filter — leaves applied while allowance was off have req_allowance=null
+  // and would otherwise slip through the enrichment and show a computed amount in the UI.
+  if (beingEnabled) {
+    await prisma.$executeRawUnsafe(
+      `UPDATE employeeleaves
+       SET allowance_status='Pre-enable Skip', amount=NULL, leave_tax=NULL
+       WHERE status='Approved'
+         AND (allowance_status IS NULL OR allowance_status = '')`
+    ).catch(() => {});
+  }
+
+  respond.ok(res, 'Settings saved');
+});
+
+// ── Approval flow settings (category='leave_approval_flow') ──────────────────
+
+const FLOW_KEYS     = ['leave_supervisor_approval'];
+const FLOW_DEFAULTS = { leave_supervisor_approval: 'No' };
+
+async function getApprovalFlowSettings() {
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT name, value FROM settings WHERE category='leave_approval_flow'`
+  ).catch(() => []);
+  const map = { ...FLOW_DEFAULTS };
+  for (const r of rows) map[r.name] = r.value ?? map[r.name];
+  return map;
+}
+
+exports.getApprovalFlowSettings = asyncHandler(async (req, res) => {
+  respond.ok(res, 'Approval flow settings', await getApprovalFlowSettings());
+});
+
+exports.updateApprovalFlowSettings = asyncHandler(async (req, res) => {
+  for (const key of FLOW_KEYS) {
+    if (req.body[key] === undefined) continue;
+    const val = String(req.body[key]);
+    const existing = await prisma.$queryRawUnsafe(
+      `SELECT id FROM settings WHERE name=? AND category='leave_approval_flow'`, key
+    ).catch(() => []);
+    if (existing.length) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE settings SET value=? WHERE name=? AND category='leave_approval_flow'`, val, key
+      );
+    } else {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO settings (id, name, value, category) VALUES (?,?,?,'leave_approval_flow')`,
+        BigInt(Date.now() + Math.floor(Math.random() * 10000)), key, val
+      );
+    }
+  }
+  respond.ok(res, 'Approval flow settings saved');
+});
+
+// ── Threshold approval settings (category='leave_threshold_approval') ─────────
+
+const THRESHOLD_KEYS     = ['threshold_enabled', 'threshold_amount', 'threshold_approvers'];
+const THRESHOLD_DEFAULTS = { threshold_enabled: 'No', threshold_amount: '0', threshold_approvers: '[]' };
+
+async function getThresholdSettings() {
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT name, value FROM settings WHERE category='leave_threshold_approval'`
+  ).catch(() => []);
+  const map = { ...THRESHOLD_DEFAULTS };
+  for (const r of rows) map[r.name] = r.value ?? map[r.name];
+  return map;
+}
+
+exports.getThresholdSettings = asyncHandler(async (req, res) => {
+  respond.ok(res, 'Threshold settings', await getThresholdSettings());
+});
+
+exports.updateThresholdSettings = asyncHandler(async (req, res) => {
+  for (const key of THRESHOLD_KEYS) {
+    if (req.body[key] === undefined) continue;
+    const val = String(req.body[key]);
+    const existing = await prisma.$queryRawUnsafe(
+      `SELECT id FROM settings WHERE name=? AND category='leave_threshold_approval'`, key
+    ).catch(() => []);
+    if (existing.length) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE settings SET value=? WHERE name=? AND category='leave_threshold_approval'`, val, key
+      );
+    } else {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO settings (id, name, value, category) VALUES (?,?,?,'leave_threshold_approval')`,
+        BigInt(Date.now() + Math.floor(Math.random() * 10000)), key, val
+      );
+    }
+  }
+  respond.ok(res, 'Threshold settings saved');
+});
+
+// ── Calendar visibility settings (category='leave_calendar') ─────────────────
+
+const CAL_KEYS     = ['calendar_show_all'];
+const CAL_DEFAULTS = { calendar_show_all: 'No' };
+
+async function getCalendarSettings() {
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT name, value FROM settings WHERE category='leave_calendar'`
+  ).catch(() => []);
+  const map = { ...CAL_DEFAULTS };
+  for (const r of rows) map[r.name] = r.value ?? map[r.name];
+  return map;
+}
+
+exports.getCalendarSettings = asyncHandler(async (req, res) => {
+  respond.ok(res, 'Calendar settings', await getCalendarSettings());
+});
+
+exports.updateCalendarSettings = asyncHandler(async (req, res) => {
+  for (const key of CAL_KEYS) {
+    if (req.body[key] === undefined) continue;
+    const val = String(req.body[key]);
+    const existing = await prisma.$queryRawUnsafe(
+      `SELECT id FROM settings WHERE name=? AND category='leave_calendar'`, key
+    ).catch(() => []);
+    if (existing.length) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE settings SET value=? WHERE name=? AND category='leave_calendar'`, val, key
+      );
+    } else {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO settings (id, name, value, category) VALUES (?,?,?,'leave_calendar')`,
+        BigInt(Date.now() + Math.floor(Math.random() * 10000)), key, val
+      );
+    }
+  }
+  respond.ok(res, 'Calendar settings saved');
+});
+
+exports.getCalendarLeaves = asyncHandler(async (req, res) => {
+  const { from, to } = req.query;
+  const isAdmin = req.user?.roles?.some(r => ['admin', 'super-admin'].includes(r));
+
+  const cs = await getCalendarSettings();
+  const showAll = cs.calendar_show_all === 'Yes';
+
+  const params = [];
+  const dateClauses = [];
+  if (from) { dateClauses.push('el.date_end >= ?');   params.push(from); }
+  if (to)   { dateClauses.push('el.date_start <= ?'); params.push(to); }
+
+  const whereParts = ["el.status IN ('Approved','Pending Approval','Pending HR Approval')", ...dateClauses];
+
+  if (!isAdmin && !showAll) {
+    const userEmp = await prisma.$queryRawUnsafe(
+      `SELECT employeeId FROM users WHERE id=?`, toBigInt(req.user.id)
+    ).catch(() => []);
+    const ownEmpId = userEmp[0]?.employeeId;
+    if (!ownEmpId) return respond.ok(res, 'Calendar leaves', []);
+    whereParts.push('el.employee=?');
+    params.push(toBigInt(ownEmpId));
+  }
+
+  const rows = await prisma.$queryRawUnsafe(`
+    SELECT el.id, el.employee, el.date_start, el.date_end, el.status, el.leave_type, el.leave_period,
+           el.details AS notes, el.rejection_reason,
+           TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS employee_name,
+           e.employee_id AS employee_code,
+           d.title AS department_name,
+           lt.name AS leave_type_name, lt.leave_color,
+           lp.name AS period_name,
+           (SELECT COUNT(*) FROM employeeleavedays eld WHERE eld.employee_leave = el.id) AS day_count
+    FROM employeeleaves el
+    LEFT JOIN employee         e  ON e.id  = el.employee
+    LEFT JOIN companystructures d  ON d.id  = e.departmentId
+    LEFT JOIN leavetypes        lt ON lt.id = el.leave_type
+    LEFT JOIN leaveperiods      lp ON lp.id = el.leave_period
+    WHERE ${whereParts.join(' AND ')}
+    ORDER BY el.date_start ASC
+  `, ...params).catch(() => []);
+
+  respond.ok(res, 'Calendar leaves', s(rows));
+});
+
+// ── Sync leave type ↔ groups (many-to-many) ──────────────────────────────────
+
+async function syncLeaveTypeGroups(leaveTypeId, groupIds) {
+  const ltId = toBigInt(leaveTypeId);
+  await prisma.$executeRawUnsafe(`DELETE FROM leavetype_groups WHERE leave_type_id=?`, ltId).catch(() => {});
+  if (!Array.isArray(groupIds) || !groupIds.length) return;
+  for (const gid of groupIds) {
+    const gBig = toBigInt(gid);
+    if (!gBig) continue;
+    await prisma.$executeRawUnsafe(
+      `INSERT IGNORE INTO leavetype_groups (id, leave_type_id, leave_group_id) VALUES (?,?,?)`,
+      BigInt(Date.now() + Math.floor(Math.random() * 100000)), ltId, gBig
+    ).catch(() => {});
+  }
+}
+
+// ── Write to leave log ────────────────────────────────────────────────────────
+
+async function writeLog(leaveId, userId, data, statusFrom, statusTo) {
+  try {
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO employeeleavelog (id, employee_leave, user_id, data, status_from, status_to, created) VALUES (?,?,?,?,?,?,NOW())`,
+      BigInt(Date.now()), toBigInt(leaveId), toBigInt(userId), String(data), String(statusFrom), String(statusTo)
+    );
+  } catch {}
+}
+
+// ── Email notifications ───────────────────────────────────────────────────────
+
+async function notifyLeaveAction(leaveId, action, reason) {
+  try {
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT el.date_start, el.date_end,
+              lt.name AS leave_type_name, lt.send_notification_emails,
+              TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS employee_name,
+              u.email AS employee_email
+       FROM employeeleaves el
+       LEFT JOIN leavetypes  lt ON lt.id = el.leave_type
+       LEFT JOIN employee    e  ON e.id  = el.employee
+       LEFT JOIN users       u  ON u.employeeId = e.id
+       WHERE el.id = ?`,
+      toBigInt(leaveId)
+    );
+    if (!rows.length) return;
+    const row = rows[0];
+    if (row.send_notification_emails !== 'Yes') return;
+    if (!row.employee_email) return;
+
+    await sendLeaveEmail({
+      to:           row.employee_email,
+      employeeName: row.employee_name ?? 'Employee',
+      action,
+      leaveType:    row.leave_type_name ?? 'Leave',
+      dateStart:    row.date_start instanceof Date ? row.date_start.toISOString().split('T')[0] : String(row.date_start),
+      dateEnd:      row.date_end instanceof Date ? row.date_end.toISOString().split('T')[0] : String(row.date_end),
+      reason,
+    });
+  } catch {}
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LEAVE TYPES
+// ══════════════════════════════════════════════════════════════════════════════
+
+exports.getLeaveTypes = asyncHandler(async (req, res) => {
+  // ?all=1 — skip paygrade filtering (used by admin management pages like LeaveSetup)
+  const skipFilter = req.query.all === '1';
+
+  const types = await prisma.$queryRawUnsafe(`SELECT * FROM leavetypes ORDER BY name`).catch(() => []);
+
+  // Fetch ALL group assignments — param-free to avoid BigInt IN-clause issues.
+  // leavetype_groups.leave_group_id stores paygrade IDs (set from the leave-type form).
+  const assignments = await prisma.$queryRawUnsafe(`
+    SELECT ltg.leave_type_id, ltg.leave_group_id, pg.name AS group_name
+    FROM leavetype_groups ltg
+    LEFT JOIN paygrades pg ON pg.id = ltg.leave_group_id
+  `).catch(() => []);
+
+  // Build map: typeId → [{ id, name }]
+  const groupsByType = {};
+  for (const a of assignments) {
+    const key = String(a.leave_type_id);
+    if (!groupsByType[key]) groupsByType[key] = [];
+    groupsByType[key].push({ id: String(a.leave_group_id), name: a.group_name });
+  }
+
+  // Look up the requesting user's paygrade from the users → employee link.
+  // Always query directly — req.user may not carry employeeId (auth middleware omits it).
+  let empPaygradeId = null;
+  if (!skipFilter) {
+    const userId = toBigInt(req.user?.id);
+    if (userId) {
+      const userRow = await prisma.$queryRawUnsafe(
+        `SELECT employeeId FROM users WHERE id=?`, userId
+      ).catch(() => []);
+      const empId = toBigInt(userRow[0]?.employeeId);
+      if (empId) {
+        const empRow = await prisma.$queryRawUnsafe(
+          `SELECT paygradeId FROM employee WHERE id=?`, empId
+        ).catch(() => []);
+        empPaygradeId = empRow[0]?.paygradeId != null ? String(empRow[0].paygradeId) : null;
+      }
+    }
+  }
+
+  const result = types
+    .filter(t => {
+      if (skipFilter) return true;
+      const groupIds = (groupsByType[t.id.toString()] ?? []).map(g => g.id);
+      if (groupIds.length === 0) return true; // no paygrade restriction — visible to all
+      if (empPaygradeId === null) return true; // user has no employee/paygrade → show all
+      return groupIds.includes(empPaygradeId);
+    })
+    .map(t => ({
+      ...s(t),
+      groups:     groupsByType[t.id.toString()] ?? [],
+      group_ids:  (groupsByType[t.id.toString()] ?? []).map(g => g.id),
+      group_name: (groupsByType[t.id.toString()] ?? []).map(g => g.name).join(', ') || null,
+    }));
+  respond.ok(res, 'Leave types', result);
+});
+
+exports.createLeaveType = asyncHandler(async (req, res) => {
+  const {
+    name, leave_gl, default_per_year, supervisor_leave_assign, employee_can_apply,
+    apply_beyond_current, leave_accrue, carried_forward, carried_forward_percentage,
+    max_carried_forward_amount, carried_forward_leave_availability, propotionate_on_joined_date,
+    send_notification_emails, leave_group, leave_color, leave_allowance, leave_allowance_once,
+  } = req.body;
+
+  if (!name) return respond.badReq(res, 'Leave type name is required');
+
+  const { group_ids } = req.body;
+
+  const created = await prisma.leavetypes.create({
+    data: {
+      name,
+      leave_gl:                           leave_gl ?? null,
+      default_per_year:                   parseFloat(default_per_year) || 0,
+      supervisor_leave_assign:            supervisor_leave_assign ?? 'Yes',
+      employee_can_apply:                 employee_can_apply ?? 'Yes',
+      apply_beyond_current:               apply_beyond_current ?? 'Yes',
+      leave_accrue:                       leave_accrue ?? 'No',
+      carried_forward:                    carried_forward ?? 'No',
+      carried_forward_percentage:         toInt(carried_forward_percentage) ?? 0,
+      max_carried_forward_amount:         toInt(max_carried_forward_amount) ?? 0,
+      carried_forward_leave_availability: toInt(carried_forward_leave_availability) ?? 365,
+      propotionate_on_joined_date:        propotionate_on_joined_date ?? 'No',
+      send_notification_emails:           send_notification_emails ?? 'Yes',
+      leave_group:                        leave_group ? toBigInt(leave_group) : null,
+      leave_color:                        leave_color ?? null,
+    },
+  });
+  const { accrual_frequency, accrual_rate } = req.body;
+  await prisma.$executeRawUnsafe(
+    `UPDATE leavetypes SET leave_allowance=?, leave_allowance_once=?, accrual_frequency=?, accrual_rate=? WHERE id=?`,
+    leave_allowance === 'Yes' ? 'Yes' : 'No',
+    leave_allowance_once === 'Yes' ? 'Yes' : 'No',
+    accrual_frequency || 'Monthly',
+    accrual_rate ? parseFloat(accrual_rate) : null,
+    created.id
+  ).catch(() => {});
+  await syncLeaveTypeGroups(created.id, group_ids);
+  logActivity({ module: 'Leave Setup', action: 'create_leave_type', entityId: String(created.id), entityName: created.name, ...fromReq(req) });
+  respond.created(res, 'Leave type created', s(created));
+});
+
+exports.updateLeaveType = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+  const {
+    name, leave_gl, default_per_year, supervisor_leave_assign, employee_can_apply,
+    apply_beyond_current, leave_accrue, carried_forward, carried_forward_percentage,
+    max_carried_forward_amount, carried_forward_leave_availability, propotionate_on_joined_date,
+    send_notification_emails, leave_group, leave_color, leave_allowance,
+  } = req.body;
+
+  const data = {};
+  if (name !== undefined)                        data.name = name;
+  if (leave_gl !== undefined)                    data.leave_gl = leave_gl;
+  if (default_per_year !== undefined)            data.default_per_year = parseFloat(default_per_year) || 0;
+  if (supervisor_leave_assign !== undefined)     data.supervisor_leave_assign = supervisor_leave_assign;
+  if (employee_can_apply !== undefined)          data.employee_can_apply = employee_can_apply;
+  if (apply_beyond_current !== undefined)        data.apply_beyond_current = apply_beyond_current;
+  if (leave_accrue !== undefined)                data.leave_accrue = leave_accrue;
+  if (carried_forward !== undefined)             data.carried_forward = carried_forward;
+  if (carried_forward_percentage !== undefined)  data.carried_forward_percentage = toInt(carried_forward_percentage);
+  if (max_carried_forward_amount !== undefined)  data.max_carried_forward_amount = toInt(max_carried_forward_amount);
+  if (carried_forward_leave_availability !== undefined) data.carried_forward_leave_availability = toInt(carried_forward_leave_availability);
+  if (propotionate_on_joined_date !== undefined) data.propotionate_on_joined_date = propotionate_on_joined_date;
+  if (send_notification_emails !== undefined)    data.send_notification_emails = send_notification_emails;
+  if (leave_group !== undefined)                 data.leave_group = leave_group ? toBigInt(leave_group) : null;
+  if (leave_color !== undefined)                 data.leave_color = leave_color;
+
+  const updated = await prisma.leavetypes.update({ where: { id }, data });
+  if (leave_allowance !== undefined) {
+    await prisma.$executeRawUnsafe(
+      `UPDATE leavetypes SET leave_allowance=? WHERE id=?`,
+      leave_allowance === 'Yes' ? 'Yes' : 'No', id
+    ).catch(() => {});
+  }
+  if (req.body.leave_allowance_once !== undefined) {
+    await prisma.$executeRawUnsafe(
+      `UPDATE leavetypes SET leave_allowance_once=? WHERE id=?`,
+      req.body.leave_allowance_once === 'Yes' ? 'Yes' : 'No', id
+    ).catch(() => {});
+  }
+  if (req.body.accrual_frequency !== undefined || req.body.accrual_rate !== undefined) {
+    const af = req.body.accrual_frequency !== undefined ? (req.body.accrual_frequency || 'Monthly') : undefined;
+    const ar = req.body.accrual_rate !== undefined ? (req.body.accrual_rate ? parseFloat(req.body.accrual_rate) : null) : undefined;
+    if (af !== undefined && ar !== undefined) {
+      await prisma.$executeRawUnsafe(`UPDATE leavetypes SET accrual_frequency=?, accrual_rate=? WHERE id=?`, af, ar, id).catch(() => {});
+    } else if (af !== undefined) {
+      await prisma.$executeRawUnsafe(`UPDATE leavetypes SET accrual_frequency=? WHERE id=?`, af, id).catch(() => {});
+    } else if (ar !== undefined) {
+      await prisma.$executeRawUnsafe(`UPDATE leavetypes SET accrual_rate=? WHERE id=?`, ar, id).catch(() => {});
+    }
+  }
+  if (req.body.group_ids !== undefined) await syncLeaveTypeGroups(id, req.body.group_ids);
+  logActivity({ module: 'Leave Setup', action: 'update_leave_type', entityId: String(id), entityName: updated.name, ...fromReq(req) });
+  respond.ok(res, 'Leave type updated', s(updated));
+});
+
+exports.deleteLeaveType = asyncHandler(async (req, res) => {
+  const delType = await prisma.leavetypes.findUnique({ where: { id: toBigInt(req.params.id) } }).catch(() => null);
+  await prisma.leavetypes.delete({ where: { id: toBigInt(req.params.id) } });
+  logActivity({ module: 'Leave Setup', action: 'delete_leave_type', entityId: req.params.id, entityName: delType?.name ?? req.params.id, ...fromReq(req) });
+  respond.ok(res, 'Leave type deleted');
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LEAVE PERIODS
+// ══════════════════════════════════════════════════════════════════════════════
+
+exports.getLeavePeriods = asyncHandler(async (req, res) => {
+  const rows = await prisma.leaveperiods.findMany({ orderBy: { date_start: 'desc' } });
+  respond.ok(res, 'Leave periods', s(rows));
+});
+
+exports.createLeavePeriod = asyncHandler(async (req, res) => {
+  const { name, date_start, date_end } = req.body;
+  if (!date_start || !date_end) return respond.badReq(res, 'Start and end dates are required');
+  const created = await prisma.leaveperiods.create({
+    data: { name: name ?? '', date_start: new Date(date_start), date_end: new Date(date_end), status: 'Inactive' },
+  });
+  logActivity({ module: 'Leave Setup', action: 'create_leave_period', entityId: String(created.id), entityName: created.name, ...fromReq(req) });
+  respond.created(res, 'Leave period created', s(created));
+});
+
+exports.updateLeavePeriod = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+  const { name, date_start, date_end } = req.body;
+  const data = {};
+  if (name !== undefined)       data.name = name;
+  if (date_start !== undefined) data.date_start = new Date(date_start);
+  if (date_end !== undefined)   data.date_end = new Date(date_end);
+  const updated = await prisma.leaveperiods.update({ where: { id }, data });
+  logActivity({ module: 'Leave Setup', action: 'update_leave_period', entityId: String(id), entityName: updated.name, ...fromReq(req) });
+  respond.ok(res, 'Leave period updated', s(updated));
+});
+
+exports.deleteLeavePeriod = asyncHandler(async (req, res) => {
+  const delPeriod = await prisma.leaveperiods.findUnique({ where: { id: toBigInt(req.params.id) } }).catch(() => null);
+  await prisma.leaveperiods.delete({ where: { id: toBigInt(req.params.id) } });
+  logActivity({ module: 'Leave Setup', action: 'delete_leave_period', entityId: req.params.id, entityName: delPeriod?.name ?? req.params.id, ...fromReq(req) });
+  respond.ok(res, 'Leave period deleted');
+});
+
+// ── Carry-forward processing helper — called on period activation and manual recalculation ──
+async function processCarryForward(oldPeriod, newPeriodId) {
+  const allTypes = await prisma.leavetypes.findMany();
+
+  const allRules = await prisma.$queryRawUnsafe(`SELECT * FROM leaverules`).catch(() => []);
+  const rulesByType = {};
+  for (const r of allRules) {
+    const key = String(r.leave_type);
+    if (!rulesByType[key]) rulesByType[key] = [];
+    rulesByType[key].push(r);
+  }
+
+  const employees = await prisma.$queryRawUnsafe(
+    `SELECT id, jobTitleId AS job_title_id, departmentId, employmentStatusId AS emp_status_id, paygradeId, hireDate
+     FROM employee WHERE status='Active' OR status='active'`
+  ).catch(() => []);
+
+  for (const lt of allTypes) {
+    const typeRules = rulesByType[String(lt.id)] || [];
+
+    for (const emp of employees) {
+      const empId = emp.id.toString();
+
+      const ruleMatch = typeRules.find(r => {
+        if (r.employee          && String(r.employee)          !== String(empId                 )) return false;
+        if (r.leave_period      && String(r.leave_period)      !== String(oldPeriod.id  ?? '')) return false;
+        if (r.job_title         && String(r.job_title)         !== String(emp.job_title_id ?? '')) return false;
+        if (r.department        && String(r.department)        !== String(emp.departmentId  ?? '')) return false;
+        if (r.employment_status && String(r.employment_status) !== String(emp.emp_status_id ?? '')) return false;
+        if (r.leave_group       && String(r.leave_group)       !== String(emp.paygradeId    ?? '')) return false;
+        if (r.exp_days) {
+          const days = emp.hireDate ? Math.floor((Date.now() - new Date(emp.hireDate).getTime()) / 86400000) : 0;
+          if (days < Number(r.exp_days)) return false;
+        }
+        return true;
+      });
+
+      const effectiveCF   = ruleMatch?.carried_forward            ?? lt.carried_forward;
+      const effectivePct  = parseFloat(ruleMatch?.carried_forward_percentage ?? lt.carried_forward_percentage) || 100;
+      const effectiveMax  = parseFloat(ruleMatch?.max_carried_forward_amount  ?? lt.max_carried_forward_amount)  || 0;
+      const effectiveBase = parseFloat(ruleMatch?.default_per_year             ?? lt.default_per_year)            || 0;
+
+      if (effectiveCF !== 'Yes') continue;
+
+      const bal = await calcBalance(empId, lt.id.toString(), oldPeriod.id.toString());
+      if (bal.balance <= 0) continue;
+
+      let cfDays = bal.balance * (effectivePct / 100);
+      if (effectiveMax > 0) cfDays = Math.min(cfDays, effectiveMax);
+      cfDays = Math.round(cfDays * 2) / 2;
+
+      const newTotal = effectiveBase + cfDays;
+
+      const existing = await prisma.$queryRawUnsafe(
+        `SELECT id FROM leavestartingbalance WHERE employee=? AND leave_type=? AND leave_period=?`,
+        toBigInt(emp.id), lt.id, newPeriodId
+      ).catch(() => []);
+
+      if (existing.length) {
+        await prisma.$executeRawUnsafe(
+          `UPDATE leavestartingbalance SET amount=? WHERE employee=? AND leave_type=? AND leave_period=?`,
+          newTotal, toBigInt(emp.id), lt.id, newPeriodId
+        ).catch(() => {});
+      } else {
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO leavestartingbalance (id, employee, leave_type, leave_period, amount) VALUES (?,?,?,?,?)`,
+          BigInt(Date.now() + Math.floor(Math.random() * 1000000)),
+          toBigInt(emp.id), lt.id, newPeriodId, newTotal
+        ).catch(() => {});
+      }
+    }
+  }
+}
+
+exports.activateLeavePeriod = asyncHandler(async (req, res) => {
+  const newPeriodId = toBigInt(req.params.id);
+  const newPeriod   = await prisma.leaveperiods.findUnique({ where: { id: newPeriodId } });
+  if (!newPeriod) return respond.notFound(res, 'Leave period not found');
+
+  const activePeriods = await prisma.leaveperiods.findMany({ where: { status: 'Active' } });
+  let ranCarryForward = false;
+  for (const oldPeriod of activePeriods) {
+    // Only carry forward when the new period genuinely starts after the old one ends
+    if (new Date(newPeriod.date_start) > new Date(oldPeriod.date_end)) {
+      await processCarryForward(oldPeriod, newPeriodId);
+      ranCarryForward = true;
+    }
+  }
+
+  // Going backward (reactivating an earlier period) — clear any starting-balance records
+  // that were wrongly pushed here when the forward test ran processCarryForward into this period
+  if (!ranCarryForward && activePeriods.length > 0) {
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM leavestartingbalance WHERE leave_period=?`, newPeriodId
+    ).catch(() => {});
+  }
+
+  await prisma.$executeRawUnsafe(`UPDATE leaveperiods SET status='Inactive'`);
+  await prisma.leaveperiods.update({ where: { id: newPeriodId }, data: { status: 'Active' } });
+  logActivity({ module: 'Leave Setup', action: 'activate_leave_period', entityId: String(newPeriodId), entityName: newPeriod.name, ...fromReq(req) });
+  respond.ok(res, 'Leave period activated');
+});
+
+exports.recalculateCarryForward = asyncHandler(async (req, res) => {
+  const targetPeriodId = toBigInt(req.params.id);
+  const targetPeriod   = await prisma.leaveperiods.findUnique({ where: { id: targetPeriodId } });
+  if (!targetPeriod) return respond.notFound(res, 'Leave period not found');
+
+  // Clear existing starting balances for this period first so stale/wrong values don't persist
+  await prisma.$executeRawUnsafe(
+    `DELETE FROM leavestartingbalance WHERE leave_period=?`, targetPeriodId
+  ).catch(() => {});
+
+  // Find the period that chronologically precedes this one (end date before target's start date)
+  const sources = await prisma.$queryRawUnsafe(
+    `SELECT * FROM leaveperiods WHERE id != ? AND date_end < ? ORDER BY date_end DESC LIMIT 1`,
+    targetPeriodId, new Date(targetPeriod.date_start)
+  ).catch(() => []);
+
+  if (!sources.length) return respond.ok(res, 'No prior period found — starting balances cleared');
+
+  await processCarryForward(sources[0], targetPeriodId);
+  respond.ok(res, 'Carry forward recalculated');
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// HOLIDAYS
+// ══════════════════════════════════════════════════════════════════════════════
+
+exports.getHolidays = asyncHandler(async (req, res) => {
+  const rows = await prisma.$queryRawUnsafe(`SELECT * FROM holidays ORDER BY dateh ASC`).catch(() => []);
+  respond.ok(res, 'Holidays', s(rows));
+});
+
+exports.createHoliday = asyncHandler(async (req, res) => {
+  const { name, dateh, status } = req.body;
+  if (!name || !dateh) return respond.badReq(res, 'Name and date are required');
+  const id = BigInt(Date.now());
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO holidays (id, name, dateh, status) VALUES (?, ?, ?, ?)`,
+    id, name, new Date(dateh), status ?? 'Full_Day'
+  );
+  logActivity({ module: 'Leave Setup', action: 'create_holiday', entityId: id.toString(), entityName: name, ...fromReq(req) });
+  respond.created(res, 'Holiday created', { id: id.toString(), name, dateh, status: status ?? 'Full_Day' });
+});
+
+exports.updateHoliday = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+  const { name, dateh, status } = req.body;
+  const parts = [];
+  const vals  = [];
+  if (name   !== undefined) { parts.push('name=?');   vals.push(name); }
+  if (dateh  !== undefined) { parts.push('dateh=?');  vals.push(new Date(dateh)); }
+  if (status !== undefined) { parts.push('status=?'); vals.push(status); }
+  if (!parts.length) return respond.badReq(res, 'No fields to update');
+  await prisma.$executeRawUnsafe(`UPDATE holidays SET ${parts.join(',')} WHERE id=?`, ...vals, id);
+  logActivity({ module: 'Leave Setup', action: 'update_holiday', entityId: req.params.id, entityName: name ?? req.params.id, ...fromReq(req) });
+  respond.ok(res, 'Holiday updated');
+});
+
+exports.deleteHoliday = asyncHandler(async (req, res) => {
+  const delHol = await prisma.$queryRawUnsafe(`SELECT name FROM holidays WHERE id=?`, toBigInt(req.params.id)).catch(() => []);
+  await prisma.$executeRawUnsafe(`DELETE FROM holidays WHERE id=?`, toBigInt(req.params.id));
+  logActivity({ module: 'Leave Setup', action: 'delete_holiday', entityId: req.params.id, entityName: delHol[0]?.name ?? req.params.id, ...fromReq(req) });
+  respond.ok(res, 'Holiday deleted');
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// WORK WEEK
+// ══════════════════════════════════════════════════════════════════════════════
+
+const ALL_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+exports.getWorkWeek = asyncHandler(async (req, res) => {
+  // Use Prisma model so enum @map values ('Full Day' etc.) are returned as Prisma names ('Full_Day' etc.)
+  const rows = await prisma.workdays.findMany({ select: { name: true, status: true } }).catch(() => []);
+  const map = Object.fromEntries(rows.map(r => [r.name, r.status]));
+  const result = ALL_DAYS.map(d => ({ name: d, status: map[d] ?? 'Full_Day' }));
+  respond.ok(res, 'Work week', result);
+});
+
+exports.updateWorkWeek = asyncHandler(async (req, res) => {
+  const entries = Array.isArray(req.body) ? req.body : [];
+  for (const { name, status } of entries) {
+    if (!name) continue;
+    // Use Prisma model so enum names ('Non_working_Day') are mapped to DB values ('Non-working Day') automatically
+    const existing = await prisma.workdays.findFirst({ where: { name } }).catch(() => null);
+    if (existing) {
+      await prisma.workdays.update({ where: { id: existing.id }, data: { status } });
+    } else {
+      await prisma.workdays.create({ data: { name, status } });
+    }
+  }
+  respond.ok(res, 'Work week updated');
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LEAVE GROUPS
+// ══════════════════════════════════════════════════════════════════════════════
+
+exports.getLeaveGroups = asyncHandler(async (req, res) => {
+  const rows = await prisma.leavegroups.findMany({ orderBy: { name: 'asc' } });
+  respond.ok(res, 'Leave groups', s(rows));
+});
+
+exports.createLeaveGroup = asyncHandler(async (req, res) => {
+  const { name, details } = req.body;
+  if (!name) return respond.badReq(res, 'Group name is required');
+  const created = await prisma.leavegroups.create({
+    data: { name, details: details ?? null, created: new Date(), updated: new Date() },
+  });
+  logActivity({ module: 'Leave Setup', action: 'create_leave_group', entityId: String(created.id), entityName: created.name, ...fromReq(req) });
+  respond.created(res, 'Leave group created', s(created));
+});
+
+exports.updateLeaveGroup = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+  const { name, details } = req.body;
+  const data = { updated: new Date() };
+  if (name    !== undefined) data.name    = name;
+  if (details !== undefined) data.details = details;
+  const updated = await prisma.leavegroups.update({ where: { id }, data });
+  logActivity({ module: 'Leave Setup', action: 'update_leave_group', entityId: String(id), entityName: updated.name, ...fromReq(req) });
+  respond.ok(res, 'Leave group updated', s(updated));
+});
+
+exports.deleteLeaveGroup = asyncHandler(async (req, res) => {
+  const delGrp = await prisma.leavegroups.findUnique({ where: { id: toBigInt(req.params.id) } }).catch(() => null);
+  await prisma.leavegroups.delete({ where: { id: toBigInt(req.params.id) } });
+  logActivity({ module: 'Leave Setup', action: 'delete_leave_group', entityId: req.params.id, entityName: delGrp?.name ?? req.params.id, ...fromReq(req) });
+  respond.ok(res, 'Leave group deleted');
+});
+
+exports.getLeaveGroupEmployees = asyncHandler(async (req, res) => {
+  const groupId = toBigInt(req.params.id);
+  const members = await prisma.$queryRawUnsafe(
+    `SELECT lge.id, lge.employee, TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS employee_name, e.employee_id AS employee_code
+     FROM leavegroupemployees lge
+     LEFT JOIN employee e ON e.id = lge.employee
+     WHERE lge.leave_group=?`,
+    groupId
+  ).catch(() => []);
+  respond.ok(res, 'Group employees', s(members));
+});
+
+exports.addLeaveGroupEmployee = asyncHandler(async (req, res) => {
+  const groupId    = toBigInt(req.params.id);
+  const employeeId = toBigInt(req.body.employee_id);
+  if (!employeeId) return respond.badReq(res, 'employee_id is required');
+
+  // Prevent duplicate
+  const existing = await prisma.$queryRawUnsafe(
+    `SELECT id FROM leavegroupemployees WHERE leave_group=? AND employee=?`, groupId, employeeId
+  ).catch(() => []);
+  if (existing.length) return respond.badReq(res, 'Employee already in this group');
+
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO leavegroupemployees (id, employee, leave_group, created, updated) VALUES (?,?,?,NOW(),NOW())`,
+    BigInt(Date.now()), employeeId, groupId
+  );
+  respond.created(res, 'Employee added to group');
+});
+
+exports.removeLeaveGroupEmployee = asyncHandler(async (req, res) => {
+  const groupId = toBigInt(req.params.id);
+  const empId   = toBigInt(req.params.eid);
+  await prisma.$executeRawUnsafe(
+    `DELETE FROM leavegroupemployees WHERE leave_group=? AND employee=?`, groupId, empId
+  );
+  respond.ok(res, 'Employee removed from group');
+});
+
+// ── Leave Group Paygrades (paygrade-based assignment) ─────────────────────────
+
+exports.getLeaveGroupPaygrades = asyncHandler(async (req, res) => {
+  const groupId = toBigInt(req.params.id);
+  const rows = await prisma.$queryRawUnsafe(`
+    SELECT lgp.id, lgp.leave_group, lgp.paygrade_id, lgp.created,
+           pg.name AS paygrade_name, pg.currency,
+           COUNT(e.id) AS employee_count
+    FROM leavegrouppaygrades lgp
+    LEFT JOIN paygrades pg ON pg.id = lgp.paygrade_id
+    LEFT JOIN employee e ON e.paygradeId = lgp.paygrade_id
+    WHERE lgp.leave_group = ?
+    GROUP BY lgp.id, lgp.leave_group, lgp.paygrade_id, lgp.created, pg.name, pg.currency
+  `, groupId).catch(() => []);
+  respond.ok(res, 'Group paygrades', s(rows));
+});
+
+exports.addLeaveGroupPaygrade = asyncHandler(async (req, res) => {
+  const groupId   = toBigInt(req.params.id);
+  const paygadeId = toBigInt(req.body.paygrade_id);
+  if (!paygadeId) return respond.badReq(res, 'paygrade_id is required');
+
+  const existing = await prisma.$queryRawUnsafe(
+    `SELECT id FROM leavegrouppaygrades WHERE leave_group=? AND paygrade_id=?`, groupId, paygadeId
+  ).catch(() => []);
+  if (existing.length) return respond.badReq(res, 'Paygrade already assigned to this group');
+
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO leavegrouppaygrades (id, leave_group, paygrade_id) VALUES (?,?,?)`,
+    BigInt(Date.now()), groupId, paygadeId
+  );
+  respond.created(res, 'Paygrade assigned to group');
+});
+
+exports.removeLeaveGroupPaygrade = asyncHandler(async (req, res) => {
+  const groupId   = toBigInt(req.params.id);
+  const paygadeId = toBigInt(req.params.pgId);
+  await prisma.$executeRawUnsafe(
+    `DELETE FROM leavegrouppaygrades WHERE leave_group=? AND paygrade_id=?`, groupId, paygadeId
+  );
+  respond.ok(res, 'Paygrade removed from group');
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LEAVE RULES
+// ══════════════════════════════════════════════════════════════════════════════
+
+exports.getLeaveRules = asyncHandler(async (req, res) => {
+  const where = req.query.leave_type ? `WHERE lr.leave_type=${toBigInt(req.query.leave_type)}` : '';
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT lr.*,
+            lt.name AS leave_type_name,
+            lt.leave_color,
+            jt.label  AS job_title_name,
+            es.label  AS employment_status_name
+     FROM leaverules lr
+     LEFT JOIN leavetypes   lt ON lt.id  = lr.leave_type
+     LEFT JOIN codelistvalue jt ON jt.id = lr.job_title
+     LEFT JOIN codelistvalue es ON es.id = lr.employment_status
+     ${where}
+     ORDER BY lr.id DESC`
+  ).catch(() => []);
+  respond.ok(res, 'Leave rules', s(rows));
+});
+
+exports.createLeaveRule = asyncHandler(async (req, res) => {
+  const {
+    leave_type, job_title, employment_status, employee, supervisor_leave_assign,
+    employee_can_apply, apply_beyond_current, leave_accrue, carried_forward,
+    default_per_year, carried_forward_percentage, carried_forward_leave_availability,
+    propotionate_on_joined_date, leave_group, max_carried_forward_amount,
+    exp_days, leave_period, department, leave_allowance, leave_allowance_once,
+  } = req.body;
+  if (!leave_type) return respond.badReq(res, 'leave_type is required');
+
+  const created = await prisma.leaverules.create({
+    data: {
+      leave_type:                         toBigInt(leave_type),
+      employee:                           employee ? toBigInt(employee) : null,
+      supervisor_leave_assign:            supervisor_leave_assign ?? 'Yes',
+      employee_can_apply:                 employee_can_apply ?? 'Yes',
+      apply_beyond_current:               apply_beyond_current ?? 'Yes',
+      leave_accrue:                       leave_accrue ?? 'No',
+      carried_forward:                    carried_forward ?? 'No',
+      default_per_year:                   parseFloat(default_per_year) || 0,
+      carried_forward_percentage:         toInt(carried_forward_percentage) ?? 0,
+      carried_forward_leave_availability: toInt(carried_forward_leave_availability) ?? 365,
+      propotionate_on_joined_date:        propotionate_on_joined_date ?? 'No',
+      leave_group:                        leave_group ? toBigInt(leave_group) : null,
+      max_carried_forward_amount:         toInt(max_carried_forward_amount) ?? 0,
+      exp_days:                           exp_days ? toInt(exp_days) : null,
+      leave_period:                       leave_period ? toBigInt(leave_period) : null,
+      department:                         department ? toBigInt(department) : null,
+    },
+  });
+  // job_title/employment_status are varchar codelistvalue IDs — write via raw SQL
+  const { accrual_frequency: ruleAF, accrual_rate: ruleAR } = req.body;
+  await prisma.$executeRawUnsafe(
+    `UPDATE leaverules SET leave_allowance=?, leave_allowance_once=?, job_title=?, employment_status=?, accrual_frequency=?, accrual_rate=? WHERE id=?`,
+    leave_allowance === 'Yes' ? 'Yes' : 'No',
+    leave_allowance_once === 'Yes' ? 'Yes' : 'No',
+    job_title || null,
+    employment_status || null,
+    ruleAF || 'Monthly',
+    ruleAR ? parseFloat(ruleAR) : null,
+    created.id
+  ).catch(() => {});
+  logActivity({ module: 'Leave Setup', action: 'create_leave_rule', entityId: String(created.id), entityName: `Rule for type ${leave_type}`, ...fromReq(req) });
+  respond.created(res, 'Leave rule created', s(created));
+});
+
+exports.updateLeaveRule = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+  const data = {};
+
+  // String / enum fields
+  const stringFields = ['supervisor_leave_assign','employee_can_apply','apply_beyond_current',
+    'leave_accrue','carried_forward','propotionate_on_joined_date'];
+  for (const key of stringFields) {
+    if (req.body[key] !== undefined) data[key] = req.body[key];
+  }
+
+  // Int fields
+  const intFields = ['carried_forward_percentage','carried_forward_leave_availability',
+    'max_carried_forward_amount','exp_days'];
+  for (const key of intFields) {
+    if (req.body[key] !== undefined) data[key] = toInt(req.body[key]) ?? 0;
+  }
+
+  // Decimal
+  if (req.body.default_per_year !== undefined) data.default_per_year = parseFloat(req.body.default_per_year) || 0;
+
+  // BigInt nullable fields (empty string → null)
+  const bigintNullable = ['leave_type','department','leave_period','employee','leave_group'];
+  for (const key of bigintNullable) {
+    if (req.body[key] !== undefined) data[key] = req.body[key] ? toBigInt(req.body[key]) : null;
+  }
+
+  const updated = await prisma.leaverules.update({ where: { id }, data });
+
+  // job_title and employment_status are varchar codelistvalue IDs — write via raw SQL
+  // (Prisma client still has BigInt type for these fields until next client regen)
+  if (req.body.job_title !== undefined) {
+    const jt = req.body.job_title || null;
+    await prisma.$executeRawUnsafe(`UPDATE leaverules SET job_title=? WHERE id=?`, jt, id).catch(() => {});
+  }
+  if (req.body.employment_status !== undefined) {
+    const es = req.body.employment_status || null;
+    await prisma.$executeRawUnsafe(`UPDATE leaverules SET employment_status=? WHERE id=?`, es, id).catch(() => {});
+  }
+  if (req.body.leave_allowance !== undefined) {
+    await prisma.$executeRawUnsafe(
+      `UPDATE leaverules SET leave_allowance=? WHERE id=?`,
+      req.body.leave_allowance === 'Yes' ? 'Yes' : 'No', id
+    ).catch(() => {});
+  }
+  if (req.body.leave_allowance_once !== undefined) {
+    await prisma.$executeRawUnsafe(
+      `UPDATE leaverules SET leave_allowance_once=? WHERE id=?`,
+      req.body.leave_allowance_once === 'Yes' ? 'Yes' : 'No', id
+    ).catch(() => {});
+  }
+  if (req.body.accrual_frequency !== undefined) {
+    await prisma.$executeRawUnsafe(
+      `UPDATE leaverules SET accrual_frequency=? WHERE id=?`,
+      req.body.accrual_frequency || 'Monthly', id
+    ).catch(() => {});
+  }
+  if (req.body.accrual_rate !== undefined) {
+    await prisma.$executeRawUnsafe(
+      `UPDATE leaverules SET accrual_rate=? WHERE id=?`,
+      req.body.accrual_rate ? parseFloat(req.body.accrual_rate) : null, id
+    ).catch(() => {});
+  }
+  logActivity({ module: 'Leave Setup', action: 'update_leave_rule', entityId: String(id), ...fromReq(req) });
+  respond.ok(res, 'Leave rule updated', s(updated));
+});
+
+exports.deleteLeaveRule = asyncHandler(async (req, res) => {
+  await prisma.leaverules.delete({ where: { id: toBigInt(req.params.id) } });
+  logActivity({ module: 'Leave Setup', action: 'delete_leave_rule', entityId: req.params.id, ...fromReq(req) });
+  respond.ok(res, 'Leave rule deleted');
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LEAVE MANAGEMENT
+// ══════════════════════════════════════════════════════════════════════════════
+
+exports.getLeaves = asyncHandler(async (req, res) => {
+  const { status, date_start, date_end } = req.query;
+
+  // Always scope to the requesting user's own employee record
+  const userEmp = await prisma.$queryRawUnsafe(
+    `SELECT employeeId, employee FROM users WHERE id=?`, toBigInt(req.user.id)
+  ).catch(() => []);
+  const ownEmpId = userEmp[0]?.employeeId || userEmp[0]?.employee;
+  if (!ownEmpId) return respond.ok(res, 'Leaves', []);
+  const scopedEmployee = String(ownEmpId);
+
+  let where = '1=1';
+  const params = [];
+
+  if (status)          { where += ' AND el.status=?';      params.push(status); }
+  if (scopedEmployee)  { where += ' AND el.employee=?';    params.push(toBigInt(scopedEmployee)); }
+  if (date_start)      { where += ' AND el.date_end>=?';   params.push(new Date(date_start)); }
+  if (date_end)        { where += ' AND el.date_start<=?'; params.push(new Date(date_end)); }
+
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT el.*,
+            TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS employee_name,
+            e.employee_id AS employee_code,
+            lt.name AS leave_type_name,
+            lt.leave_color,
+            lt.leave_allowance AS leave_type_allowance_enabled,
+            lp.name AS period_name,
+            nt.amount AS notch_amount,
+            (SELECT COUNT(*) FROM employeeleavedays eld WHERE eld.employee_leave = el.id) AS day_count
+     FROM employeeleaves el
+     LEFT JOIN employee    e  ON e.id  = el.employee
+     LEFT JOIN leavetypes  lt ON lt.id = el.leave_type
+     LEFT JOIN leaveperiods lp ON lp.id = el.leave_period
+     LEFT JOIN notches     nt ON nt.id = e.notcheId
+     WHERE ${where}
+     ORDER BY el.posted_date DESC`,
+    ...params
+  ).catch(() => []);
+
+  // For allowance-enabled leave types, compute expected allowance when not already stored
+  const as = await getAllowanceSettings().catch(() => ({}));
+  const globalAllowanceOn = as.leave_allow_enabled === 'Yes';
+  const annualFactor = parseFloat(as.leave_allow_annual_factor) || 0.3;
+  const taxRate      = parseFloat(as.leave_allow_tax_rate)      || 0.3;
+
+  const enriched = rows.map(row => {
+    if (row.leave_type_allowance_enabled !== 'Yes') return row;
+    // Pre-enable Skip: leave was approved before allowance was turned on — never show an amount
+    if (row.allowance_status === 'Pre-enable Skip') return { ...row, amount: null, leave_tax: null };
+    const basic  = parseFloat(row.notch_amount) || 0;
+    const stored = parseFloat(row.amount)       || 0;
+    // If an amount is already stored (paid, or calculated while control was on),
+    // always surface its breakdown regardless of the current global setting.
+    if (stored > 0) {
+      const storedTax = parseFloat(row.leave_tax) || 0;
+      return {
+        ...row,
+        allowance_gross:         String(Math.round((stored + storedTax) * 100) / 100),
+        allowance_tax:           String(storedTax),
+        allowance_basic:         String(Math.round(basic * 100) / 100),
+        allowance_annual_factor: String(annualFactor),
+        allowance_tax_rate:      String(taxRate),
+      };
+    }
+    // Only compute a live estimate when the global allowance control is on.
+    // Also skip if the type/rule explicitly denied allowance for this leave ('No' stored at application).
+    if (!globalAllowanceOn || !basic || row.req_allowance === 'No') return row;
+    const sgla       = basic * 12 * annualFactor;
+    const deductible = basic;
+    const taxable    = Math.max(0, sgla - deductible);
+    const tax        = Math.round(taxable * taxRate * 100) / 100;
+    const net        = Math.round((deductible + (taxable - tax)) * 100) / 100;
+    return {
+      ...row,
+      amount:                  String(net),
+      leave_tax:               String(tax),
+      allowance_gross:         String(Math.round(sgla * 100) / 100),
+      allowance_tax:           String(tax),
+      allowance_basic:         String(Math.round(basic * 100) / 100),
+      allowance_annual_factor: String(annualFactor),
+      allowance_tax_rate:      String(taxRate),
+    };
+  });
+
+  respond.ok(res, 'Leaves', s(enriched));
+});
+
+exports.getAllEmployeeLeaves = asyncHandler(async (req, res) => {
+  const { status } = req.query;
+  let sql = `
+    SELECT el.*,
+           TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS employee_name,
+           e.employee_id AS employee_code,
+           lt.name AS leave_type_name, lt.leave_color,
+           lt.leave_allowance AS leave_type_allowance_enabled,
+           lp.name AS period_name,
+           nt.amount AS notch_amount,
+           (SELECT COUNT(*) FROM employeeleavedays eld WHERE eld.employee_leave = el.id) AS day_count
+    FROM employeeleaves el
+    LEFT JOIN employee    e  ON e.id  = el.employee
+    LEFT JOIN leavetypes  lt ON lt.id = el.leave_type
+    LEFT JOIN leaveperiods lp ON lp.id = el.leave_period
+    LEFT JOIN notches     nt ON nt.id = e.notcheId
+  `;
+  const params = [];
+  if (status) { sql += ` WHERE el.status = ?`; params.push(status); }
+  sql += ` ORDER BY el.posted_date DESC`;
+  const rows = await prisma.$queryRawUnsafe(sql, ...params).catch(() => []);
+
+  const as = await getAllowanceSettings().catch(() => ({}));
+  const globalAllowanceOn = as.leave_allow_enabled === 'Yes';
+  const annualFactor = parseFloat(as.leave_allow_annual_factor) || 0.3;
+  const taxRate      = parseFloat(as.leave_allow_tax_rate)      || 0.3;
+
+  const enriched = rows.map(row => {
+    if (row.leave_type_allowance_enabled !== 'Yes') return row;
+    // Pre-enable Skip: leave was approved before allowance was turned on — never show an amount
+    if (row.allowance_status === 'Pre-enable Skip') return { ...row, amount: null, leave_tax: null };
+    const basic  = parseFloat(row.notch_amount) || 0;
+    const stored = parseFloat(row.amount)       || 0;
+    if (stored > 0) {
+      const storedTax = parseFloat(row.leave_tax) || 0;
+      return {
+        ...row,
+        allowance_gross:         String(Math.round((stored + storedTax) * 100) / 100),
+        allowance_tax:           String(storedTax),
+        allowance_basic:         String(Math.round(basic * 100) / 100),
+        allowance_annual_factor: String(annualFactor),
+        allowance_tax_rate:      String(taxRate),
+      };
+    }
+    if (!globalAllowanceOn || !basic || row.req_allowance === 'No') return row;
+    const sgla       = basic * 12 * annualFactor;
+    const deductible = basic;
+    const taxable    = Math.max(0, sgla - deductible);
+    const tax        = Math.round(taxable * taxRate * 100) / 100;
+    const net        = Math.round((deductible + (taxable - tax)) * 100) / 100;
+    return {
+      ...row,
+      amount:                  String(net),
+      leave_tax:               String(tax),
+      allowance_gross:         String(Math.round(sgla * 100) / 100),
+      allowance_tax:           String(tax),
+      allowance_basic:         String(Math.round(basic * 100) / 100),
+      allowance_annual_factor: String(annualFactor),
+      allowance_tax_rate:      String(taxRate),
+    };
+  });
+
+  respond.ok(res, 'All employee leaves', s(enriched));
+});
+
+exports.applyLeave = asyncHandler(async (req, res) => {
+  const {
+    employee: bodyEmployee, leave_type, leave_period, date_start, date_end,
+    details, req_allowance, position, emp_acc_no, branch, department,
+    amount: bodyAmount,
+  } = req.body;
+
+  // Resolve employee first — use body value if provided, otherwise look up from user account
+  let employee = bodyEmployee;
+  if (!employee) {
+    const userRow = await prisma.$queryRawUnsafe(
+      `SELECT employeeId, employee FROM users WHERE id=?`, toBigInt(req.user?.id)
+    ).catch(() => []);
+    const empLink = userRow[0]?.employeeId || userRow[0]?.employee;
+    employee = empLink ? String(empLink) : null;
+  }
+  if (!employee) return respond.badReq(res, 'No employee record linked to your account. Contact HR to link your profile.');
+
+  if (!leave_type || !leave_period || !date_start || !date_end)
+    return respond.badReq(res, 'leave_type, leave_period, date_start and date_end are required');
+
+  // ── Date sanity ───────────────────────────────────────────────────────────
+  const dStart = new Date(date_start + 'T00:00:00');
+  const dEnd   = new Date(date_end   + 'T00:00:00');
+  if (isNaN(dStart.getTime()) || isNaN(dEnd.getTime()))
+    return respond.badReq(res, 'Invalid date format');
+  if (dStart > dEnd)
+    return respond.badReq(res, 'Start date must be on or before end date');
+
+  // ── Fetch leave type ──────────────────────────────────────────────────────
+  const typeRows = await prisma.$queryRawUnsafe(`SELECT * FROM leavetypes WHERE id=? LIMIT 1`, toBigInt(leave_type)).catch(() => []);
+  const typeRow  = typeRows[0] ?? null;
+  if (!typeRow) return respond.badReq(res, 'Leave type not found');
+
+  // ── Fetch employee details (needed for rule matching + exp_days) ──────────
+  const empRows = await prisma.$queryRawUnsafe(
+    `SELECT id, status, hireDate, jobTitleId AS job_title_id, departmentId,
+            employmentStatusId AS emp_status_id, paygradeId
+     FROM employee WHERE id=?`, toBigInt(employee)
+  ).catch(() => []);
+  const emp = empRows[0] ?? {};
+  if (!emp.id) return respond.badReq(res, 'Employee not found');
+  if (emp.status !== '1') return respond.badReq(res, 'Cannot apply leave for an inactive employee');
+
+  // ── Match leave rule ──────────────────────────────────────────────────────
+  const matchingRules = await prisma.$queryRawUnsafe(
+    `SELECT * FROM leaverules WHERE leave_type=?`, toBigInt(leave_type)
+  ).catch(() => []);
+  const ruleMatch = matchingRules.find(r => {
+    if (r.employee          && String(r.employee)          !== String(employee          ?? '')) return false;
+    if (r.leave_period      && String(r.leave_period)      !== String(leave_period      ?? '')) return false;
+    if (r.job_title         && String(r.job_title)         !== String(emp.job_title_id  ?? '')) return false;
+    if (r.department        && String(r.department)        !== String(emp.departmentId  ?? '')) return false;
+    if (r.employment_status && String(r.employment_status) !== String(emp.emp_status_id ?? '')) return false;
+    if (r.leave_group       && String(r.leave_group)       !== String(emp.paygradeId    ?? '')) return false;
+    if (r.exp_days) {
+      const days = emp.hireDate ? Math.floor((Date.now() - new Date(emp.hireDate).getTime()) / 86400000) : 0;
+      if (days < Number(r.exp_days)) return false;
+    }
+    return true;
+  });
+
+  // Effective settings — rule overrides type where present
+  const effectiveSupAssign  = ruleMatch?.supervisor_leave_assign ?? typeRow.supervisor_leave_assign;
+  const effectiveBeyond     = ruleMatch?.apply_beyond_current ?? typeRow.apply_beyond_current;
+
+  // ── Permission checks ─────────────────────────────────────────────────────
+  const isAdmin = req.user?.roles?.some(r => ['admin', 'super-admin'].includes(r));
+  const isSelf  = String(req.user?.id) === String(employee) ||
+                  await prisma.$queryRawUnsafe(
+                    `SELECT id FROM users WHERE id=? AND employeeId=?`,
+                    toBigInt(req.user?.id), toBigInt(employee)
+                  ).then(r => r.length > 0).catch(() => false);
+  const isSupervisorOf = !isSelf && await prisma.$queryRawUnsafe(
+    `SELECT 1 FROM employee WHERE id=? AND supervisorid=(SELECT employeeId FROM users WHERE id=? LIMIT 1)`,
+    toBigInt(employee), toBigInt(req.user?.id)
+  ).then(r => r.length > 0).catch(() => false);
+
+  if (isSupervisorOf && !isAdmin && effectiveSupAssign !== 'Yes')
+    return respond.badReq(res, 'Supervisors cannot assign this leave type to subordinates');
+
+  // ── Paygrade group eligibility check ──────────────────────────────────────
+  // If the leave type is restricted to specific paygrade groups, verify the
+  // employee belongs to one of them. Admins bypass this check.
+  if (!isAdmin) {
+    const typeGroupRows = await prisma.$queryRawUnsafe(
+      `SELECT leave_group_id FROM leavetype_groups WHERE leave_type_id=?`,
+      toBigInt(leave_type)
+    ).catch(() => []);
+    if (typeGroupRows.length > 0) {
+      const allowedPaygrades = typeGroupRows.map(g => String(g.leave_group_id));
+      if (!emp.paygradeId || !allowedPaygrades.includes(String(emp.paygradeId))) {
+        return respond.badReq(res, 'Employee is not eligible for this leave type based on their pay grade');
+      }
+    }
+  }
+
+  // ── Working days ──────────────────────────────────────────────────────────
+  const days = await getWorkingDays(date_start, date_end);
+  if (days.length === 0)
+    return respond.badReq(res, 'The selected date range contains no working days (weekends or public holidays only)');
+
+  // ── Leave period boundary check ───────────────────────────────────────────
+  const periodRows = await prisma.$queryRawUnsafe(
+    `SELECT date_start, date_end FROM leaveperiods WHERE id=? LIMIT 1`, toBigInt(leave_period)
+  ).catch(() => []);
+  const period = periodRows[0] ?? null;
+  if (!period) return respond.badReq(res, 'Leave period not found');
+  const pStart = new Date(period.date_start); pStart.setHours(0, 0, 0, 0);
+  const pEnd   = new Date(period.date_end);   pEnd.setHours(23, 59, 59, 999);
+  if (dStart < pStart || dEnd > pEnd)
+    return respond.badReq(res, 'Leave dates must fall within the selected leave period');
+
+
+  // ── Overlap check (any active leave on these dates) ───────────────────────
+  const overlaps = await prisma.$queryRawUnsafe(
+    `SELECT id FROM employeeleaves
+     WHERE employee=?
+       AND status NOT IN ('Rejected','Cancelled')
+       AND date_end >= ? AND date_start <= ?
+     LIMIT 1`,
+    toBigInt(employee), dStart, dEnd
+  ).catch(() => []);
+  if (overlaps.length > 0)
+    return respond.badReq(res, 'The selected dates overlap with an existing leave application');
+
+  // ── Allowance settings + once-per-period check ────────────────────────────
+  const allowSettings    = await getAllowanceSettings();
+  const globalAllowance  = allowSettings.leave_allow_enabled === 'Yes';
+  const typeWantsAllow   = ruleMatch ? ruleMatch.leave_allowance === 'Yes' : typeRow.leave_allowance === 'Yes';
+  // Type/rule is the authority — frontend req_allowance cannot override a 'No' at type or rule level
+  const effectiveReqAllow = typeWantsAllow && globalAllowance;
+
+  const typeOnce = ruleMatch ? ruleMatch.leave_allowance_once === 'Yes' : typeRow.leave_allowance_once === 'Yes';
+  let alreadyReceivedAllowance = false;
+  if (effectiveReqAllow && typeOnce) {
+    const existing = await prisma.$queryRawUnsafe(
+      `SELECT 1 FROM employeeleaves
+       WHERE employee=? AND leave_type=? AND leave_period=?
+         AND (allowance_status='Paid' OR (amount IS NOT NULL AND CAST(amount AS DECIMAL) > 0))
+         AND status NOT IN ('Rejected','Cancelled')
+       LIMIT 1`,
+      toBigInt(employee), toBigInt(leave_type), toBigInt(leave_period)
+    ).catch(() => []);
+    alreadyReceivedAllowance = existing.length > 0;
+  }
+
+  let allowanceAmount = null;
+  let leaveTaxAmount  = null;
+  if (effectiveReqAllow && !alreadyReceivedAllowance) {
+    if (bodyAmount !== undefined && bodyAmount !== '') {
+      allowanceAmount = parseFloat(bodyAmount) || 0;
+    } else {
+      const calc = await calcLeaveAllowance(employee, allowSettings);
+      allowanceAmount = calc.amount;
+      leaveTaxAmount  = calc.leave_tax;
+    }
+  }
+
+  // ── Balance check ─────────────────────────────────────────────────────────
+  if (effectiveBeyond !== 'Yes') {
+    const bal = await calcBalance(employee, leave_type, leave_period, emp);
+    if (days.length > bal.balance)
+      return respond.badReq(res,
+        `Insufficient leave balance. Requested ${days.length} day(s), available ${bal.balance} day(s)`
+      );
+  }
+
+  const leaveId = BigInt(Date.now() + Math.floor(Math.random() * 10000));
+  const amountVal = allowanceAmount !== null ? String(allowanceAmount) : null;
+
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO employeeleaves
+      (id, employee, leave_type, leave_period, date_start, date_end, notice_date,
+       details, req_allowance, position, emp_acc_no, leave_gl, leave_name,
+       department, status, approval_level, amount)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Draft',?,?)`,
+    leaveId,
+    toBigInt(employee),
+    toBigInt(leave_type),
+    toBigInt(leave_period),
+    new Date(date_start),
+    new Date(date_end),
+    new Date(),
+    details ?? null,
+    (effectiveReqAllow && !alreadyReceivedAllowance) ? 'Yes' : (typeWantsAllow && !alreadyReceivedAllowance ? null : 'No'),
+    position ?? null,
+    emp_acc_no ?? null,
+    typeRow?.leave_gl ?? null,
+    typeRow?.name ?? null,
+    department ?? null,
+    0,
+    amountVal,
+  );
+
+  for (const d of days) {
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO employeeleavedays (id, employee_leave, leave_date, leave_type) VALUES (?, ?, ?, ?)`,
+      BigInt(Date.now() + Math.floor(Math.random() * 100000)), leaveId, new Date(d.date), d.type
+    ).catch(() => {});
+  }
+
+  // Store extra fields not in Prisma model
+  const extraParts = [];
+  const extraVals  = [];
+  if (branch)                  { extraParts.push('branch=?');     extraVals.push(branch); }
+  if (leaveTaxAmount !== null) { extraParts.push('leave_tax=?');  extraVals.push(String(leaveTaxAmount)); }
+  if (extraParts.length) {
+    extraVals.push(leaveId);
+    await prisma.$executeRawUnsafe(
+      `UPDATE employeeleaves SET ${extraParts.join(',')} WHERE id=?`, ...extraVals
+    ).catch(() => {});
+  }
+
+  const newLeave = await prisma.$queryRawUnsafe(
+    `SELECT * FROM employeeleaves WHERE id=?`, leaveId
+  ).then(r => r[0] ?? { id: leaveId }).catch(() => ({ id: leaveId }));
+
+  logActivity({ module: 'Leave', action: 'apply', entityId: String(leaveId), entityName: `Leave ${leave_type}`, ...fromReq(req) });
+  respond.created(res, 'Leave application submitted', s(newLeave));
+});
+
+exports.updateLeave = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+  const rows = await prisma.$queryRawUnsafe(`SELECT id, status FROM employeeleaves WHERE id=?`, id).catch(() => []);
+  const current = rows[0] ?? null;
+  if (!current) return respond.notFound(res, 'Leave not found');
+  if (!['Pending', 'Draft'].includes(current.status))
+    return respond.badReq(res, 'Only Pending or Draft leaves can be edited');
+
+  const { leave_type, leave_period, date_start, date_end, details, req_allowance, position } = req.body;
+  const typeRow = leave_type
+    ? await prisma.leavetypes.findUnique({ where: { id: toBigInt(leave_type) } }).catch(() => null)
+    : null;
+
+  const data = {};
+  if (leave_type   !== undefined) { data.leave_type   = toBigInt(leave_type); data.leave_gl = typeRow?.leave_gl ?? null; data.leave_name = typeRow?.name ?? null; }
+  if (leave_period !== undefined) data.leave_period = toBigInt(leave_period);
+  if (date_start   !== undefined) data.date_start   = new Date(date_start);
+  if (date_end     !== undefined) data.date_end     = new Date(date_end);
+  if (details      !== undefined) data.details      = details;
+  if (req_allowance !== undefined) data.req_allowance = req_allowance;
+  if (position     !== undefined) data.position     = position;
+
+  await prisma.employeeleaves.update({ where: { id }, data });
+
+  // Recalculate leave days if dates changed
+  if (date_start || date_end) {
+    await prisma.$executeRawUnsafe(`DELETE FROM employeeleavedays WHERE employee_leave=?`, id);
+    const start = date_start ?? current.date_start.toISOString().split('T')[0];
+    const end   = date_end   ?? current.date_end.toISOString().split('T')[0];
+    const days  = await getWorkingDays(start, end);
+    for (const d of days) {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO employeeleavedays (id, employee_leave, leave_date, leave_type) VALUES (?, ?, ?, ?)`,
+        BigInt(Date.now() + Math.floor(Math.random() * 100000)), id, new Date(d.date), d.type
+      ).catch(() => {});
+    }
+  }
+
+  respond.ok(res, 'Leave updated');
+});
+
+exports.deleteLeave = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+  const rows = await prisma.$queryRawUnsafe(`SELECT id, status FROM employeeleaves WHERE id=?`, id).catch(() => []);
+  const current = rows[0] ?? null;
+  if (!current) return respond.notFound(res, 'Leave not found');
+  if (!['Pending', 'Draft'].includes(current.status))
+    return respond.badReq(res, 'Only Pending or Draft leaves can be deleted');
+
+  await prisma.$executeRawUnsafe(`DELETE FROM employeeleavedays WHERE employee_leave=?`, id);
+  await prisma.$executeRawUnsafe(`DELETE FROM employeeleavelog WHERE employee_leave=?`, id);
+  await prisma.employeeleaves.delete({ where: { id } });
+  logActivity({ module: 'Leave', action: 'delete', entityId: req.params.id, ...fromReq(req) });
+  respond.ok(res, 'Leave deleted');
+});
+
+// ── Workflow ──────────────────────────────────────────────────────────────────
+
+exports.submitLeave = asyncHandler(async (req, res) => {
+  const id      = toBigInt(req.params.id);
+  const rows    = await prisma.$queryRawUnsafe(`SELECT id, status FROM employeeleaves WHERE id=?`, id).catch(() => []);
+  const current = rows[0] ?? null;
+  if (!current) return respond.notFound(res, 'Leave not found');
+  if (!['Pending', 'Draft'].includes(current.status))
+    return respond.badReq(res, 'Only Draft or Pending leaves can be submitted');
+
+  const flow      = await getApprovalFlowSettings();
+  const supOn     = flow.leave_supervisor_approval === 'Yes';
+  const newStatus = supOn ? 'Pending Approval' : 'Pending HR Approval';
+  const logMsg    = supOn ? 'Submitted for approval' : 'Submitted — skipping supervisor tier (supervisor approval disabled)';
+
+  await prisma.$executeRawUnsafe(
+    `UPDATE employeeleaves SET status=?, submitted_by=? WHERE id=?`,
+    newStatus, toBigInt(req.user.id), id
+  );
+  await writeLog(id, req.user.id, logMsg, current.status, newStatus);
+  notifyLeaveAction(id, 'submitted');
+  respond.ok(res, supOn ? 'Leave submitted for approval' : 'Leave submitted — sent directly to HR approval');
+});
+
+exports.approveLeave = asyncHandler(async (req, res) => {
+  const id      = toBigInt(req.params.id);
+  const rows    = await prisma.$queryRawUnsafe(`SELECT id, status, approval_level, allowance_status FROM employeeleaves WHERE id=?`, id).catch(() => []);
+  const current = rows[0] ?? null;
+  if (!current) return respond.notFound(res, 'Leave not found');
+
+  const flow  = await getApprovalFlowSettings();
+  const supOn = flow.leave_supervisor_approval === 'Yes';
+  const level = current.approval_level ?? 0;
+  const prevStatus = current.status;
+
+  // Supervisor tier: only when supervisor_approval=Yes and no approval has happened yet
+  const isSupervisorTier = supOn && level === 0;
+  const isFinalTier      = !isSupervisorTier;
+
+  // Supervisor approves first → Pending HR Approval; HR (final tier) → Approved
+  const newStatus = isFinalTier ? 'Approved' : 'Pending HR Approval';
+  const newLevel  = level + 1;
+
+  await prisma.$executeRawUnsafe(
+    `UPDATE employeeleaves SET status=?, approved_by=?, approval_level=? WHERE id=?`,
+    newStatus, toBigInt(req.user.id), newLevel, id
+  );
+
+  const logNote = isFinalTier
+    ? 'Final approval by HR'
+    : `Supervisor approved (level ${newLevel}) — awaiting HR`;
+  await writeLog(id, req.user.id, logNote, prevStatus, newStatus);
+  notifyLeaveAction(id, isFinalTier ? 'approved' : 'submitted');
+
+  // GL always posts automatically on final approval (HR is always the final approver)
+  if (isFinalTier) processLeaveAllowance(id);
+
+  logActivity({ module: 'Leave', action: isFinalTier ? 'approve' : 'supervisor_approve', entityId: req.params.id, ...fromReq(req) });
+  respond.ok(res, isFinalTier ? 'Leave approved' : 'Supervisor approval recorded — awaiting HR approval');
+});
+
+exports.finalizeLeave = asyncHandler(async (req, res) => {
+  const id      = toBigInt(req.params.id);
+  const rows    = await prisma.$queryRawUnsafe(`SELECT id, status, allowance_status FROM employeeleaves WHERE id=?`, id).catch(() => []);
+  const current = rows[0] ?? null;
+  if (!current) return respond.notFound(res, 'Leave not found');
+
+  if (current.status !== 'Approved')
+    return respond.badReq(res, 'Only Approved leaves can be finalized');
+  if (['Paid', 'GL Scheduled', 'Pending Financial Approval'].includes(current.allowance_status ?? ''))
+    return respond.badReq(res, 'GL posting already processed or in progress');
+  if (current.allowance_status === 'Pre-enable Skip')
+    return respond.badReq(res, 'This leave was approved before allowance was enabled and is not eligible for payout');
+
+  await writeLog(id, req.user.id, 'Finalized manually — GL posting triggered', 'Approved', 'Approved');
+  processLeaveAllowance(id);
+  logActivity({ module: 'Leave', action: 'finalize', entityId: req.params.id, ...fromReq(req) });
+  respond.ok(res, 'Leave finalized — GL posting in progress');
+});
+
+exports.rejectLeave = asyncHandler(async (req, res) => {
+  const id      = toBigInt(req.params.id);
+  const rows    = await prisma.$queryRawUnsafe(`SELECT id, status FROM employeeleaves WHERE id=?`, id).catch(() => []);
+  const current = rows[0] ?? null;
+  if (!current) return respond.notFound(res, 'Leave not found');
+
+  const { reason } = req.body;
+  const prevStatus = current.status;
+
+  // Fetch amount before updating so we can release the once-per-period slot
+  const leaveData = await prisma.$queryRawUnsafe(
+    `SELECT amount FROM employeeleaves WHERE id=?`, id
+  ).then(r => r[0]).catch(() => null);
+
+  await prisma.$executeRawUnsafe(
+    `UPDATE employeeleaves SET status='Rejected', approved_by=?, rejection_reason=? WHERE id=?`,
+    toBigInt(req.user.id), reason ?? null, id
+  );
+
+  // Release once-per-period allowance slot so a future application can claim it
+  if (leaveData?.amount && parseFloat(leaveData.amount) > 0) {
+    await prisma.$executeRawUnsafe(
+      `UPDATE employeeleaves SET amount=NULL, req_allowance=NULL WHERE id=?`, id
+    ).catch(() => {});
+  }
+
+  await writeLog(id, req.user.id, reason ? `Rejected: ${reason}` : 'Rejected', prevStatus, 'Rejected');
+  notifyLeaveAction(id, 'rejected', reason);
+  logActivity({ module: 'Leave', action: 'reject', entityId: req.params.id, details: reason ? { reason } : null, ...fromReq(req) });
+  respond.ok(res, 'Leave rejected');
+});
+
+exports.cancelLeave = asyncHandler(async (req, res) => {
+  const id      = toBigInt(req.params.id);
+  const rows    = await prisma.$queryRawUnsafe(`SELECT id, status, date_start, amount FROM employeeleaves WHERE id=?`, id).catch(() => []);
+  const current = rows[0] ?? null;
+  if (!current) return respond.notFound(res, 'Leave not found');
+  if (current.status !== 'Approved')
+    return respond.badReq(res, 'Only Approved leaves can be cancelled');
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const startDate = new Date(current.date_start); startDate.setHours(0, 0, 0, 0);
+  if (startDate <= today)
+    return respond.badReq(res, 'Leave cannot be cancelled after it has started');
+
+  // Fetch amount before updating so we can release the once-per-period slot
+  const cancelData = current;
+
+  await prisma.$executeRawUnsafe(`UPDATE employeeleaves SET status='Cancelled' WHERE id=?`, id);
+
+  // Release once-per-period allowance slot so a future application can claim it
+  if (cancelData?.amount && parseFloat(cancelData.amount) > 0) {
+    await prisma.$executeRawUnsafe(
+      `UPDATE employeeleaves SET amount=NULL, req_allowance=NULL WHERE id=?`, id
+    ).catch(() => {});
+  }
+
+  await writeLog(id, req.user.id, 'Cancelled', 'Approved', 'Cancelled');
+  notifyLeaveAction(id, 'cancelled');
+  logActivity({ module: 'Leave', action: 'cancel', entityId: req.params.id, ...fromReq(req) });
+  respond.ok(res, 'Leave cancelled');
+});
+
+// ── Balance & Entitlement ─────────────────────────────────────────────────────
+
+exports.getLeaveBalance = asyncHandler(async (req, res) => {
+  const employeeId = req.params.employeeId;
+
+  const activePeriods = await prisma.leaveperiods.findMany({ where: { status: 'Active' } });
+  if (!activePeriods.length) return respond.ok(res, 'No active leave period', []);
+  const period = activePeriods[0];
+
+  // Allowance settings + employee allowance amount (same calc as processLeaveAllowance)
+  const allowSettings = await getAllowanceSettings();
+  const allowEnabled  = allowSettings.leave_allow_enabled === 'Yes';
+  const allowCalc     = allowEnabled ? await calcLeaveAllowance(employeeId, allowSettings) : null;
+
+  // Employee profile for rule matching
+  const empRows = await prisma.$queryRawUnsafe(
+    `SELECT id, jobTitleId AS job_title_id, departmentId, employmentStatusId AS emp_status_id, paygradeId, hireDate
+     FROM employee WHERE id=?`, toBigInt(employeeId)
+  ).catch(() => []);
+  const emp = empRows[0] ?? {};
+
+  const [allTypes, rules, groupAssignments] = await Promise.all([
+    prisma.$queryRawUnsafe(`SELECT * FROM leavetypes ORDER BY name`).catch(() => []),
+    prisma.$queryRawUnsafe(`SELECT * FROM leaverules`).catch(() => []),
+    prisma.$queryRawUnsafe(`SELECT leave_type_id, leave_group_id FROM leavetype_groups`).catch(() => []),
+  ]);
+
+  // Build paygrade→type restriction map then filter to types this employee can access.
+  // leavetype_groups.leave_group_id stores paygrade IDs (assigned from the leave-type form).
+  const pgByType = {};
+  for (const a of groupAssignments) {
+    const key = String(a.leave_type_id);
+    if (!pgByType[key]) pgByType[key] = [];
+    pgByType[key].push(String(a.leave_group_id));
+  }
+  const empPgId = emp.paygradeId != null ? String(emp.paygradeId) : null;
+  const types = allTypes.filter(t => {
+    const allowed = pgByType[String(t.id)] ?? [];
+    if (allowed.length === 0) return true;   // no restriction — visible to all
+    if (empPgId === null)     return false;  // no paygrade → blocked from restricted types
+    return allowed.includes(empPgId);
+  });
+
+  // Most recent period that ended before the active period started — used for lazy CF computation.
+  // Must be chronologically before the active period so testing future periods and switching back
+  // doesn't cause carry-forward to run in reverse.
+  const prevPeriodRows = await prisma.$queryRawUnsafe(
+    `SELECT * FROM leaveperiods WHERE id != ? AND date_end < ? ORDER BY date_end DESC LIMIT 1`,
+    toBigInt(period.id), new Date(period.date_start)
+  ).catch(() => []);
+  const prevPeriod = prevPeriodRows[0] ?? null;
+
+  const result = await Promise.all(
+    types.map(async (t) => {
+      // 1. Rule match first — needed before CF check
+      const ruleMatch = rules.find((r) => {
+        if (String(r.leave_type) !== String(t.id)) return false;
+        if (r.employee          && String(r.employee)          !== String(employeeId        ?? '')) return false;
+        if (r.leave_period      && String(r.leave_period)      !== String(period.id         ?? '')) return false;
+        if (r.job_title         && String(r.job_title)         !== String(emp.job_title_id  ?? '')) return false;
+        if (r.department        && String(r.department)        !== String(emp.departmentId  ?? '')) return false;
+        if (r.employment_status && String(r.employment_status) !== String(emp.emp_status_id ?? '')) return false;
+        if (r.leave_group       && String(r.leave_group)       !== String(emp.paygradeId    ?? '')) return false;
+        if (r.exp_days) {
+          const days = emp.hireDate ? Math.floor((Date.now() - new Date(emp.hireDate).getTime()) / 86400000) : 0;
+          if (days < Number(r.exp_days)) return false;
+        }
+        return true;
+      });
+      const has_rule = !!ruleMatch;
+
+      // 2. Check for existing starting balance; if none and CF is enabled, auto-compute from the previous period
+      const sbRows = await prisma.$queryRawUnsafe(
+        `SELECT amount FROM leavestartingbalance WHERE employee=? AND leave_type=? AND leave_period=?`,
+        toBigInt(employeeId), t.id, toBigInt(period.id)
+      ).catch(() => []);
+      let startingBalance = sbRows.length ? parseFloat(sbRows[0].amount) : null;
+
+      if (startingBalance === null && prevPeriod && (ruleMatch?.carried_forward ?? t.carried_forward) === 'Yes') {
+        // Only carry forward if the employee actually participated in the previous period
+        // (approved leave exists or a starting balance was set there). Prevents phantom CF
+        // after a data reset where the previous period shows a full unused allocation.
+        const [prevLeaves, prevSB] = await Promise.all([
+          prisma.$queryRawUnsafe(
+            `SELECT 1 FROM employeeleaves WHERE employee=? AND leave_type=? AND leave_period=? AND status='Approved' LIMIT 1`,
+            toBigInt(employeeId), t.id, toBigInt(prevPeriod.id)
+          ).catch(() => []),
+          prisma.$queryRawUnsafe(
+            `SELECT 1 FROM leavestartingbalance WHERE employee=? AND leave_type=? AND leave_period=? LIMIT 1`,
+            toBigInt(employeeId), t.id, toBigInt(prevPeriod.id)
+          ).catch(() => []),
+        ]);
+
+        if (prevLeaves.length || prevSB.length) {
+          const prevBal = await calcBalance(employeeId, t.id.toString(), String(prevPeriod.id), emp);
+          if (prevBal.balance > 0) {
+            const effectivePct  = parseFloat(ruleMatch?.carried_forward_percentage ?? t.carried_forward_percentage) || 100;
+            const effectiveMax  = parseFloat(ruleMatch?.max_carried_forward_amount  ?? t.max_carried_forward_amount)  || 0;
+            const effectiveBase = parseFloat(ruleMatch?.default_per_year ?? t.default_per_year) || 0;
+            let cfDays = prevBal.balance * (effectivePct / 100);
+            if (effectiveMax > 0) cfDays = Math.min(cfDays, effectiveMax);
+            cfDays = Math.round(cfDays * 2) / 2;
+            startingBalance = effectiveBase + cfDays;
+            await prisma.$executeRawUnsafe(
+              `INSERT INTO leavestartingbalance (id, employee, leave_type, leave_period, amount) VALUES (?,?,?,?,?)`,
+              BigInt(Date.now() + Math.floor(Math.random() * 1000000)),
+              toBigInt(employeeId), t.id, toBigInt(period.id), startingBalance
+            ).catch(() => {});
+          }
+        }
+      }
+
+      // 3. calcBalance for current period — benefits from starting balance we may have just written
+      const bal = await calcBalance(employeeId, t.id.toString(), period.id.toString(), emp);
+
+      const effectiveBaseAlloc = parseFloat(ruleMatch?.default_per_year ?? t.default_per_year) || 0;
+      // carry_forward_days is 0 if CF window expired (calcBalance will have dropped to base allocation)
+      const carry_forward_days = (startingBalance !== null && bal.allocated > effectiveBaseAlloc)
+        ? Math.max(0, startingBalance - effectiveBaseAlloc)
+        : 0;
+
+      const effectiveAllowance = ruleMatch ? ruleMatch.leave_allowance === 'Yes' : t.leave_allowance === 'Yes';
+      const typeAllowance = allowEnabled && effectiveAllowance;
+      const aNet   = allowCalc?.amount    ?? 0;
+      const aTax   = allowCalc?.leave_tax ?? 0;
+      return {
+        leave_type_id:               t.id.toString(),
+        name:                        t.name,
+        leave_color:                 t.leave_color,
+        // Rule overrides type where present
+        leave_accrue:                ruleMatch?.leave_accrue               ?? t.leave_accrue,
+        carried_forward:             ruleMatch?.carried_forward             ?? t.carried_forward,
+        carried_forward_percentage:  ruleMatch?.carried_forward_percentage  ?? t.carried_forward_percentage ?? 100,
+        max_carried_forward_amount:  ruleMatch?.max_carried_forward_amount  ?? t.max_carried_forward_amount ?? 0,
+        apply_beyond_current:        ruleMatch?.apply_beyond_current        ?? t.apply_beyond_current ?? 'No',
+        supervisor_leave_assign:     ruleMatch?.supervisor_leave_assign     ?? t.supervisor_leave_assign ?? 'No',
+        propotionate_on_joined_date: ruleMatch?.propotionate_on_joined_date ?? t.propotionate_on_joined_date ?? 'No',
+        period_name:                 period.name ?? '',
+        ...bal,
+        carry_forward_days,
+        has_rule,
+        allowance_enabled:           typeAllowance,
+        allowance_amount:            typeAllowance ? aNet : null,
+        allowance_tax:               typeAllowance ? aTax : null,
+        allowance_gross:             typeAllowance ? Math.round((aNet + aTax) * 100) / 100 : null,
+        allowance_annual_factor:     typeAllowance ? (allowSettings.leave_allow_annual_factor ?? '0.3') : null,
+        allowance_tax_rate:          typeAllowance ? (allowSettings.leave_allow_tax_rate      ?? '0.3') : null,
+      };
+    })
+  );
+  respond.ok(res, 'Leave balance', result);
+});
+
+exports.getSubordinateLeaves = asyncHandler(async (req, res) => {
+  const supervisorId = toBigInt(req.user.id);
+  const statusFilter = req.query.status ? String(req.query.status) : null;
+
+  const subordinates = await prisma.$queryRawUnsafe(
+    `SELECT e.id FROM employee e
+     WHERE e.supervisorid = (SELECT employeeId FROM users WHERE id=? LIMIT 1)`,
+    supervisorId
+  ).catch(() => []);
+
+  if (!subordinates.length) return respond.ok(res, 'Subordinate leaves', []);
+
+  const ids = subordinates.map(r => r.id);
+  const whereStatus = statusFilter ? `AND el.status = '${statusFilter.replace(/'/g, '')}'` : '';
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT el.*,
+            TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS employee_name,
+            e.employee_id AS employee_code,
+            lt.name AS leave_type_name,
+            lt.leave_color,
+            (SELECT COUNT(*) FROM employeeleavedays eld WHERE eld.employee_leave = el.id) AS day_count
+     FROM employeeleaves el
+     LEFT JOIN employee   e  ON e.id  = el.employee
+     LEFT JOIN leavetypes lt ON lt.id = el.leave_type
+     WHERE el.employee IN (${ids.join(',')}) ${whereStatus}
+     ORDER BY el.posted_date DESC`
+  ).catch(() => []);
+  // Null out amount/tax for leaves that should never show an allowance figure
+  const cleaned = rows.map(r =>
+    (r.allowance_status === 'Pre-enable Skip' || r.req_allowance === 'No')
+      ? { ...r, amount: null, leave_tax: null }
+      : r
+  );
+  respond.ok(res, 'Subordinate leaves', s(cleaned));
+});
+
+exports.getSubordinateEmployees = asyncHandler(async (req, res) => {
+  const supervisorId = toBigInt(req.user.id);
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT e.id, TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS name, e.employee_id AS employee_code
+     FROM employee e
+     WHERE e.supervisorid = (SELECT employeeId FROM users WHERE id=? LIMIT 1)
+     ORDER BY e.firstName, e.lastName`,
+    supervisorId
+  ).catch(() => []);
+  respond.ok(res, 'Subordinate employees', s(rows));
+});
+
+// ── Leave Central Approval (role-based unified queue) ─────────────────────────
+
+exports.getLeaveCentralApproval = asyncHandler(async (req, res) => {
+  const userId    = toBigInt(req.user.id);
+  const isAdmin   = req.user?.roles?.some(r => ['admin', 'super-admin'].includes(r));
+
+  const ts        = await getThresholdSettings();
+  const approvers = JSON.parse(ts.threshold_approvers || '[]');
+  const isFinApprover = approvers.includes(String(req.user.id));
+
+  // Find current user's linked employee record
+  const userEmp = await prisma.$queryRawUnsafe(
+    `SELECT employeeId FROM users WHERE id=?`, userId
+  ).catch(() => []);
+  const empId = userEmp[0]?.employeeId ? toBigInt(userEmp[0].employeeId) : null;
+
+  const clauses = [];
+  const params  = [];
+
+  // Supervisor tier: subordinates waiting for first approval
+  if (empId) {
+    clauses.push(`(el.status = 'Pending Approval' AND EXISTS (
+      SELECT 1 FROM employee sub WHERE sub.supervisorid = ? AND sub.id = el.employee
+    ))`);
+    params.push(empId);
+  }
+
+  // HR tier: leaves waiting for HR approval
+  if (isAdmin) {
+    clauses.push(`el.status = 'Pending HR Approval'`);
+  }
+
+  // Financial approver tier: allowances held pending sign-off
+  if (isFinApprover) {
+    clauses.push(`el.allowance_status = 'Pending Financial Approval'`);
+  }
+
+  if (!clauses.length) return respond.ok(res, 'Leave approvals', []);
+
+  const rows = await prisma.$queryRawUnsafe(`
+    SELECT el.*,
+           TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS employee_name,
+           e.employee_id AS employee_code,
+           d.title AS department_name,
+           lt.name AS leave_type_name, lt.leave_color,
+           lp.name AS period_name,
+           (SELECT COUNT(*) FROM employeeleavedays eld WHERE eld.employee_leave = el.id) AS day_count
+    FROM employeeleaves el
+    LEFT JOIN employee         e  ON e.id   = el.employee
+    LEFT JOIN companystructures d  ON d.id   = e.departmentId
+    LEFT JOIN leavetypes        lt ON lt.id  = el.leave_type
+    LEFT JOIN leaveperiods      lp ON lp.id  = el.leave_period
+    WHERE ${clauses.join(' OR ')}
+    ORDER BY el.posted_date DESC
+  `, ...params).catch(() => []);
+
+  respond.ok(res, 'Leave approvals', s(rows));
+});
+
+exports.approveAllowanceLeave = asyncHandler(async (req, res) => {
+  const id      = toBigInt(req.params.id);
+  const rows    = await prisma.$queryRawUnsafe(`SELECT id, allowance_status FROM employeeleaves WHERE id=?`, id).catch(() => []);
+  const current = rows[0] ?? null;
+  if (!current) return respond.notFound(res, 'Leave not found');
+  if (current.allowance_status !== 'Pending Financial Approval')
+    return respond.badReq(res, 'Leave is not pending financial approval');
+
+  const ts        = await getThresholdSettings();
+  const approvers = JSON.parse(ts.threshold_approvers || '[]');
+  if (approvers.length && !approvers.includes(String(req.user.id)))
+    return respond.badReq(res, 'You are not authorised to approve this allowance');
+
+  await prisma.$executeRawUnsafe(
+    `UPDATE employeeleaves SET allowance_status='GL Scheduled' WHERE id=?`, id
+  );
+  await writeLog(id, req.user.id, 'Financial approval granted — GL scheduled for start date', 'Pending Financial Approval', 'GL Scheduled');
+  notifyLeaveAction(id, 'approved');
+  respond.ok(res, 'Financial approval granted — GL will post on leave start date');
+});

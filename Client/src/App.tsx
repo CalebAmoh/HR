@@ -21,6 +21,9 @@ import { LeaveSettings } from './components/LeaveSettings';
 import { NotificationSettings } from './components/NotificationSettings';
 import { AuditLogs } from './components/AuditLogs';
 import { CentralApproval } from './components/CentralApproval';
+import { PersonalMedical, AdminMedical } from './components/Medical';
+import { PersonalInfo } from './components/PersonalInfo';
+import { Help } from './components/Help';
 
 import { AppUser } from '../types/permissions';
 import { logout as authLogout, getCurrentUser, onUserChange } from '@/lib/auth';
@@ -92,7 +95,11 @@ export default function App() {
       case 'NotificationSettings': return <NotificationSettings />;
       case 'AdminReports': return <AdminReports />;
       case 'UserReports': return <UserReports />;
-      case 'CentralApproval': return <CentralApproval />;
+      case 'CentralApproval': return <CentralApproval onNavigate={navigate} />;
+      case 'PersonalInfo':    return <PersonalInfo />;
+      case 'PersonalMedical': return <PersonalMedical />;
+      case 'AdminMedical':    return <AdminMedical />;
+      case 'Help':            return <Help />;
       default: return <Dashboard />;
     }
   };
@@ -106,6 +113,7 @@ export default function App() {
       <Header
         onMenuToggle={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
         onLogout={handleLogout}
+        currentUser={currentUser}
       />
       <div className="flex flex-1 overflow-hidden relative">
         {isMobileMenuOpen && (

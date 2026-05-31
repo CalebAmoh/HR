@@ -1,14 +1,16 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
-  Search, Plus, Edit, Trash2, FileText, Eye, CheckCircle,
+  Search, Plus, Edit, Trash2, FileText, Eye, CheckCircle, XCircle,
   TrendingUp, Users, DollarSign, ArrowLeft, ChevronDown,
   ChevronsRight, RefreshCw, Lock, Send, ThumbsUp, ThumbsDown,
   ClipboardList, GitCompare, Clock, AlertTriangle, CheckSquare, Square, Copy,
+  Palette, AlignLeft, LayoutGrid, User,
+  X, Columns2, Tag, Zap,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FormModal } from './ui/FormModal';
-import { TabBar } from './ui/TabBar';
 import { TableToolbar } from './ui/TableToolbar';
+import { TablePagination } from './ui/TablePagination';
 import { FormField, inputClass } from './ui/FormField';
 import { Combobox } from './EmployeeTabs';
 import api from '../../lib/api';
@@ -40,6 +42,7 @@ interface PayrollCol {
   deduction_group: string | null; salary_components: string | null; calculation_columns: string | null;
   add_columns: string | null; sub_columns: string | null; calculation_function: string | null;
   calculation_rule: string | null; visible: number; include_in_net: number;
+  payslip_label: string | null;
 }
 interface PayFreq {
   id: string; name: string; description: string | null; sort_order: number; is_active: number;
@@ -50,18 +53,19 @@ interface PayrollEmp {
   currency: string | null; deduction_group: string | null; group_name: string | null;
   deduction_exemptions: string | null;
 }
-interface PaymentType { id: string; name: string; }
+interface PaymentType { id: string; name: string; generate_payslip?: number; }
 interface PayrollRun {
   id: string; name: string;
   pay_frequency: string | null; freq_name: string | null;
   date_start: string | null; date_end: string | null;
   deduction_group: string | null; group_name: string | null;
   payment_type_id: string | null; type_name: string | null;
-  status: 'Draft' | 'Processing' | 'Pending Approval' | 'Rejected' | 'Approved' | 'Completed';
+  status: 'Draft' | 'Processing' | 'Pending Approval' | 'Rejected' | 'Approved' | 'Completed' | 'GL Failed';
   created_at: string;
   submitted_by: string | null; approved_by: string | null;
   approved_at: string | null; rejection_reason: string | null;
   document_ref: string | null; finalized_at: string | null;
+  payment_log: string | null;
 }
 interface AuditEntry {
   id: string; run_id: string;
@@ -93,12 +97,15 @@ const BLANK_PROCESS: ProcessItem = {
   lower_limit_condition: 'NO_LOWER_LIMIT', lower_limit: '',
   upper_limit_condition: 'NO_UPPER_LIMIT', upper_limit: '', value: '',
 };
+
 const BLANK_PC = {
   name: '', function_type: 'Simple', enabled: 'Yes', editable: 'Yes', colorder: '',
   default_value: '', payment_deduction: '', salarycomponent_gl: '', posting_column: 'Yes', posting_branch: '',
   calculation_hook: '', deduction_group: '', salary_components: '', calculation_columns: '',
   add_columns: '', sub_columns: '', calculation_function: '', calculation_rule: '', visible: '1', include_in_net: '1',
+  payslip_label: '',
 };
+
 const BLANK_PE  = { employee: '', pay_frequency: '', currency: '', deduction_group: '', deduction_exemptions: '' };
 const BLANK_PF  = { name: '', description: '', sort_order: '' };
 const BLANK_RUN = { name: '', pay_frequency: '', date_start: '', date_end: '', deduction_group: '', payment_type: '' };
@@ -106,7 +113,16 @@ const BLANK_RUN = { name: '', pay_frequency: '', date_start: '', date_end: '', d
 const fmt = (n: number) =>
   n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const TABS = ['Payroll Runs', 'Payroll Employees', 'Payroll Columns', 'Deduction Groups', 'Calculation Rules', 'Payslip Designer'];
+const TABS = ['Payroll Runs', 'Payroll Employees', 'Payroll Columns', 'Deduction Groups', 'Calculation Rules', 'Report Templates'];
+
+const TAB_ICONS: Record<string, (p: { size?: number; className?: string }) => ReturnType<typeof Clock>> = {
+  'Payroll Runs':      Clock,
+  'Payroll Employees': Users,
+  'Payroll Columns':   Columns2,
+  'Deduction Groups':  Tag,
+  'Calculation Rules': Zap,
+  'Report Templates':  Palette,
+};
 
 // ─── Initials avatar ──────────────────────────────────────────────────────────
 
@@ -346,11 +362,13 @@ function FormulaInput({
 // ─── Payroll Grid ─────────────────────────────────────────────────────────────
 
 function PayslipSlideOver({
-  empId, empName, empIndex, gridData, hiddenColIds, netExcludedIds, runName, onClose,
+  empId, empName, empIndex, gridData, hiddenColIds, netExcludedIds,
+  runName, runPeriod, colLabelMap, settings, onClose,
 }: {
   empId: string; empName: string; empIndex: number;
   gridData: GridCell[]; hiddenColIds: Set<string>; netExcludedIds: Set<string>;
-  runName: string; onClose: () => void;
+  runName: string; runPeriod: string; colLabelMap: Map<string, string>;
+  settings: any | null; onClose: () => void;
 }) {
   const cells = gridData.filter(c => c.employee === empId);
   const visible = cells.filter(c => !hiddenColIds.has(String(c.payroll_item)))
@@ -363,6 +381,15 @@ function PayslipSlideOver({
     .filter(c => !netExcludedIds.has(String(c.payroll_item)))
     .reduce((s, c) => s + (c.payment_deduction === 'Deduction' ? -1 : 1) * (parseFloat(c.amount ?? '0') || 0), 0);
 
+  const accent  = settings?.accent_color || '#3B82F6';
+  const company = settings?.company_name || '';
+  const address = settings?.company_address || '';
+  const logo    = settings?.company_logo_url || '';
+  const headerNote = settings?.header_note || '';
+  const footerNote = settings?.footer_note || '';
+
+  const netBg = `${accent}18`;
+
   return (
     <AnimatePresence>
       <motion.div
@@ -370,7 +397,7 @@ function PayslipSlideOver({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className="fixed inset-0 z-50 flex justify-end"
-        style={{ background: 'rgba(0,0,0,0.35)' }}
+        style={{ background: 'rgba(0,0,0,0.4)' }}
         onClick={onClose}
       >
         <motion.div
@@ -378,78 +405,114 @@ function PayslipSlideOver({
           animate={{ x: 0 }}
           exit={{ x: '100%' }}
           transition={{ type: 'spring', damping: 28, stiffness: 300 }}
-          className="w-full max-w-[440px] h-full bg-[var(--surface)] shadow-2xl flex flex-col overflow-hidden"
+          className="w-full max-w-[460px] h-full bg-[var(--bg)] shadow-2xl flex flex-col overflow-hidden"
           onClick={e => e.stopPropagation()}
         >
-          {/* Header */}
-          <div className="px-6 py-5 border-b border-[var(--border)] flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <Initials name={empName} index={empIndex} />
-              <div>
-                <p className="font-bold text-[15px] text-[var(--text-primary)] leading-tight">{empName}</p>
-                <p className="text-[11px] text-[var(--text-muted)] mt-0.5">{runName}</p>
+          {/* ── Accent header bar ── */}
+          <div className="px-5 py-4 flex items-start justify-between gap-3" style={{ background: accent }}>
+            <div className="flex items-start gap-3 flex-1 min-w-0">
+              {logo && (
+                <img
+                  src={logo}
+                  alt="logo"
+                  className="h-10 w-10 rounded object-contain shrink-0"
+                  style={{ background: 'rgba(255,255,255,0.15)' }}
+                />
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-white text-[15px] leading-tight truncate">{company || 'Payslip'}</p>
+                {address && <p className="text-white/70 text-[10px] mt-0.5 leading-snug line-clamp-2">{address}</p>}
               </div>
             </div>
-            <button onClick={onClose} className="action-btn text-[var(--text-muted)]">
-              <span className="text-[18px] leading-none">×</span>
+            <div className="text-right shrink-0">
+              <p className="text-white/90 font-bold text-[11px] uppercase tracking-widest">PAYSLIP</p>
+              <p className="text-white/65 text-[10px] mt-0.5">{runPeriod}</p>
+            </div>
+            <button onClick={onClose} className="text-white/70 hover:text-white transition-colors ml-1 mt-0.5 shrink-0">
+              <X size={16} />
             </button>
           </div>
 
-          {/* Body */}
-          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+          {/* ── Employee info ── */}
+          <div className="px-5 py-3 border-b border-[var(--border)] bg-[var(--surface)]">
+            <div className="flex items-center gap-3">
+              <Initials name={empName} index={empIndex} />
+              <div>
+                <p className="font-bold text-[14px] text-[var(--text-primary)] leading-tight">{empName}</p>
+                <p className="text-[11px] text-[var(--text-muted)] mt-0.5">{runName}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Header note ── */}
+          {headerNote && (
+            <div className="px-5 py-2 bg-[var(--surface)] border-b border-[var(--border)]">
+              <p className="text-[11px] text-[var(--text-muted)] italic">{headerNote}</p>
+            </div>
+          )}
+
+          {/* ── Earnings & Deductions ── */}
+          <div className="flex-1 overflow-y-auto bg-[var(--bg)]">
+
             {/* Earnings */}
-            <div>
-              <p className="text-[11px] font-bold text-[var(--accent)] uppercase tracking-widest mb-2">Earnings</p>
-              <div className="border border-[var(--border)] rounded-xl overflow-hidden">
+            <div className="px-5 pt-4 pb-2">
+              <p className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: accent }}>Earnings</p>
+              <div className="rounded-[10px] border border-[var(--border)] overflow-hidden bg-[var(--surface)]">
                 {earnings.length === 0
                   ? <p className="py-4 text-center text-[12px] text-[var(--text-muted)]">No earnings</p>
                   : earnings.map(c => (
-                    <div key={c.id} className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border-light,var(--border))] last:border-0">
-                      <span className="text-[13px] text-[var(--text-secondary)]">{c.column_name}</span>
-                      <span className="text-[13px] font-semibold text-[var(--text-primary)] tabular-nums">
+                    <div key={c.id} className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)] last:border-0">
+                      <span className="text-[12px] text-[var(--text-secondary)]">{colLabelMap.get(c.payroll_item) ?? c.column_name}</span>
+                      <span className="text-[12px] font-semibold text-[var(--text-primary)] tabular-nums">
                         {fmt(parseFloat(c.amount ?? '0') || 0)}
                       </span>
                     </div>
                   ))
                 }
-                <div className="flex items-center justify-between px-4 py-2.5 bg-[var(--accent-dim)] border-t-2 border-[var(--accent)]">
-                  <span className="text-[12px] font-bold text-[var(--accent)] uppercase tracking-wide">Gross Pay</span>
-                  <span className="text-[14px] font-bold text-[var(--accent)] tabular-nums">{fmt(grossPay)}</span>
+                <div className="flex items-center justify-between px-4 py-2.5 border-t-2" style={{ borderColor: accent, background: `${accent}10` }}>
+                  <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: accent }}>Gross Pay</span>
+                  <span className="text-[13px] font-bold tabular-nums" style={{ color: accent }}>{fmt(grossPay)}</span>
                 </div>
               </div>
             </div>
 
             {/* Deductions */}
             {deductions.length > 0 && (
-              <div>
-                <p className="text-[11px] font-bold text-[var(--danger)] uppercase tracking-widest mb-2">Deductions</p>
-                <div className="border border-[var(--border)] rounded-xl overflow-hidden">
+              <div className="px-5 pt-2 pb-2">
+                <p className="text-[10px] font-bold uppercase tracking-widest mb-2 text-[var(--danger)]">Deductions</p>
+                <div className="rounded-[10px] border border-[var(--border)] overflow-hidden bg-[var(--surface)]">
                   {deductions.map(c => (
-                    <div key={c.id} className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border-light,var(--border))] last:border-0">
-                      <span className="text-[13px] text-[var(--text-secondary)]">{c.column_name}</span>
-                      <span className="text-[13px] font-semibold text-[var(--danger)] tabular-nums">
+                    <div key={c.id} className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)] last:border-0">
+                      <span className="text-[12px] text-[var(--text-secondary)]">{colLabelMap.get(c.payroll_item) ?? c.column_name}</span>
+                      <span className="text-[12px] font-semibold text-[var(--danger)] tabular-nums">
                         ({fmt(parseFloat(c.amount ?? '0') || 0)})
                       </span>
                     </div>
                   ))}
-                  <div className="flex items-center justify-between px-4 py-2.5 bg-[var(--danger-dim,rgba(239,68,68,0.08))] border-t-2 border-[var(--danger)]">
-                    <span className="text-[12px] font-bold text-[var(--danger)] uppercase tracking-wide">Total Deductions</span>
-                    <span className="text-[14px] font-bold text-[var(--danger)] tabular-nums">({fmt(totalDed)})</span>
+                  <div className="flex items-center justify-between px-4 py-2.5 border-t-2 border-[var(--danger)] bg-[var(--danger-dim,rgba(239,68,68,0.07))]">
+                    <span className="text-[11px] font-bold text-[var(--danger)] uppercase tracking-wide">Total Deductions</span>
+                    <span className="text-[13px] font-bold text-[var(--danger)] tabular-nums">({fmt(totalDed)})</span>
                   </div>
                 </div>
               </div>
             )}
+
+            {/* Footer note */}
+            {footerNote && (
+              <div className="px-5 py-3">
+                <p className="text-[11px] text-[var(--text-muted)] italic">{footerNote}</p>
+              </div>
+            )}
           </div>
 
-          {/* Footer — Net Pay */}
-          <div className="px-6 py-5 border-t-2 border-[var(--border)] bg-[var(--bg)]">
+          {/* ── Net Pay footer ── */}
+          <div className="px-5 py-4 border-t border-[var(--border)]" style={{ background: netBg }}>
             <div className="flex items-center justify-between">
-              <span className="text-[13px] font-bold text-[var(--text-secondary)] uppercase tracking-wide">Net Pay</span>
-              <span className={`syne text-[24px] font-extrabold tabular-nums ${netPay < 0 ? 'text-[var(--danger)]' : 'text-[var(--success)]'}`}>
-                {fmt(netPay)}
-              </span>
+              <span className="text-[12px] font-bold uppercase tracking-widest" style={{ color: accent }}>Net Pay</span>
+              <span className="syne text-[26px] font-extrabold tabular-nums" style={{ color: accent }}>{fmt(netPay)}</span>
             </div>
           </div>
+
         </motion.div>
       </motion.div>
     </AnimatePresence>
@@ -457,10 +520,10 @@ function PayslipSlideOver({
 }
 
 function PayrollGrid({
-  gridData, activeRun, editMode, generating, finalizing, submitting, approving, rejecting,
+  gridData, activeRun, editMode, generating, finalizing, retryingGL, submitting, approving, rejecting,
   staleColumnCount, hiddenColIds, netExcludedIds, approvalSettings, currentUserId,
-  auditLog, auditLoading,
-  onBack, onGenerate, onFinalize, onExport, onToggleEdit, onCellUpdate, onReorderCols,
+  auditLog, auditLoading, payslipEnabled, colLabelMap, payslipSettings,
+  onBack, onGenerate, onFinalize, onRetryGL, onExport, onToggleEdit, onCellUpdate, onReorderCols,
   onSubmit, onApprove, onReject, onLoadAudit,
 }: {
   gridData: GridCell[];
@@ -468,6 +531,7 @@ function PayrollGrid({
   editMode: boolean;
   generating: boolean;
   finalizing: boolean;
+  retryingGL: boolean;
   submitting: boolean;
   approving: boolean;
   rejecting: boolean;
@@ -478,9 +542,13 @@ function PayrollGrid({
   currentUserId: string | null;
   auditLog: AuditEntry[];
   auditLoading: boolean;
+  payslipEnabled: boolean;
+  colLabelMap: Map<string, string>;
+  payslipSettings: any | null;
   onBack: () => void;
   onGenerate: () => void;
   onFinalize: () => void;
+  onRetryGL: () => void;
   onExport: () => void;
   onToggleEdit: () => void;
   onCellUpdate: (itemId: string, amount: string) => void;
@@ -497,7 +565,7 @@ function PayrollGrid({
   const [dragOver,  setDragOver] = useState<string | null>(null);
   const [payslipId, setPayslipId] = useState<string | null>(null);
 
-  const isLocked          = activeRun.status === 'Completed';
+  const isLocked          = activeRun.status === 'Completed' || activeRun.status === 'GL Failed';
   const isPendingApproval = activeRun.status === 'Pending Approval';
   const isApproved        = activeRun.status === 'Approved';
   const isRejected        = activeRun.status === 'Rejected';
@@ -780,18 +848,52 @@ function PayrollGrid({
       )}
 
       {/* ── GL document reference banner (shown after finalization) ── */}
-      {isLocked && activeRun.document_ref && (
-        <div className="px-4 py-3 border border-[var(--success,#10b981)] bg-[rgba(16,185,129,0.07)] rounded-[12px] flex items-center gap-3 text-[13px]">
-          <CheckCircle size={15} className="text-[var(--success,#10b981)] shrink-0" />
-          <span className="font-semibold text-[var(--success,#10b981)]">GL Posted</span>
-          <span className="text-[var(--text-muted)]">Document Ref:</span>
-          <code className="font-mono text-[var(--text-primary)] bg-[var(--surface-hover,rgba(0,0,0,0.04))] px-2 py-0.5 rounded text-[12px]">{activeRun.document_ref}</code>
-          {activeRun.finalized_at && (
-            <span className="text-[var(--text-muted)] ml-auto text-[11px]">
-              {new Date(activeRun.finalized_at).toLocaleString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', hour12: false })}
-            </span>
-          )}
-        </div>
+      {isLocked && (
+        activeRun.document_ref ? (
+          <div className="px-4 py-3 border border-[var(--success,#10b981)] bg-[rgba(16,185,129,0.07)] rounded-[12px] flex items-center gap-3 text-[13px]">
+            <CheckCircle size={15} className="text-[var(--success,#10b981)] shrink-0" />
+            <span className="font-semibold text-[var(--success,#10b981)]">GL Posted</span>
+            <span className="text-[var(--text-muted)]">Document Ref:</span>
+            <code className="font-mono text-[var(--text-primary)] bg-[var(--surface-hover,rgba(0,0,0,0.04))] px-2 py-0.5 rounded text-[12px]">{activeRun.document_ref}</code>
+            {activeRun.finalized_at && (
+              <span className="text-[var(--text-muted)] ml-auto text-[11px]">
+                {new Date(activeRun.finalized_at).toLocaleString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', hour12: false })}
+              </span>
+            )}
+          </div>
+        ) : (() => {
+          let glErrMsg = '';
+          try {
+            const log = JSON.parse(activeRun.payment_log ?? '{}');
+            const e = log?.error;
+            if (e && typeof e === 'object') glErrMsg = e.responseCode ? `[${e.responseCode}] ${e.message || ''}`.trim() : e.message || JSON.stringify(e);
+            else if (typeof e === 'string') glErrMsg = e;
+          } catch {}
+          return (
+            <div className="px-4 py-3 border border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] rounded-[12px] text-[13px] space-y-2">
+              <div className="flex items-center gap-3">
+                <XCircle size={15} className="text-[var(--danger)] shrink-0" />
+                <span className="font-semibold text-[var(--danger)]">GL Posting Failed</span>
+                {activeRun.finalized_at && (
+                  <span className="text-[var(--text-muted)] ml-auto text-[11px]">
+                    {new Date(activeRun.finalized_at).toLocaleString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', hour12: false })}
+                  </span>
+                )}
+              </div>
+              {glErrMsg && (
+                <p className="text-[var(--danger)] text-[12px] font-mono bg-[color-mix(in_srgb,var(--danger)_6%,transparent)] px-3 py-1.5 rounded-lg">
+                  {glErrMsg}
+                </p>
+              )}
+              <div>
+                <button className="secondary-btn text-[12px]" onClick={onRetryGL} disabled={retryingGL}>
+                  <RefreshCw size={13} className={retryingGL ? 'animate-spin' : ''} />
+                  {retryingGL ? 'Retrying…' : 'Retry GL Posting'}
+                </button>
+              </div>
+            </div>
+          );
+        })()
       )}
 
       {/* ── Empty state ── */}
@@ -832,6 +934,13 @@ function PayrollGrid({
               )}
               <span className="text-[var(--border)]">|</span>
               <span>{cols.length} columns · {empIds.length} employees</span>
+              {payslipEnabled
+                ? <span className="text-[var(--border)]">|</span>
+                : null}
+              {payslipEnabled
+                ? <span className="text-[var(--accent)] opacity-70">Click employee name to view payslip</span>
+                : <span className="text-[var(--text-muted)] italic">Payslips not generated for this payment type</span>}
+
             </div>
             {/* Scroll progress bar */}
             <div className="flex items-center gap-2 shrink-0">
@@ -907,15 +1016,15 @@ function PayrollGrid({
                       animate={{ opacity: 1 }}
                       transition={{ delay: empIdx * 0.03 }}
                     >
-                      {/* Pinned employee name — click to open payslip */}
+                      {/* Pinned employee name — click to open payslip (only when payslips are enabled) */}
                       <td
-                        className={`${stickyCell()} td cursor-pointer group`}
+                        className={`${stickyCell()} td ${payslipEnabled ? 'cursor-pointer group' : ''}`}
                         style={{ minWidth: 180 }}
-                        onClick={() => setPayslipId(eid)}
+                        onClick={() => payslipEnabled && setPayslipId(eid)}
                       >
                         <div className="flex items-center gap-2.5">
                           <Initials name={empNames[eid] ?? eid} index={empIdx} />
-                          <span className="font-medium text-[var(--text-primary)] whitespace-nowrap group-hover:text-[var(--accent)] transition-colors">
+                          <span className={`font-medium text-[var(--text-primary)] whitespace-nowrap transition-colors ${payslipEnabled ? 'group-hover:text-[var(--accent)]' : ''}`}>
                             {empNames[eid] ?? eid}
                           </span>
                         </div>
@@ -1012,7 +1121,7 @@ function PayrollGrid({
       )}
     </motion.div>
 
-    {payslipId && (
+    {payslipEnabled && payslipId && (
       <PayslipSlideOver
         empId={payslipId}
         empName={empNames[payslipId] ?? payslipId}
@@ -1020,7 +1129,12 @@ function PayrollGrid({
         gridData={gridData}
         hiddenColIds={hiddenColIds}
         netExcludedIds={netExcludedIds}
+        colLabelMap={colLabelMap}
         runName={activeRun.name}
+        runPeriod={activeRun.date_start
+          ? `${activeRun.date_start.slice(0, 10)} → ${(activeRun.date_end ?? '').slice(0, 10)}`
+          : activeRun.name}
+        settings={payslipSettings}
         onClose={() => setPayslipId(null)}
       />
     )}
@@ -1172,12 +1286,15 @@ export function Payroll() {
   // ── Grid state ──────────────────────────────────────────────────────────────
   const [activeRunId,       setActiveRunId]       = useState<string | null>(null);
   const [activeRun,         setActiveRun]         = useState<PayrollRun | null>(null);
+  const activeRunPaymentType = ptRows.find((pt: PaymentType) => String(pt.id) === String(activeRun?.payment_type_id));
+  const payslipEnabled = !activeRun?.payment_type_id || !!activeRunPaymentType?.generate_payslip;
   const [gridData,          setGridData]          = useState<GridCell[]>([]);
   const [staleColumnCount,  setStaleColumnCount]  = useState(0);
   const [editMode,          setEditMode]          = useState(false);
   const [gridLoading,       setGridLoading]       = useState(false);
   const [generating,        setGenerating]        = useState(false);
   const [finalizing,        setFinalizing]        = useState(false);
+  const [retryingGL,        setRetryingGL]        = useState(false);
 
   // ── Approval ────────────────────────────────────────────────────────────────
   const [approvalSettings]                        = useState(() => getSettings().approvals);
@@ -1208,7 +1325,15 @@ export function Payroll() {
   const [compareDataB,   setCompareDataB]   = useState<GridCell[]>([]);
   const [comparing,      setComparing]      = useState(false);
 
-  const BLANK_PS = { template_name: '', deduction_group_id: '', company_name: '', company_address: '', company_logo_url: '', header_note: '', footer_note: '', accent_color: '#3B82F6', show_emp_id: true, show_department: true, show_position: true, show_bank_account: false, visible_columns: [] as string[] };
+  // ── Pagination ──────────────────────────────────────────────────────────────
+  const [runPage,     setRunPage]     = useState(1); const [runPageSize,  setRunPageSize]  = useState(10);
+  const [cgPage,      setCgPage]      = useState(1); const [cgPageSize,   setCgPageSize]   = useState(10);
+  const [scPage,      setScPage]      = useState(1); const [scPageSize,   setScPageSize]   = useState(10);
+  const [pcPage,      setPcPage]      = useState(1); const [pcPageSize,   setPcPageSize]   = useState(10);
+  const [pePage,      setPePage]      = useState(1); const [pePageSize,   setPePageSize]   = useState(10);
+  const [psPage,      setPsPage]      = useState(1); const [psPageSize,   setPsPageSize]   = useState(10);
+
+  const BLANK_PS = { template_name: '', deduction_group_id: '', payment_type_id: '', company_name: '', company_address: '', company_logo_url: '', header_note: '', footer_note: '', accent_color: '#3B82F6', show_emp_id: true, show_department: true, show_position: true, show_bank_account: false, visible_columns: [] as string[], net_columns: [] as string[] };
   const [psTemplates,  setPsTemplates]  = useState<any[]>([]);
   const [psSelected,   setPsSelected]   = useState<any | null>(null);
   const [psForm,       setPsForm]       = useState<any>(BLANK_PS);
@@ -1223,17 +1348,42 @@ export function Payroll() {
   useEffect(() => { if (activeTab === 'Calculation Rules') loadScAll();         }, [activeTab]);
   useEffect(() => { if (activeTab === 'Payroll Columns')   loadPcData();        }, [activeTab]);
   useEffect(() => { if (activeTab === 'Payroll Employees') loadPeAll();         }, [activeTab]);
-  useEffect(() => { if (activeTab === 'Payslip Designer')  loadPayslipSettings(); }, [activeTab]);
+  useEffect(() => { if (activeTab === 'Report Templates')  loadPayslipSettings(); }, [activeTab]);
+  useEffect(() => {
+    if (runLoading || activeRunId) return;
+    const targetId = sessionStorage.getItem('centralApproval.payrollRunId');
+    if (!targetId) return;
+    const target = runRows.find((run: PayrollRun) => String(run.id) === String(targetId));
+    if (!target) return;
+    sessionStorage.removeItem('centralApproval.payrollRunId');
+    setActiveTab('Payroll Runs');
+    openRun(target);
+  }, [runRows, runLoading, activeRunId]);
   // Load columns on mount so hiddenColIds is ready for the grid view without needing to visit the Columns tab first.
   useEffect(() => {
     api.get('/payroll/columns').then(r => setPcRows(r.data.data || [])).catch(() => {});
   }, []);
 
+  // Pagination resets when search/filter changes
+  useEffect(() => { setRunPage(1); }, [runSearch]);
+  useEffect(() => { setCgPage(1);  }, [cgSearch]);
+  useEffect(() => { setScPage(1);  }, [scSearch]);
+  useEffect(() => { setPcPage(1);  }, [pcSearch, pcTypeFilter]);
+  useEffect(() => { setPePage(1);  }, [peSearch, peFreqFilter]);
+
   async function loadPayslipSettings() {
     setPsLoading(true);
     try {
-      const res = await api.get('/payroll/payslip-templates');
-      setPsTemplates(res.data.data ?? []);
+      const [tplRes, cgRes, ptRes, colRes] = await Promise.all([
+        api.get('/payroll/payslip-templates'),
+        api.get('/payroll/calc-groups').catch(() => ({ data: { data: [] } })),
+        api.get('/salary/payment-types').catch(() => ({ data: { data: [] } })),
+        api.get('/payroll/columns').catch(() => ({ data: { data: [] } })),
+      ]);
+      setPsTemplates(tplRes.data.data ?? []);
+      setCgRows(cgRes.data.data || []);
+      setPtRows(ptRes.data.data || []);
+      setPcRows(colRes.data.data || []);
     } catch { /* silent */ }
     finally { setPsLoading(false); }
   }
@@ -1246,10 +1396,13 @@ export function Payroll() {
 
   function openPsEdit(t: any) {
     let cols: string[] = [];
+    let netCols: string[] = [];
     try { cols = t.visible_columns ? JSON.parse(t.visible_columns) : []; } catch { cols = []; }
+    try { netCols = t.net_columns ? JSON.parse(t.net_columns) : []; } catch { netCols = []; }
     setPsForm({
       template_name:     t.template_name ?? '',
       deduction_group_id: t.deduction_group_id ? String(t.deduction_group_id) : '',
+      payment_type_id:   t.payment_type_id ? String(t.payment_type_id) : '',
       company_name:     t.company_name     ?? '',
       company_address:  t.company_address  ?? '',
       company_logo_url: t.company_logo_url ?? '',
@@ -1261,6 +1414,7 @@ export function Payroll() {
       show_position:    !!t.show_position,
       show_bank_account: !!t.show_bank_account,
       visible_columns:  cols,
+      net_columns:      netCols,
     });
     setPsSelected(t);
     setPsModalOpen(true);
@@ -1270,7 +1424,13 @@ export function Payroll() {
     if (!psForm.template_name?.trim()) return toast.error('Template name is required');
     setPsSaving(true);
     try {
-      const payload = { ...psForm, deduction_group_id: psForm.deduction_group_id || null, visible_columns: psForm.visible_columns };
+      const payload = {
+        ...psForm,
+        deduction_group_id: psForm.deduction_group_id || null,
+        payment_type_id: psForm.payment_type_id || null,
+        visible_columns: psForm.visible_columns,
+        net_columns: psForm.net_columns,
+      };
       if (psSelected) {
         const res = await api.put(`/payroll/payslip-templates/${psSelected.id}`, payload);
         setPsTemplates((ts: any[]) => ts.map(t => t.id === psSelected.id ? res.data.data : t));
@@ -1342,16 +1502,18 @@ export function Payroll() {
   async function loadRuns() {
     setRunLoading(true);
     try {
-      const [runsRes, pfRes, cgRes, ptRes] = await Promise.all([
+      const [runsRes, pfRes, cgRes, ptRes, tplRes] = await Promise.all([
         api.get('/payroll/runs'),
         api.get('/payroll/pay-frequencies').catch(() => ({ data: { data: [] } })),
         api.get('/payroll/calc-groups').catch(() => ({ data: { data: [] } })),
         api.get('/salary/payment-types').catch(() => ({ data: { data: [] } })),
+        api.get('/payroll/payslip-templates').catch(() => ({ data: { data: [] } })),
       ]);
       setRunRows(runsRes.data.data || []);
       setPfRows(pfRes.data.data || []);
       setCgRows(cgRes.data.data || []);
       setPtRows(ptRes.data.data || []);
+      setPsTemplates(tplRes.data.data || []);
     } catch { toast.error('Failed to load payroll runs'); }
     finally { setRunLoading(false); }
   }
@@ -1426,7 +1588,7 @@ export function Payroll() {
       if (d.notchRowsFound === 0 && d.salaryRowsFound === 0 && d.employees > 0) {
         toast.error('No salary data — employees have no notch or salary components assigned.', { duration: 8000 });
       } else if (d.missingComponents?.length > 0) {
-        toast.warning(`Generated. Missing components: ${d.missingComponents.join(', ')}`, { duration: 10000 });
+        toast.warning(`Generated, but no selected employees have salary values for: ${d.missingComponents.join(', ')}`, { duration: 10000 });
       } else if (d.empsWithNoSalary > 0) {
         toast.warning(`${d.empsWithNoSalary} employee(s) have no salary data.`);
       } else {
@@ -1454,10 +1616,39 @@ export function Payroll() {
       const res = await api.post(`/payroll/runs/${activeRunId}/finalize`);
       const updated: PayrollRun | null = res.data?.data ?? null;
       toast.success('Payroll finalized and locked');
+      // Inform user whether GL posting succeeded
+      if (updated?.document_ref) {
+        toast.success(`GL posted — Ref: ${updated.document_ref}`, { duration: 6000 });
+      } else {
+        let glErr = '';
+        try { const log = JSON.parse(updated?.payment_log ?? '{}'); glErr = log?.error?.message || log?.message || JSON.stringify(log); } catch {}
+        toast.error(`GL posting failed${glErr ? ': ' + glErr : ' — check server logs'}`, { duration: 8000 });
+      }
       setRunRows(r => r.map(x => x.id === activeRunId ? (updated ? { ...x, ...updated } : { ...x, status: 'Completed' as const }) : x));
       setActiveRun(r => r ? (updated ? { ...r, ...updated } : { ...r, status: 'Completed' as const }) : r);
     } catch (e: any) { toast.error(e.response?.data?.message || 'Finalize failed'); }
     finally { setFinalizing(false); }
+  }
+
+  async function retryGL() {
+    if (!activeRunId) return;
+    setRetryingGL(true);
+    try {
+      const res = await api.post(`/payroll/runs/${activeRunId}/retry-gl`);
+      const updated: PayrollRun | null = res.data?.data ?? null;
+      if (updated?.document_ref) {
+        toast.success(`GL posted — Ref: ${updated.document_ref}`, { duration: 6000 });
+      } else {
+        let glErr = '';
+        try { const log = JSON.parse(updated?.payment_log ?? '{}'); glErr = log?.error?.message || log?.error?.responseCode ? `[${log.error.responseCode}] ${log.error.message || ''}` : JSON.stringify(log.error ?? log); } catch {}
+        toast.error(`GL posting failed${glErr ? ': ' + glErr : ''}`, { duration: 8000 });
+      }
+      if (updated) {
+        setRunRows(r => r.map(x => x.id === activeRunId ? { ...x, ...updated } : x));
+        setActiveRun(r => r ? { ...r, ...updated } : r);
+      }
+    } catch (e: any) { toast.error(e.response?.data?.message || 'Retry failed'); }
+    finally { setRetryingGL(false); }
   }
 
   async function submitRun() {
@@ -1700,6 +1891,7 @@ export function Payroll() {
       calculation_rule: pc.calculation_rule ? String(pc.calculation_rule) : '',
       visible: pc.visible ? '1' : '0',
       include_in_net: pc.include_in_net ? '1' : '0',
+      payslip_label: pc.payslip_label ?? '',
     });
     setEditingPc(null);
     setPcModalOpen(true);
@@ -1719,6 +1911,7 @@ export function Payroll() {
       calculation_rule: pc.calculation_rule ? String(pc.calculation_rule) : '',
       visible: pc.visible ? '1' : '0',
       include_in_net: pc.include_in_net ? '1' : '0',
+      payslip_label: pc.payslip_label ?? '',
     });
     setEditingPc(pc);
     setPcModalOpen(true);
@@ -1727,6 +1920,7 @@ export function Payroll() {
   async function savePc() {
     if (!pcForm.name.trim())       return toast.error('Name is required');
     if (!pcForm.payment_deduction) return toast.error('Payment / Deduction is required');
+    if (pcForm.posting_column === 'Yes' && !pcForm.salarycomponent_gl.trim()) return toast.error('GL Account is required when Posting Column is Yes');
     const pcNameLower = pcForm.name.trim().toLowerCase();
     const pcDup = pcRows.find((r: PayrollCol) => r.name.toLowerCase() === pcNameLower && r.id !== editingPc?.id);
     if (pcDup) return toast.error(`A column named "${pcDup.name}" already exists`);
@@ -1935,14 +2129,50 @@ export function Payroll() {
     return true;
   }), [pcRows, pcSearch, pcTypeFilter]);
 
+  const parseTemplateIds = useCallback((value: any): string[] => {
+    if (Array.isArray(value)) return value.map(String);
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const activeReportTemplate = useMemo(() => {
+    if (!activeRun || !psTemplates.length) return null;
+    const runType = activeRun.payment_type_id ? String(activeRun.payment_type_id) : '';
+    const runGroup = activeRun.deduction_group ? String(activeRun.deduction_group) : '';
+    return psTemplates.find(t => runType && runGroup && String(t.payment_type_id ?? '') === runType && String(t.deduction_group_id ?? '') === runGroup)
+      ?? psTemplates.find(t => runType && String(t.payment_type_id ?? '') === runType && !t.deduction_group_id)
+      ?? psTemplates.find(t => runGroup && !t.payment_type_id && String(t.deduction_group_id ?? '') === runGroup)
+      ?? psTemplates.find(t => !t.payment_type_id && !t.deduction_group_id)
+      ?? null;
+  }, [activeRun, psTemplates]);
+
   const hiddenColIds = useMemo(
-    () => new Set(pcRows.filter(c => !c.visible).map(c => String(c.id))),
-    [pcRows],
+    () => {
+      const selected = parseTemplateIds(activeReportTemplate?.visible_columns);
+      return new Set(
+        activeReportTemplate
+          ? (selected.length ? pcRows.filter(c => !selected.includes(String(c.id))).map(c => String(c.id)) : [])
+          : pcRows.filter(c => !c.visible).map(c => String(c.id))
+      );
+    },
+    [activeReportTemplate, parseTemplateIds, pcRows],
   );
 
   const netExcludedIds = useMemo(
-    () => new Set(pcRows.filter(c => !c.include_in_net).map(c => String(c.id))),
-    [pcRows],
+    () => {
+      const selected = parseTemplateIds(activeReportTemplate?.net_columns);
+      return new Set(
+        selected.length
+          ? pcRows.filter(c => !selected.includes(String(c.id))).map(c => String(c.id))
+          : pcRows.filter(c => !c.include_in_net).map(c => String(c.id))
+      );
+    },
+    [activeReportTemplate, parseTemplateIds, pcRows],
   );
 
   const filteredPe = useMemo(() => peRows.filter(r => {
@@ -1951,6 +2181,13 @@ export function Payroll() {
     const matchFreq = !peFreqFilter || r.pay_frequency === peFreqFilter;
     return matchSearch && matchFreq;
   }), [peRows, peSearch, peFreqFilter]);
+
+  // ── Paged slices ────────────────────────────────────────────────────────────
+  const pagedCg: CalcGroup[]   = filteredCg.slice((cgPage - 1) * cgPageSize, cgPage * cgPageSize);
+  const pagedSc: SavedCalc[]   = filteredSc.slice((scPage - 1) * scPageSize, scPage * scPageSize);
+  const pagedPc: PayrollCol[]  = filteredPc.slice((pcPage - 1) * pcPageSize, pcPage * pcPageSize);
+  const pagedPe: PayrollEmp[]  = filteredPe.slice((pePage - 1) * pePageSize, pePage * pePageSize);
+  const pagedPs: any[]         = psTemplates.slice((psPage - 1) * psPageSize, psPage * psPageSize);
 
   // ── Tab renders ─────────────────────────────────────────────────────────────
 
@@ -1973,7 +2210,7 @@ export function Payroll() {
                 <tr><td colSpan={3} className="td text-center py-10 text-[var(--text-muted)]">Loading...</td></tr>
               ) : filteredCg.length === 0 ? (
                 <tr><td colSpan={3} className="td text-center py-10 text-[var(--text-muted)]">No calculation groups found.</td></tr>
-              ) : filteredCg.map((cg, i) => (
+              ) : pagedCg.map((cg, i) => (
                 <motion.tr key={cg.id} className="tr" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.04 }}>
                   <td className="td font-medium text-[var(--text-primary)]">{cg.name}</td>
                   <td className="td text-[var(--text-muted)] max-w-[500px] truncate">{cg.details || '—'}</td>
@@ -1990,6 +2227,12 @@ export function Payroll() {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          total={cgRows.length} filtered={filteredCg.length}
+          page={cgPage} pageSize={cgPageSize}
+          onPageChange={setCgPage}
+          onPageSizeChange={(s) => { setCgPageSize(s); setCgPage(1); }}
+        />
       </div>
     </motion.div>
   );
@@ -2081,7 +2324,7 @@ export function Payroll() {
                 <tr><td colSpan={6} className="td text-center py-10 text-[var(--text-muted)]">Loading...</td></tr>
               ) : filteredPe.length === 0 ? (
                 <tr><td colSpan={6} className="td text-center py-10 text-[var(--text-muted)]">No payroll employees found.</td></tr>
-              ) : filteredPe.map((pe, i) => {
+              ) : pagedPe.map((pe, i) => {
                 const curLabel  = currencies.find((c: RefItem) => c.id === pe.currency)?.name ?? pe.currency ?? '—';
                 const isChecked = peBulkSelected.includes(pe.id);
                 return (
@@ -2115,6 +2358,12 @@ export function Payroll() {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          total={peRows.length} filtered={filteredPe.length}
+          page={pePage} pageSize={pePageSize}
+          onPageChange={setPePage}
+          onPageSizeChange={(s) => { setPePageSize(s); setPePage(1); }}
+        />
       </div>
     </motion.div>
     );
@@ -2162,29 +2411,34 @@ export function Payroll() {
           <table className="w-full border-collapse">
             <thead>
               <tr>
-                <th className="th text-left" style={{ width: '20%' }}>Column Name</th>
-                <th className="th text-left" style={{ width: '9%' }}>Type</th>
-                <th className="th text-left" style={{ width: '28%' }}>Calculation Formula</th>
-                <th className="th text-left" style={{ width: '11%' }}>Payment / Deduction</th>
+                <th className="th text-left" style={{ width: '18%' }}>Column Name</th>
+                <th className="th text-left" style={{ width: '12%' }}>GL Account</th>
+                <th className="th text-left" style={{ width: '22%' }}>Calculation Formula</th>
+                <th className="th text-left" style={{ width: '10%' }}>Payment / Deduction</th>
                 <th className="th text-center" style={{ width: '5%' }}>Order</th>
-                <th className="th text-center" style={{ width: '7%' }}>Status</th>
+                <th className="th text-center" style={{ width: '7%' }}>Posting</th>
+                <th className="th text-center" style={{ width: '6%' }}>Status</th>
                 <th className="th text-center" style={{ width: '10%' }}>Visibility</th>
-                <th className="th text-right" style={{ width: '10%' }}></th>
+                <th className="th text-right" style={{ width: '7%' }}></th>
               </tr>
             </thead>
             <tbody>
               {pcLoading ? (
-                <tr><td colSpan={8} className="td text-center py-10 text-[var(--text-muted)]">Loading...</td></tr>
+                <tr><td colSpan={9} className="td text-center py-10 text-[var(--text-muted)]">Loading...</td></tr>
               ) : filteredPc.length === 0 ? (
-                <tr><td colSpan={8} className="td text-center py-10 text-[var(--text-muted)]">No payroll columns found.</td></tr>
-              ) : filteredPc.map((pc, i) => (
+                <tr><td colSpan={9} className="td text-center py-10 text-[var(--text-muted)]">No payroll columns found.</td></tr>
+              ) : pagedPc.map((pc, i) => (
                 <motion.tr key={pc.id} className="tr" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.03 }}>
-                  <td className="td font-semibold text-[var(--text-primary)]">{pc.name}</td>
-                  <td className="td">
-                    <span className={`pill text-[11px] ${pc.function_type === 'Advanced' ? 'pill-accent' : ''}`}
-                      style={pc.function_type !== 'Advanced' ? { background: 'var(--bg)', color: 'var(--text-muted)', border: '1px solid var(--border)' } : {}}>
-                      {pc.function_type}
-                    </span>
+                  <td className="td font-semibold text-[var(--text-primary)]">
+                    {pc.name}
+                    {pc.payslip_label && (
+                      <span className="ml-2 text-[10px] font-normal text-[var(--text-muted)] border border-[var(--border)] rounded px-1.5 py-0.5">
+                        → {pc.payslip_label}
+                      </span>
+                    )}
+                  </td>
+                  <td className="td text-[12px] font-mono text-[var(--accent)]">
+                    {pc.salarycomponent_gl || <span className="text-[var(--text-muted)] opacity-50 font-sans">—</span>}
                   </td>
                   <td className="td max-w-0">
                     {pc.calculation_function ? (
@@ -2202,6 +2456,12 @@ export function Payroll() {
                     ) : <span className="text-[var(--text-muted)] opacity-50">—</span>}
                   </td>
                   <td className="td text-center text-[var(--text-muted)] text-[12px]">{pc.colorder ?? '—'}</td>
+                  <td className="td text-center">
+                    <span className={`pill text-[11px] ${pc.posting_column === 'Yes' ? 'pill-success' : ''}`}
+                      style={pc.posting_column !== 'Yes' ? { background: 'var(--bg)', color: 'var(--text-muted)', border: '1px solid var(--border)' } : {}}>
+                      {pc.posting_column === 'Yes' ? 'Yes' : 'No'}
+                    </span>
+                  </td>
                   <td className="td text-center">
                     <span className={`pill text-[11px] ${pc.enabled === 'Yes' ? 'pill-success' : ''}`}
                       style={pc.enabled !== 'Yes' ? { background: 'var(--danger-dim)', color: 'var(--danger)', border: '1px solid var(--danger)' } : {}}>
@@ -2242,6 +2502,12 @@ export function Payroll() {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          total={pcRows.length} filtered={filteredPc.length}
+          page={pcPage} pageSize={pcPageSize}
+          onPageChange={setPcPage}
+          onPageSizeChange={(s) => { setPcPageSize(s); setPcPage(1); }}
+        />
       </div>
     </motion.div>
   );
@@ -2267,7 +2533,7 @@ export function Payroll() {
                 <tr><td colSpan={5} className="td text-center py-10 text-[var(--text-muted)]">Loading...</td></tr>
               ) : filteredSc.length === 0 ? (
                 <tr><td colSpan={5} className="td text-center py-10 text-[var(--text-muted)]">No saved calculations found.</td></tr>
-              ) : filteredSc.map((sc, i) => (
+              ) : pagedSc.map((sc, i) => (
                 <motion.tr key={sc.id} className="tr" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.04 }}>
                   <td className="td font-medium text-[var(--text-primary)]">{sc.name}</td>
                   <td className="td">
@@ -2291,6 +2557,12 @@ export function Payroll() {
             </tbody>
           </table>
         </div>
+        <TablePagination
+          total={scRows.length} filtered={filteredSc.length}
+          page={scPage} pageSize={scPageSize}
+          onPageChange={setScPage}
+          onPageSizeChange={(s) => { setScPageSize(s); setScPage(1); }}
+        />
       </div>
     </motion.div>
   );
@@ -2304,14 +2576,20 @@ export function Payroll() {
       const cur: string[] = f.visible_columns ?? [];
       return { ...f, visible_columns: cur.includes(id) ? cur.filter((x: string) => x !== id) : [...cur, id] };
     });
+    const toggleNetCol = (id: string) => setPsForm((f: any) => {
+      const cur: string[] = f.net_columns ?? [];
+      return { ...f, net_columns: cur.includes(id) ? cur.filter((x: string) => x !== id) : [...cur, id] };
+    });
     const allIds = [...paymentCols, ...deductionCols].map((c: PayrollCol) => String(c.id));
-    const allSelected = allIds.length > 0 && allIds.every((id: string) => (ps.visible_columns ?? []).includes(id));
 
     return (
-      <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+      <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+        <p className="text-[12px] text-[var(--text-muted)]">
+          Templates control which columns appear in the report grid and on payslips for each payment type. Create one template per payment type to have different column sets.
+        </p>
         {/* ── Template list ── */}
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden">
-          <TableToolbar searchQuery="" onSearchChange={() => {}} searchPlaceholder="Payslip templates..."
+          <TableToolbar searchQuery="" onSearchChange={() => {}} searchPlaceholder="Report templates..."
             actions={<button className="primary-btn" onClick={openPsAdd}><Plus size={15} /> New Template</button>} />
           <div className="overflow-x-auto">
             {psLoading ? (
@@ -2321,25 +2599,35 @@ export function Payroll() {
                 <thead>
                   <tr>
                     <th className="th text-left">Template Name</th>
+                    <th className="th text-left">Payment Type</th>
                     <th className="th text-left">Applies To Group</th>
                     <th className="th text-left">Columns Selected</th>
+                    <th className="th text-left">Net Columns</th>
                     <th className="th text-right"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {psTemplates.length === 0 ? (
-                    <tr><td colSpan={4} className="td text-center py-10 text-[var(--text-muted)]">No templates yet. Add one to configure payslip layout.</td></tr>
-                  ) : psTemplates.map((t: any, i: number) => {
+                    <tr><td colSpan={6} className="td text-center py-10 text-[var(--text-muted)]">No templates yet. Add one to configure payslip layout.</td></tr>
+                  ) : pagedPs.map((t: any, i: number) => {
                     let colCount = 0;
+                    let netCount = 0;
                     try { colCount = t.visible_columns ? JSON.parse(t.visible_columns).length : 0; } catch { colCount = 0; }
+                    try { netCount = t.net_columns ? JSON.parse(t.net_columns).length : 0; } catch { netCount = 0; }
                     return (
                       <motion.tr key={t.id} className="tr" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.04 }}>
                         <td className="td font-medium text-[var(--text-primary)]">{t.template_name}</td>
+                        <td className="td text-[var(--text-muted)]">{t.type_name || <span className="opacity-50">All payment types</span>}</td>
                         <td className="td text-[var(--text-muted)]">{t.group_name || <span className="opacity-50">All groups (default)</span>}</td>
                         <td className="td">
                           {colCount === 0
                             ? <span className="text-[var(--text-muted)] opacity-60 text-xs">All columns</span>
                             : <span className="pill pill-accent text-[11px]">{colCount} column{colCount !== 1 ? 's' : ''}</span>}
+                        </td>
+                        <td className="td">
+                          {netCount === 0
+                            ? <span className="text-[var(--text-muted)] opacity-60 text-xs">Column defaults</span>
+                            : <span className="pill pill-success text-[11px]">{netCount} net column{netCount !== 1 ? 's' : ''}</span>}
                         </td>
                         <td className="td text-right">
                           <div className="flex items-center justify-end gap-1">
@@ -2356,6 +2644,12 @@ export function Payroll() {
               </table>
             )}
           </div>
+          <TablePagination
+            total={psTemplates.length} filtered={psTemplates.length}
+            page={psPage} pageSize={psPageSize}
+            onPageChange={setPsPage}
+            onPageSizeChange={(s) => { setPsPageSize(s); setPsPage(1); }}
+          />
         </div>
 
         {/* ── Edit / Add modal ── */}
@@ -2368,136 +2662,246 @@ export function Payroll() {
               onSave={savePayslipSettings}
               saveLabel={psSaving ? 'Saving…' : 'Save Template'}
             >
-              <div className="grid grid-cols-2 gap-6">
-                {/* ── Left: settings ── */}
-                <div className="space-y-4">
-                  <FormField label="Template Name" required>
-                    <input className={inputClass} value={ps.template_name} onChange={e => setPsForm((f: any) => ({ ...f, template_name: e.target.value }))} placeholder="e.g. Senior Staff, Default" />
-                  </FormField>
-                  <FormField label="Applies To Deduction Group">
-                    <Combobox
-                      options={[{ id: '', label: 'All groups (default)' }, ...cgRows.map((cg: any) => ({ id: cg.id, label: cg.name }))]}
-                      value={ps.deduction_group_id} onChange={id => setPsForm((f: any) => ({ ...f, deduction_group_id: id }))}
-                      placeholder="All groups (default)" />
-                  </FormField>
-                  <FormField label="Company Name">
-                    <input className={inputClass} value={ps.company_name} onChange={e => setPsForm((f: any) => ({ ...f, company_name: e.target.value }))} placeholder="e.g. Acme Corp Ltd" />
-                  </FormField>
-                  <FormField label="Company Address">
-                    <textarea className={inputClass} rows={2} value={ps.company_address} onChange={e => setPsForm((f: any) => ({ ...f, company_address: e.target.value }))} placeholder="Full address..." />
-                  </FormField>
-                  <FormField label="Logo URL">
-                    <input className={inputClass} value={ps.company_logo_url} onChange={e => setPsForm((f: any) => ({ ...f, company_logo_url: e.target.value }))} placeholder="https://..." />
-                  </FormField>
-                  <div className="grid grid-cols-2 gap-3">
-                    <FormField label="Header Note">
-                      <textarea className={inputClass} rows={2} value={ps.header_note} onChange={e => setPsForm((f: any) => ({ ...f, header_note: e.target.value }))} placeholder="Shown at top..." />
+              <div className="flex gap-6">
+                {/* ── Left: settings cards ── */}
+                <div className="flex-1 min-w-0 space-y-4">
+
+                  {/* Identity */}
+                  <div className="rounded-[12px] border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">
+                    <p className="text-[12px] font-semibold text-[var(--text-primary)] flex items-center gap-2">
+                      <FileText size={13} className="text-[var(--accent)]" /> Identity
+                    </p>
+                    <FormField label="Template Name" required>
+                      <input className={inputClass} value={ps.template_name} onChange={e => setPsForm((f: any) => ({ ...f, template_name: e.target.value }))} placeholder="e.g. Salary, Rent Allowance" />
                     </FormField>
-                    <FormField label="Footer Note">
-                      <textarea className={inputClass} rows={2} value={ps.footer_note} onChange={e => setPsForm((f: any) => ({ ...f, footer_note: e.target.value }))} placeholder="Shown at bottom..." />
+                    <div className="grid grid-cols-2 gap-3">
+                      <FormField label="Payment Type">
+                        <Combobox
+                          options={[{ id: '', label: 'All payment types' }, ...ptRows.map((pt: any) => ({ id: String(pt.id), label: pt.name }))]}
+                          value={ps.payment_type_id} onChange={id => setPsForm((f: any) => ({ ...f, payment_type_id: id }))}
+                          placeholder="All payment types" />
+                      </FormField>
+                      <FormField label="Deduction Group">
+                        <Combobox
+                          options={[{ id: '', label: 'All groups (default)' }, ...cgRows.map((cg: any) => ({ id: cg.id, label: cg.name }))]}
+                          value={ps.deduction_group_id} onChange={id => setPsForm((f: any) => ({ ...f, deduction_group_id: id }))}
+                          placeholder="All groups (default)" />
+                      </FormField>
+                    </div>
+                  </div>
+
+                  {/* Branding */}
+                  <div className="rounded-[12px] border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">
+                    <p className="text-[12px] font-semibold text-[var(--text-primary)] flex items-center gap-2">
+                      <Palette size={13} className="text-[var(--accent)]" /> Branding
+                    </p>
+                    <FormField label="Company Name">
+                      <input className={inputClass} value={ps.company_name} onChange={e => setPsForm((f: any) => ({ ...f, company_name: e.target.value }))} placeholder="e.g. Acme Corp Ltd" />
+                    </FormField>
+                    <FormField label="Company Address">
+                      <textarea className={inputClass} rows={2} value={ps.company_address} onChange={e => setPsForm((f: any) => ({ ...f, company_address: e.target.value }))} placeholder="Full address..." />
+                    </FormField>
+                    <FormField label="Logo URL">
+                      <input className={inputClass} value={ps.company_logo_url} onChange={e => setPsForm((f: any) => ({ ...f, company_logo_url: e.target.value }))} placeholder="https://..." />
+                    </FormField>
+                    <FormField label="Accent Colour">
+                      <div className="flex items-center gap-3">
+                        <input type="color" value={ps.accent_color} onChange={e => setPsForm((f: any) => ({ ...f, accent_color: e.target.value }))} className="h-9 w-14 rounded cursor-pointer border border-[var(--border)]" />
+                        <input className={inputClass} value={ps.accent_color} onChange={e => setPsForm((f: any) => ({ ...f, accent_color: e.target.value }))} placeholder="#3B82F6" />
+                      </div>
                     </FormField>
                   </div>
-                  <FormField label="Accent Colour">
-                    <div className="flex items-center gap-3">
-                      <input type="color" value={ps.accent_color} onChange={e => setPsForm((f: any) => ({ ...f, accent_color: e.target.value }))} className="h-9 w-14 rounded cursor-pointer border border-[var(--border)]" />
-                      <input className={inputClass} value={ps.accent_color} onChange={e => setPsForm((f: any) => ({ ...f, accent_color: e.target.value }))} placeholder="#3B82F6" />
+
+                  {/* Notes */}
+                  <div className="rounded-[12px] border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">
+                    <p className="text-[12px] font-semibold text-[var(--text-primary)] flex items-center gap-2">
+                      <AlignLeft size={13} className="text-[var(--accent)]" /> Notes
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <FormField label="Header Note">
+                        <textarea className={inputClass} rows={2} value={ps.header_note} onChange={e => setPsForm((f: any) => ({ ...f, header_note: e.target.value }))} placeholder="Shown at top of payslip..." />
+                      </FormField>
+                      <FormField label="Footer Note">
+                        <textarea className={inputClass} rows={2} value={ps.footer_note} onChange={e => setPsForm((f: any) => ({ ...f, footer_note: e.target.value }))} placeholder="Shown at bottom of payslip..." />
+                      </FormField>
                     </div>
-                  </FormField>
-                  <div>
-                    <p className="label mb-2">Show Employee Fields</p>
-                    <div className="flex flex-wrap gap-3">
+                  </div>
+
+                  {/* Employee Fields */}
+                  <div className="rounded-[12px] border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">
+                    <p className="text-[12px] font-semibold text-[var(--text-primary)] flex items-center gap-2">
+                      <User size={13} className="text-[var(--accent)]" /> Employee Fields
+                    </p>
+                    <div className="flex flex-wrap gap-2">
                       {([['show_emp_id', 'Employee ID'], ['show_department', 'Department'], ['show_position', 'Position'], ['show_bank_account', 'Bank Account']] as [string, string][]).map(([key, lbl]) => (
-                        <label key={key} className="flex items-center gap-2 cursor-pointer select-none text-sm text-[var(--text-secondary)]">
-                          <input type="checkbox" checked={!!ps[key]} onChange={e => setPsForm((f: any) => ({ ...f, [key]: e.target.checked }))} className="accent-[var(--accent)] w-4 h-4" />
-                          {lbl}
-                        </label>
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setPsForm((f: any) => ({ ...f, [key]: !f[key] }))}
+                          className={ps[key] ? 'pill pill-accent text-[11px]' : 'text-[11px] text-[var(--text-muted)] border border-[var(--border)] rounded-full px-3 py-1 hover:border-[var(--accent)] transition-colors'}
+                        >{lbl}</button>
                       ))}
                     </div>
                   </div>
 
-                  {/* ── Column visibility ── */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="label">Columns to Show on Payslip</p>
-                      <label className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] cursor-pointer">
-                        <input type="checkbox" checked={allSelected} onChange={() => setPsForm((f: any) => ({ ...f, visible_columns: allSelected ? [] : allIds }))} className="accent-[var(--accent)] w-3.5 h-3.5" />
-                        Select all
-                      </label>
-                    </div>
-                    <p className="text-[11px] text-[var(--text-muted)] mb-2">Leave all unchecked to show every column.</p>
+                  {/* Report Columns */}
+                  <div className="rounded-[12px] border border-[var(--border)] bg-[var(--surface)] p-4 space-y-4">
+                    <p className="text-[12px] font-semibold text-[var(--text-primary)] flex items-center gap-2">
+                      <LayoutGrid size={13} className="text-[var(--accent)]" /> Report Columns
+                    </p>
+                    <p className="text-[11px] text-[var(--text-muted)] -mt-1">Leave all unselected to show all columns.</p>
                     {paymentCols.length > 0 && (
-                      <div className="mb-3">
-                        <p className="text-[11px] font-semibold text-[var(--success)] mb-1.5 uppercase tracking-wide">Earnings</p>
-                        <div className="grid grid-cols-2 gap-1">
-                          {paymentCols.map((c: PayrollCol) => (
-                            <label key={c.id} className="flex items-center gap-2 cursor-pointer text-xs text-[var(--text-secondary)] py-0.5">
-                              <input type="checkbox" checked={(ps.visible_columns ?? []).includes(String(c.id))} onChange={() => toggleCol(String(c.id))} className="accent-[var(--accent)] w-3.5 h-3.5 shrink-0" />
-                              <span className="truncate">{c.name}</span>
-                            </label>
-                          ))}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[11px] font-semibold text-[var(--accent)]">Earnings</p>
+                          <button type="button" className="text-[11px] text-[var(--accent)] hover:underline"
+                            onClick={() => setPsForm((f: any) => {
+                              const ids = paymentCols.map((c: PayrollCol) => String(c.id));
+                              const cur: string[] = f.visible_columns ?? [];
+                              const allOn = ids.every((id: string) => cur.includes(id));
+                              return { ...f, visible_columns: allOn ? cur.filter((id: string) => !ids.includes(id)) : [...new Set([...cur, ...ids])] };
+                            })}>
+                            {paymentCols.every((c: PayrollCol) => (ps.visible_columns ?? []).includes(String(c.id))) ? 'Deselect All' : 'Select All'}
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {paymentCols.map((c: PayrollCol) => {
+                            const sel = (ps.visible_columns ?? []).includes(String(c.id));
+                            return (
+                              <button key={c.id} type="button" onClick={() => toggleCol(String(c.id))}
+                                className={sel ? 'pill pill-accent text-[11px]' : 'text-[11px] text-[var(--text-muted)] border border-[var(--border)] rounded-full px-3 py-1 hover:border-[var(--accent)] transition-colors'}>
+                                {c.name}
+                              </button>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
                     {deductionCols.length > 0 && (
-                      <div>
-                        <p className="text-[11px] font-semibold text-[var(--danger)] mb-1.5 uppercase tracking-wide">Deductions</p>
-                        <div className="grid grid-cols-2 gap-1">
-                          {deductionCols.map((c: PayrollCol) => (
-                            <label key={c.id} className="flex items-center gap-2 cursor-pointer text-xs text-[var(--text-secondary)] py-0.5">
-                              <input type="checkbox" checked={(ps.visible_columns ?? []).includes(String(c.id))} onChange={() => toggleCol(String(c.id))} className="accent-[var(--accent)] w-3.5 h-3.5 shrink-0" />
-                              <span className="truncate">{c.name}</span>
-                            </label>
-                          ))}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[11px] font-semibold text-[var(--danger)]">Deductions</p>
+                          <button type="button" className="text-[11px] text-[var(--accent)] hover:underline"
+                            onClick={() => setPsForm((f: any) => {
+                              const ids = deductionCols.map((c: PayrollCol) => String(c.id));
+                              const cur: string[] = f.visible_columns ?? [];
+                              const allOn = ids.every((id: string) => cur.includes(id));
+                              return { ...f, visible_columns: allOn ? cur.filter((id: string) => !ids.includes(id)) : [...new Set([...cur, ...ids])] };
+                            })}>
+                            {deductionCols.every((c: PayrollCol) => (ps.visible_columns ?? []).includes(String(c.id))) ? 'Deselect All' : 'Select All'}
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {deductionCols.map((c: PayrollCol) => {
+                            const sel = (ps.visible_columns ?? []).includes(String(c.id));
+                            return (
+                              <button key={c.id} type="button" onClick={() => toggleCol(String(c.id))}
+                                className={sel ? 'pill text-[11px] bg-[var(--danger)] text-white border-transparent' : 'text-[11px] text-[var(--text-muted)] border border-[var(--border)] rounded-full px-3 py-1 hover:border-[var(--danger)] transition-colors'}>
+                                {c.name}
+                              </button>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
+                    {paymentCols.length === 0 && deductionCols.length === 0 && (
+                      <p className="text-[11px] text-[var(--text-muted)] italic">No payroll columns configured yet.</p>
+                    )}
+                  </div>
+
+                  {/* Net Pay Columns */}
+                  <div className="rounded-[12px] border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">
+                    <p className="text-[12px] font-semibold text-[var(--text-primary)] flex items-center gap-2">
+                      <TrendingUp size={13} className="text-[var(--accent)]" /> Net Pay Columns
+                    </p>
+                    <p className="text-[11px] text-[var(--text-muted)] -mt-1">Leave all unselected to use each column's default net setting.</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {allIds.map(id => {
+                        const c = pcRows.find((col: PayrollCol) => String(col.id) === id);
+                        if (!c) return null;
+                        const sel = (ps.net_columns ?? []).includes(id);
+                        return (
+                          <button key={id} type="button" onClick={() => toggleNetCol(id)}
+                            className={sel ? 'pill pill-success text-[11px]' : 'text-[11px] text-[var(--text-muted)] border border-[var(--border)] rounded-full px-3 py-1 hover:border-[var(--success,#10b981)] transition-colors'}>
+                            {c.name}
+                          </button>
+                        );
+                      })}
+                      {allIds.length === 0 && <p className="text-[11px] text-[var(--text-muted)] italic">No columns configured yet.</p>}
+                    </div>
                   </div>
                 </div>
 
-                {/* ── Right: live preview ── */}
-                <div className="shrink-0">
-                  <p className="text-xs text-[var(--text-muted)] mb-2 font-medium uppercase tracking-wide">Live Preview</p>
-                  <div className="bg-white text-gray-800 rounded-[12px] shadow overflow-hidden text-[11px] font-sans border border-gray-200">
-                    <div className="px-4 py-2.5 flex items-center gap-2.5" style={{ background: accent }}>
-                      {ps.company_logo_url && <img src={ps.company_logo_url} alt="" className="h-7 w-7 object-contain rounded bg-white/20" />}
-                      <div>
-                        <p className="font-bold text-white text-[12px]">{ps.company_name || 'Company Name'}</p>
-                        {ps.company_address && <p className="text-white/80 text-[10px]">{ps.company_address}</p>}
+                {/* ── Right: sticky live preview ── */}
+                <div className="w-72 shrink-0">
+                  <div className="sticky top-4">
+                    <p className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3">Live Preview</p>
+                    <div className="bg-white rounded-[14px] shadow-xl border border-gray-200 overflow-hidden font-sans">
+                      {/* Header bar */}
+                      <div className="px-5 py-3 flex items-center gap-3" style={{ background: accent }}>
+                        {ps.company_logo_url && <img src={ps.company_logo_url} alt="" className="h-8 w-8 rounded object-contain bg-white/20 shrink-0" />}
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-white text-[13px] truncate">{ps.company_name || 'Company Name'}</p>
+                          {ps.company_address && <p className="text-white/75 text-[10px] mt-0.5 truncate">{ps.company_address}</p>}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-white/90 font-semibold text-[11px]">PAYSLIP</p>
+                          <p className="text-white/60 text-[10px]">May 2026</p>
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex items-center justify-between px-4 py-1.5 border-b border-gray-100">
-                      <p className="font-semibold text-gray-700 text-[11px]">PAYSLIP</p>
-                      <p className="text-gray-400 text-[10px]">May 2026</p>
-                    </div>
-                    {ps.header_note && <div className="px-4 py-1 text-[10px] text-gray-500 italic border-b border-gray-100">{ps.header_note}</div>}
-                    <div className="px-4 py-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 border-b border-gray-100 text-[10px]">
-                      <div><span className="text-gray-400">Name</span><p className="font-medium">John Doe</p></div>
-                      {ps.show_emp_id && <div><span className="text-gray-400">Emp ID</span><p className="font-medium">EMP-001</p></div>}
-                      {ps.show_department && <div><span className="text-gray-400">Dept</span><p className="font-medium">Finance</p></div>}
-                      {ps.show_position && <div><span className="text-gray-400">Role</span><p className="font-medium">Accountant</p></div>}
-                      {ps.show_bank_account && <div><span className="text-gray-400">Bank</span><p className="font-medium">****-4567</p></div>}
-                    </div>
-                    <div className="grid grid-cols-2 divide-x divide-gray-100 text-[10px]">
-                      <div className="px-3 py-1.5">
-                        <p className="font-semibold mb-1" style={{ color: accent }}>Earnings</p>
-                        {(ps.visible_columns?.length ? paymentCols.filter((c: PayrollCol) => ps.visible_columns.includes(String(c.id))) : paymentCols).slice(0, 3).map((c: PayrollCol) => (
-                          <div key={c.id} className="flex justify-between py-0.5"><span className="text-gray-500 truncate">{c.name}</span><span>0.00</span></div>
-                        ))}
-                        {paymentCols.length === 0 && <div className="flex justify-between py-0.5"><span className="text-gray-400">Basic Salary</span><span>5,000,000</span></div>}
+                      {/* Employee info */}
+                      <div className="px-5 py-3 grid grid-cols-2 gap-x-4 gap-y-1.5 border-b border-gray-100 bg-gray-50/60">
+                        <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Name</span><p className="font-semibold text-gray-700 text-[10px]">John Doe</p></div>
+                        {ps.show_emp_id && <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Employee ID</span><p className="font-semibold text-gray-700 text-[10px]">EMP-001</p></div>}
+                        {ps.show_department && <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Department</span><p className="font-semibold text-gray-700 text-[10px]">Finance</p></div>}
+                        {ps.show_position && <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Position</span><p className="font-semibold text-gray-700 text-[10px]">Accountant</p></div>}
+                        {ps.show_bank_account && <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Bank</span><p className="font-semibold text-gray-700 text-[10px]">****-4567</p></div>}
                       </div>
-                      <div className="px-3 py-1.5">
-                        <p className="font-semibold mb-1" style={{ color: accent }}>Deductions</p>
-                        {(ps.visible_columns?.length ? deductionCols.filter((c: PayrollCol) => ps.visible_columns.includes(String(c.id))) : deductionCols).slice(0, 3).map((c: PayrollCol) => (
-                          <div key={c.id} className="flex justify-between py-0.5"><span className="text-gray-500 truncate">{c.name}</span><span>0.00</span></div>
-                        ))}
-                        {deductionCols.length === 0 && <div className="flex justify-between py-0.5"><span className="text-gray-400">Income Tax</span><span>450,000</span></div>}
+                      {/* Header note */}
+                      {ps.header_note && <div className="px-5 py-2 text-[10px] text-gray-500 italic bg-gray-50 border-b border-gray-100">{ps.header_note}</div>}
+                      {/* Earnings / Deductions columns */}
+                      {(() => {
+                        const visE = ps.visible_columns?.length ? paymentCols.filter((c: PayrollCol) => ps.visible_columns.includes(String(c.id))) : paymentCols;
+                        const visD = ps.visible_columns?.length ? deductionCols.filter((c: PayrollCol) => ps.visible_columns.includes(String(c.id))) : deductionCols;
+                        return (
+                          <div className="grid grid-cols-2 divide-x divide-gray-100">
+                            <div className="px-4 py-3">
+                              <p className="font-bold text-[10px] uppercase mb-2" style={{ color: accent }}>Earnings</p>
+                              {visE.length > 0
+                                ? visE.map((c: PayrollCol) => (
+                                    <div key={c.id} className="flex justify-between py-0.5 text-[10px]">
+                                      <span className="text-gray-500 truncate max-w-[80px]">{c.name}</span>
+                                      <span className="text-gray-700">0.00</span>
+                                    </div>
+                                  ))
+                                : paymentCols.length === 0
+                                  ? <div className="flex justify-between py-0.5 text-[10px]"><span className="text-gray-400">Basic Salary</span><span>5,000</span></div>
+                                  : <p className="text-[9px] text-gray-300 italic">No columns selected</p>}
+                            </div>
+                            <div className="px-4 py-3">
+                              <p className="font-bold text-[10px] uppercase mb-2" style={{ color: accent }}>Deductions</p>
+                              {visD.length > 0
+                                ? visD.map((c: PayrollCol) => (
+                                    <div key={c.id} className="flex justify-between py-0.5 text-[10px]">
+                                      <span className="text-gray-500 truncate max-w-[80px]">{c.name}</span>
+                                      <span className="text-gray-700">0.00</span>
+                                    </div>
+                                  ))
+                                : deductionCols.length === 0
+                                  ? <div className="flex justify-between py-0.5 text-[10px]"><span className="text-gray-400">Tax</span><span>450</span></div>
+                                  : <p className="text-[9px] text-gray-300 italic">No columns selected</p>}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      {/* Net Pay footer */}
+                      <div className="px-5 py-3 flex items-center justify-between" style={{ background: `${accent}18` }}>
+                        <span className="font-semibold text-[11px]" style={{ color: accent }}>Net Pay</span>
+                        <span className="font-bold text-[13px]" style={{ color: accent }}>—</span>
                       </div>
+                      {/* Footer note */}
+                      {ps.footer_note && <div className="px-5 py-2 text-[10px] text-gray-400 italic border-t border-gray-100 bg-gray-50">{ps.footer_note}</div>}
                     </div>
-                    <div className="px-4 py-1.5 flex items-center justify-between text-[10px]" style={{ background: `${accent}18` }}>
-                      <span className="font-semibold" style={{ color: accent }}>Net Pay</span>
-                      <span className="font-bold" style={{ color: accent }}>SLL 4,550,000</span>
-                    </div>
-                    {ps.footer_note && <div className="px-4 py-1 text-[10px] text-gray-400 italic border-t border-gray-100">{ps.footer_note}</div>}
                   </div>
                 </div>
               </div>
@@ -2526,6 +2930,7 @@ export function Payroll() {
           editMode={editMode}
           generating={generating}
           finalizing={finalizing}
+          retryingGL={retryingGL}
           submitting={submitting}
           approving={approving}
           rejecting={rejecting}
@@ -2536,9 +2941,13 @@ export function Payroll() {
           currentUserId={currentUserId}
           auditLog={auditLog}
           auditLoading={auditLoading}
+          payslipEnabled={payslipEnabled}
+          colLabelMap={new Map(pcRows.filter((c: PayrollCol) => c.payslip_label).map((c: PayrollCol) => [String(c.id), c.payslip_label!]))}
+          payslipSettings={activeReportTemplate}
           onBack={() => { setActiveRunId(null); setActiveRun(null); setGridData([]); setStaleColumnCount(0); setEditMode(false); setAuditLog([]); }}
           onGenerate={generateRun}
           onFinalize={finalizeRun}
+          onRetryGL={retryGL}
           onSubmit={submitRun}
           onApprove={approveRun}
           onReject={() => setRejectOpen(true)}
@@ -2579,6 +2988,7 @@ export function Payroll() {
       r.name.toLowerCase().includes(runSearch.toLowerCase()) ||
       (r.freq_name ?? '').toLowerCase().includes(runSearch.toLowerCase())
     );
+    const pagedRuns: PayrollRun[] = filteredRuns.slice((runPage - 1) * runPageSize, runPage * runPageSize);
 
     return (
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
@@ -2616,8 +3026,9 @@ export function Payroll() {
                   <tr><td colSpan={6} className="td text-center py-12 text-[var(--text-muted)]">
                     No payroll runs yet. Click <b>New Run</b> to get started.
                   </td></tr>
-                ) : filteredRuns.map((run, i) => {
-                  const statusCls = { Draft: 'pill', Processing: 'pill pill-accent', Completed: 'pill pill-success' }[run.status] ?? 'pill';
+                ) : pagedRuns.map((run, i) => {
+                  const statusCls: Record<string, string> = { Draft: 'pill', Processing: 'pill pill-accent', Completed: 'pill pill-success', 'Pending Approval': 'pill pill-warning', Approved: 'pill pill-success', Rejected: 'pill pill-danger', 'GL Failed': 'pill pill-danger' };
+                  const runStatusCls = statusCls[run.status] ?? 'pill';
                   return (
                     <motion.tr key={run.id} className="tr cursor-pointer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.04 }}
                       onClick={() => openRun(run)}>
@@ -2632,14 +3043,14 @@ export function Payroll() {
                           ? <span className="pill text-[11px]">{run.type_name}</span>
                           : <span className="text-[var(--text-muted)] opacity-50">—</span>}
                       </td>
-                      <td className="td"><span className={statusCls}>{run.status}</span></td>
+                      <td className="td"><span className={runStatusCls}>{run.status}</span></td>
                       <td className="td text-right" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
                           <button className="action-btn text-[var(--accent)]" onClick={() => openRun(run)}><Eye size={14} /></button>
                           <button className="action-btn text-[var(--text-muted)]" title="Duplicate run" onClick={() => openRunDuplicate(run)}>
                             <Copy size={14} />
                           </button>
-                          {run.status !== 'Completed' && (
+                          {run.status !== 'Completed' && run.status !== 'GL Failed' && (
                             <button className="action-btn text-[var(--warning)]" onClick={() => {
                               setRunForm({
                                 name: run.name, pay_frequency: run.pay_frequency ?? '',
@@ -2652,7 +3063,7 @@ export function Payroll() {
                               setRunModalOpen(true);
                             }}><Edit size={14} /></button>
                           )}
-                          {run.status !== 'Completed' && (
+                          {run.status !== 'Completed' && run.status !== 'GL Failed' && (
                             <button className="action-btn text-[var(--danger)]" onClick={() => deleteRun(run.id)} disabled={runDeleting === run.id}>
                               {runDeleting === run.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
                             </button>
@@ -2665,6 +3076,12 @@ export function Payroll() {
               </tbody>
             </table>
           </div>
+          <TablePagination
+            total={runRows.length} filtered={filteredRuns.length}
+            page={runPage} pageSize={runPageSize}
+            onPageChange={setRunPage}
+            onPageSizeChange={(s) => { setRunPageSize(s); setRunPage(1); }}
+          />
         </div>
 
         {/* New / Edit Run modal */}
@@ -2948,14 +3365,28 @@ export function Payroll() {
           </motion.div>
         )}
 
-        <TabBar tabs={TABS} activeTab={activeTab} onChange={setActiveTab} className="flex flex-wrap gap-1 mb-5" />
+        <div className="flex flex-wrap gap-1 mb-5">
+          {TABS.map(tab => {
+            const Icon = TAB_ICONS[tab];
+            return (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`tab-btn flex items-center gap-1.5 ${activeTab === tab ? 'active' : ''}`}
+              >
+                {Icon && <Icon size={13} />}
+                {tab}
+              </button>
+            );
+          })}
+        </div>
 
         {activeTab === 'Payroll Runs'      && renderRunsTab()}
         {activeTab === 'Payroll Employees' && renderPeTab()}
         {activeTab === 'Deduction Groups'  && renderCgTab()}
         {activeTab === 'Payroll Columns'   && renderPcTab()}
         {activeTab === 'Calculation Rules' && renderScTab()}
-        {activeTab === 'Payslip Designer'  && renderPayslipDesignerTab()}
+        {activeTab === 'Report Templates'  && renderPayslipDesignerTab()}
 
         {/* Deduction Group modal */}
         <AnimatePresence>
@@ -3066,14 +3497,13 @@ export function Payroll() {
                   <FormField label="Column Name" required>
                     <input className={inputClass} value={pcForm.name}
                       onChange={e => setPcForm(f => ({ ...f, name: e.target.value }))}
-                      placeholder="e.g. Basic Salary" />
+                      placeholder="e.g. Clothing Allowance - Permanent" />
                   </FormField>
-                  <FormField label="Function Type">
-                    <select className={inputClass} value={pcForm.function_type}
-                      onChange={e => setPcForm(f => ({ ...f, function_type: e.target.value }))}>
-                      <option value="Simple">Simple</option>
-                      <option value="Advanced">Advanced</option>
-                    </select>
+                  <FormField label="Payslip Label">
+                    <input className={inputClass} value={pcForm.payslip_label}
+                      onChange={e => setPcForm(f => ({ ...f, payslip_label: e.target.value }))}
+                      placeholder="e.g. Clothing Allowance" />
+                    <p className="text-[11px] text-[var(--text-muted)] mt-1">Shown on payslips instead of the column name. Leave blank to use the column name.</p>
                   </FormField>
                 </div>
                 <div className="grid grid-cols-3 gap-4">
@@ -3197,12 +3627,7 @@ export function Payroll() {
                     />
                   </FormField>
                 </div>
-                <div className="grid grid-cols-3 gap-4">
-                  <FormField label="Component GL">
-                    <input className={inputClass} value={pcForm.salarycomponent_gl}
-                      onChange={e => setPcForm(f => ({ ...f, salarycomponent_gl: e.target.value }))}
-                      placeholder="GL account code..." />
-                  </FormField>
+                <div className="grid grid-cols-2 gap-4">
                   <FormField label="Posting Column">
                     <select className={inputClass} value={pcForm.posting_column}
                       onChange={e => setPcForm(f => ({ ...f, posting_column: e.target.value }))}>
@@ -3216,6 +3641,15 @@ export function Payroll() {
                       placeholder="Branch code..." />
                   </FormField>
                 </div>
+                <FormField label="GL Account" required={pcForm.posting_column === 'Yes'}>
+                  <input className={inputClass} value={pcForm.salarycomponent_gl}
+                    onChange={e => setPcForm(f => ({ ...f, salarycomponent_gl: e.target.value }))}
+                    placeholder={pcForm.posting_column === 'Yes' ? 'Required — GL account code for posting' : 'GL account code (optional)'}
+                    style={pcForm.posting_column === 'Yes' && !pcForm.salarycomponent_gl ? { borderColor: 'var(--danger)' } : {}} />
+                  {pcForm.posting_column === 'Yes' && (
+                    <p className="text-[11px] text-[var(--danger)] mt-1">Required when Posting Column is Yes.</p>
+                  )}
+                </FormField>
               </div>
             </FormModal>
           )}

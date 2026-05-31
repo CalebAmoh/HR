@@ -70,6 +70,17 @@ export function Employees() {
 
   useEffect(() => { fetchEmployees(); }, [fetchEmployees]);
   useEffect(() => { setPage(1); }, [searchQuery, activeTab]);
+  useEffect(() => {
+    if (loading || isDetailsOpen) return;
+    const targetId = sessionStorage.getItem('centralApproval.employeeId');
+    if (!targetId) return;
+    const target = employees.find((emp: any) => String(emp.id) === String(targetId));
+    if (!target) return;
+    sessionStorage.removeItem('centralApproval.employeeId');
+    setActiveTab('Employees');
+    setSelectedEmployee(target);
+    setIsDetailsOpen(true);
+  }, [employees, loading, isDetailsOpen]);
 
   // ── Filter by active tab ─────────────────────────────────────────────────
   const visibleEmployees = useMemo(() => {
@@ -218,7 +229,7 @@ export function Employees() {
             onSearchChange={setSearchQuery}
             searchPlaceholder="Search by name, ID or email..."
             showFilters={showFilters}
-            filterBar={filterBar}
+            filterBar={showFilters ? filterBar : undefined}
             actions={
               <>
                 {activeTab === 'Employees' && (
@@ -282,8 +293,8 @@ export function Employees() {
                       <td className="td">{row.employmentStatus?.label || '—'}</td>
                       <td className="td">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <LifecyclePill status={row.lifecycleStatus} />
-                          <ApprovalPill  status={row.approvalStatus}  />
+                          {row.approvalStatus !== 'REJECTED' && <LifecyclePill status={row.lifecycleStatus} />}
+                          <ApprovalPill status={row.approvalStatus} />
                         </div>
                       </td>
                       <td className="td">
@@ -327,6 +338,7 @@ export function Employees() {
           onSave={handleSave}
         />
       )}
+
     </div>
   );
 }

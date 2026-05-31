@@ -30,6 +30,9 @@ BigInt.prototype.toJSON = function () {
 //base route for the app
 app.use("/v1/api/hr", require("./routes/routes"));
 
+// Background jobs
+require('./helpers/cronHelper');
+
 //catch all errors
 app.use(errorMiddleware);
 

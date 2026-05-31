@@ -8,8 +8,19 @@ export interface AppSettings {
     autoGenerateNumber: boolean;
   };
   approvals: {
+    employeeApproval: boolean;
+    employeeSelfApproval: boolean;
     payrollApproval: boolean;
     selfApproval: boolean;
+    medicalApproval: boolean;
+    medicalSelfApproval: boolean;
+  };
+  general: {
+    currency: string;
+  };
+  medicalClaims: {
+    hospitalWhtRate: number;
+    pharmacyWhtRate: number;
   };
 }
 
@@ -21,8 +32,19 @@ const DEFAULTS: AppSettings = {
     autoGenerateNumber: true,
   },
   approvals: {
+    employeeApproval: true,
+    employeeSelfApproval: false,
     payrollApproval: false,
     selfApproval: false,
+    medicalApproval: true,
+    medicalSelfApproval: true,
+  },
+  general: {
+    currency: 'SLE',
+  },
+  medicalClaims: {
+    hospitalWhtRate: 0,
+    pharmacyWhtRate: 0,
   },
 };
 
@@ -35,6 +57,8 @@ export function getSettings(): AppSettings {
       companyStructure: { ...DEFAULTS.companyStructure, ...(parsed.companyStructure ?? {}) },
       employees:        { ...DEFAULTS.employees,        ...(parsed.employees        ?? {}) },
       approvals:        { ...DEFAULTS.approvals,        ...(parsed.approvals        ?? {}) },
+      general:          { ...DEFAULTS.general,          ...(parsed.general          ?? {}) },
+      medicalClaims:    { ...DEFAULTS.medicalClaims,    ...(parsed.medicalClaims    ?? {}) },
     };
   } catch {
     return DEFAULTS;

@@ -1,10 +1,11 @@
 import { useState, useEffect, type ComponentType } from 'react';
-import { Download, FileText, Users, Receipt } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { Download, FileText, Users, Receipt, Stethoscope, Printer } from 'lucide-react';
+import { motion } from 'motion/react';
 import { toast } from 'sonner';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { FormModal } from './ui/FormModal';
+import { AnimatePresence } from 'motion/react';
 import { FormField, inputClass } from './ui/FormField';
 import api from '../../lib/api';
 
@@ -17,8 +18,52 @@ interface Report {
   actionLabel?: string;
 }
 
+function exportCSV(filename: string, headers: string[], rows: (string | number)[][]) {
+  const csv = [headers, ...rows]
+    .map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: `${filename}.csv` });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function printTable(title: string, headers: string[], rows: (string | number)[][]) {
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const html = `<!DOCTYPE html><html><head><title>${esc(title)}</title>
+    <style>body{font-family:sans-serif;padding:20px}h2{margin-bottom:16px}
+    table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:8px 12px;font-size:13px}
+    th{background:#f3f4f6;font-weight:600;text-align:left}tr:nth-child(even){background:#f9fafb}
+    @media print{button{display:none}}</style></head><body>
+    <h2>${esc(title)}</h2><table>
+    <thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc(String(c ?? ''))}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table></body></html>`;
+  const w = window.open('', '_blank');
+  if (!w) return;
+  w.document.write(html);
+  w.document.close();
+  w.print();
+}
+
 export function AdminReports() {
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Medical utilisation modal state
+  const [medOpen,    setMedOpen]    = useState(false);
+  const [medRows,    setMedRows]    = useState<any[]>([]);
+  const [medLoading, setMedLoading] = useState(false);
+
+  function openMedicalReport() {
+    setMedOpen(true);
+    if (medRows.length === 0) {
+      setMedLoading(true);
+      api.get('/medical/enquiry')
+        .then(r => setMedRows(r.data.data ?? []))
+        .catch(() => toast.error('Failed to load medical data'))
+        .finally(() => setMedLoading(false));
+    }
+  }
 
   // Payslip report state
   const [payslipOpen,   setPayslipOpen]   = useState(false);
@@ -49,7 +94,8 @@ export function AdminReports() {
     setEmpLoading(true);
     api.get(`/payroll/runs/${selectedRun}/data`)
       .then(r => {
-        const data: any[] = r.data.data ?? [];
+        const rd = r.data.data;
+        const data: any[] = Array.isArray(rd) ? rd : (rd?.cells ?? []);
         const seen = new Set<string>();
         const emps: any[] = [];
         data.forEach((row: any) => {
@@ -64,14 +110,23 @@ export function AdminReports() {
       .finally(() => setEmpLoading(false));
   }, [selectedRun]);
 
+  async function blobErrMessage(e: any): Promise<string> {
+    const data = e.response?.data;
+    if (data instanceof Blob) {
+      try { const j = JSON.parse(await data.text()); return j.message || 'Download failed'; } catch { /* ignore */ }
+    }
+    return data?.message || e.message || 'Download failed';
+  }
+
   async function downloadPayslipReport() {
     if (!selectedRun) return toast.error('Select a payroll run');
+    if (empLoading)   return toast.error('Employees still loading — please wait');
     setDownloading(true);
     try {
       if (selectedEmp === 'all') {
-        // Download all payslips as sequential requests; browsers will trigger multiple downloads
-        if (employees.length === 0) return toast.error('No employees in this run');
+        if (employees.length === 0) return toast.error('No employees found in this run');
         toast.info(`Downloading ${employees.length} payslip${employees.length > 1 ? 's' : ''}…`);
+        let ok = 0;
         for (const emp of employees) {
           try {
             const res = await api.get(`/payroll/runs/${selectedRun}/employees/${emp.id}/payslip.pdf`, { responseType: 'blob' });
@@ -81,9 +136,11 @@ export function AdminReports() {
             a.download = `payslip-${emp.name.replace(/\s+/g, '-')}.pdf`;
             a.click();
             URL.revokeObjectURL(url);
-          } catch { /* skip individual failures */ }
+            ok++;
+          } catch { /* skip individual failures silently */ }
         }
-        toast.success('All payslips downloaded');
+        if (ok > 0) toast.success(`${ok} payslip${ok !== 1 ? 's' : ''} downloaded`);
+        else toast.error('No payslips could be downloaded for this run');
       } else {
         const res = await api.get(`/payroll/runs/${selectedRun}/employees/${selectedEmp}/payslip.pdf`, { responseType: 'blob' });
         const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
@@ -96,7 +153,7 @@ export function AdminReports() {
         toast.success('Payslip downloaded');
       }
     } catch (e: any) {
-      toast.error(e.response?.data?.message || 'Download failed');
+      toast.error(await blobErrMessage(e));
     } finally {
       setDownloading(false);
     }
@@ -134,6 +191,14 @@ export function AdminReports() {
       name: 'Department Headcount',
       description: 'Employee distribution mapped by department and location.',
       icon: Users,
+    },
+    {
+      id: 6,
+      name: 'Medical Utilisation Report',
+      description: 'View medical limit balances and utilisation for all employees by pay grade.',
+      icon: Stethoscope,
+      action: openMedicalReport,
+      actionLabel: 'View Report',
     },
   ];
 
@@ -215,6 +280,58 @@ export function AdminReports() {
         </motion.div>
       </div>
 
+      {/* Medical Utilisation modal */}
+      <AnimatePresence>
+        {medOpen && (
+          <FormModal title="Medical Utilisation Report" subtitle="Medical limit balances per employee"
+            maxWidth="4xl" onClose={() => setMedOpen(false)} onSave={() => setMedOpen(false)} saveLabel="Close">
+            {medLoading ? (
+              <p className="text-center text-[var(--text-muted)] text-sm py-8">Loading…</p>
+            ) : medRows.length === 0 ? (
+              <p className="text-center text-[var(--text-muted)] text-sm py-8">No medical data found.</p>
+            ) : (() => {
+              const medHeaders = ['Employee', 'Grade', 'Medical Limit', 'Amount Utilised', 'Remaining Balance'];
+              const medCsvRows = medRows.map((r: any) => [
+                r.employee_name ?? '', r.grade ?? '',
+                r.medical_limit ?? '', r.amount_utilized ?? '', r.limit_balance ?? '',
+              ]);
+              return (
+                <>
+                  <div className="flex justify-end gap-2 mb-3">
+                    <button onClick={() => printTable('Medical Utilisation Report', medHeaders, medCsvRows)}
+                      className="secondary-btn !py-1.5 !px-3 !text-[12px]">
+                      <Printer size={13} />Print
+                    </button>
+                    <button onClick={() => exportCSV('medical-utilisation-report', medHeaders, medCsvRows)}
+                      className="secondary-btn !py-1.5 !px-3 !text-[12px]">
+                      <Download size={13} />Export CSV
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto rounded-[10px] border border-[var(--border)]">
+                    <table className="w-full border-collapse text-sm">
+                      <thead><tr>
+                        <th className="th">Employee</th><th className="th">Grade</th>
+                        <th className="th">Medical Limit</th><th className="th">Amount Utilised</th>
+                        <th className="th">Remaining Balance</th>
+                      </tr></thead>
+                      <tbody>{medRows.map((row: any, i: number) => (
+                        <tr key={i} className="tr">
+                          <td className="td font-medium">{row.employee_name}</td>
+                          <td className="td">{row.grade}</td>
+                          <td className="td">{row.medical_limit}</td>
+                          <td className="td">{row.amount_utilized}</td>
+                          <td className="td">{row.limit_balance}</td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                </>
+              );
+            })()}
+          </FormModal>
+        )}
+      </AnimatePresence>
+
       {/* Payslip Report modal */}
       <AnimatePresence>
         {payslipOpen && (
@@ -224,7 +341,7 @@ export function AdminReports() {
             maxWidth="md"
             onClose={() => setPayslipOpen(false)}
             onSave={downloadPayslipReport}
-            saveLabel={downloading ? 'Downloading…' : 'Download PDF(s)'}
+            saveLabel={downloading ? 'Downloading…' : empLoading ? 'Loading…' : 'Download PDF(s)'}
           >
             <div className="space-y-4">
               <FormField label="Payroll Run" required>

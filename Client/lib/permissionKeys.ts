@@ -7,133 +7,109 @@
  *   canAny([PERMISSIONS.VIEW_FEES, PERMISSIONS.VIEW_FEE_STRUCTURE])
  */
 export const PERMISSIONS = {
-  // ── Users ──────────────────────────────────────────────────
-  VIEW_USERS:                     'view_users',
-  CREATE_USERS:                   'create_users',
-  EDIT_USERS:                     'edit_users',
-  CHANGE_USER_STATUS:             'change_user_status',
-  CHANGE_USER_PASSWORD:           'change_user_password',
+  // ── Users & Access ─────────────────────────────────────────
+  VIEW_USERS:                         'view_users',
+  CREATE_USERS:                       'create_users',
+  EDIT_USERS:                         'edit_users',
+  DEACTIVATE_USERS:                   'deactivate_users',
+  ACTIVATE_USERS:                     'activate_users',
+  CHANGE_USER_PASSWORD:               'change_user_password',
 
   // ── Roles ──────────────────────────────────────────────────
-  VIEW_ROLES:                     'view_roles',
-  MANAGE_ROLES:                   'manage_roles',
-  ASSIGN_ROLES:                   'assign_roles',
-  REVOKE_ROLES:                   'revoke_roles',
+  VIEW_ROLES:                         'view_roles',
+  CREATE_ROLES:                       'create_roles',
+  EDIT_ROLES:                         'edit_roles',
+  DELETE_ROLES:                       'delete_roles',
+  ASSIGN_ROLES:                       'assign_roles',
+  REVOKE_ROLES:                       'revoke_roles',
 
   // ── Permissions ────────────────────────────────────────────
-  VIEW_PERMISSIONS:               'view_permissions',
-  ASSIGN_PERMISSIONS:             'assign_permissions',
-  REVOKE_PERMISSIONS:             'revoke_permissions',
+  VIEW_PERMISSIONS:                   'view_permissions',
+  ASSIGN_PERMISSIONS:                 'assign_permissions',
+  REVOKE_PERMISSIONS:                 'revoke_permissions',
 
-  // ── Settings ───────────────────────────────────────────────
-  VIEW_SETTINGS:                  'view_settings',
-  EDIT_SETTINGS:                  'edit_settings',
-  MANAGE_CODE_LISTS:              'manage_code_lists',
-  MANAGE_ACADEMIC_SETUP:          'manage_academic_setup',
+  // ── Employees ──────────────────────────────────────────────
+  VIEW_EMPLOYEES:                     'view_employees',
+  CREATE_EMPLOYEES:                   'create_employees',
+  EDIT_EMPLOYEES:                     'edit_employees',
+  APPROVE_EMPLOYEES:                  'approve_employees',
+  CHANGE_EMPLOYEE_STATUS:             'change_employee_status',
 
-  // ── Reports ────────────────────────────────────────────────
-  VIEW_REPORTS:                   'view_reports',
-  GENERATE_REPORTS:               'generate_reports',
-  EXPORT_REPORTS:                 'export_reports',
+  // ── Employee Relations ─────────────────────────────────────
+  MANAGE_SKILLS:                      'manage_skills',
+  MANAGE_CERTIFICATIONS:              'manage_certifications',
+  MANAGE_LANGUAGES:                   'manage_languages',
+  MANAGE_DEPENDENTS:                  'manage_dependents',
+  MANAGE_EMERGENCY_CONTACTS:          'manage_emergency_contacts',
 
-  // ── Students ───────────────────────────────────────────────
-  VIEW_STUDENTS:                  'view_students',
-  CREATE_STUDENTS:                'create_students',
-  EDIT_STUDENTS:                  'edit_students',
-  CHANGE_STUDENT_STATUS:          'change_student_status',
-  PROMOTE_STUDENTS:               'promote_students',
-  CHANGE_STUDENT_PASSWORD:        'change_student_password',
-  MANAGE_STUDENT_DOCUMENTS:       'manage_student_documents',
+  // ── Company ────────────────────────────────────────────────
+  VIEW_COMPANY_STRUCTURE:             'view_company_structure',
+  CREATE_COMPANY_STRUCTURE:           'create_company_structure',
+  EDIT_COMPANY_STRUCTURE:             'edit_company_structure',
+  DELETE_COMPANY_STRUCTURE:           'delete_company_structure',
 
-  // ── HR & Employees ─────────────────────────────────────────
-  VIEW_EMPLOYEES:                 'view_employees',
-  CREATE_EMPLOYEES:               'create_employees',
-  EDIT_EMPLOYEES:                 'edit_employees',
-  CHANGE_EMPLOYEE_STATUS:         'change_employee_status',
-
-  // ── Payroll ────────────────────────────────────────────────
-  VIEW_PAYROLL:                   'view_payroll',
-  MANAGE_PAYROLL_COMPONENTS:      'manage_payroll_components',
-  MANAGE_PAYROLL_PROFILES:        'manage_payroll_profiles',
-  PROCESS_PAYROLL:                'process_payroll',
-  APPROVE_PAYROLL:                'approve_payroll',
+  // ── Documents ──────────────────────────────────────────────
+  VIEW_DOCUMENTS:                     'view_documents',
+  CREATE_DOCUMENTS:                   'create_documents',
+  EDIT_DOCUMENTS:                     'edit_documents',
+  DELETE_DOCUMENTS:                   'delete_documents',
+  DOWNLOAD_DOCUMENTS:                 'download_documents',
 
   // ── Leave ──────────────────────────────────────────────────
-  VIEW_LEAVE:                     'view_leave',
-  MANAGE_LEAVE:                   'manage_leave',
+  VIEW_LEAVE:                         'view_leave',
+  APPLY_LEAVE:                        'apply_leave',
+  APPROVE_LEAVE:                      'approve_leave',
+  CANCEL_LEAVE:                       'cancel_leave',
+  VIEW_SUBORDINATE_LEAVE:             'view_subordinate_leave',
 
-  // ── Fees ───────────────────────────────────────────────────
-  VIEW_FEE_STRUCTURE:             'view_fee_structure',
-  MANAGE_FEE_STRUCTURE:           'manage_fee_structure',
-  VIEW_PAYMENTS:                  'view_payments',
-  RECORD_PAYMENTS:                'record_payments',
-  MANAGE_DISCOUNTS:               'manage_discounts',
-  GENERATE_INVOICES:              'generate_invoices',
+  // ── Leave Setup ────────────────────────────────────────────
+  VIEW_LEAVE_SETUP:                   'view_leave_setup',
+  MANAGE_LEAVE_TYPES:                 'manage_leave_types',
+  MANAGE_LEAVE_PERIODS:               'manage_leave_periods',
+  MANAGE_HOLIDAYS:                    'manage_holidays',
+  MANAGE_WORK_WEEK:                   'manage_work_week',
+  MANAGE_LEAVE_GROUPS:                'manage_leave_groups',
+  MANAGE_LEAVE_RULES:                 'manage_leave_rules',
 
-  // ── Enrollment ─────────────────────────────────────────────
-  VIEW_APPLICANTS:                'view_applicants',
-  CREATE_APPLICANTS:              'create_applicants',
-  EDIT_APPLICANTS:                'edit_applicants',
-  CHANGE_APPLICANT_STATUS:        'change_applicant_status',
-  VIEW_INTERVIEWS:                'view_interviews',
-  INTERVIEWS_APPLICANTS:          'interviews_applicants',
-  EDIT_INTERVIEWS:                'edit_interviews',
-  DELETE_INTERVIEWS:              'delete_interviews',
-  VIEW_ADMISSIONS:                'view_admissions',
-  CONFIRM_ADMISSIONS:             'confirm_admissions',
-  REVOKE_ADMISSIONS:              'revoke_admissions',
+  // ── Salary ─────────────────────────────────────────────────
+  VIEW_SALARY_SETUP:                  'view_salary_setup',
+  MANAGE_SALARY_COMPONENT_TYPES:      'manage_salary_component_types',
+  MANAGE_SALARY_COMPONENTS:           'manage_salary_components',
+  MANAGE_EMPLOYEE_SALARY_COMPONENTS:  'manage_employee_salary_components',
+  MANAGE_NOTCH_SETUP:                 'manage_notch_setup',
+  MANAGE_PAYMENT_TYPES:               'manage_payment_types',
+  MANAGE_NOTCH_MOVEMENTS:             'manage_notch_movements',
 
-  // ── Classes & Sections ─────────────────────────────────────
-  VIEW_CLASSES:                   'view_classes',
-  CREATE_CLASSES:                 'create_classes',
-  EDIT_CLASSES:                   'edit_classes',
-  MANAGE_CLASSES:                 'manage_classes',
-  MANAGE_SECTIONS:                'manage_sections',
-  CREATE_SECTIONS:                'create_sections',
-  EDIT_SECTIONS:                  'edit_sections',
-  DELETE_SECTIONS:                'delete_sections',
+  // ── Payroll ────────────────────────────────────────────────
+  VIEW_PAYROLL:                       'view_payroll',
+  MANAGE_PAYROLL_EMPLOYEES:           'manage_payroll_employees',
+  PROCESS_PAYROLL:                    'process_payroll',
+  APPROVE_PAYROLL:                    'approve_payroll',
+  VIEW_PAYROLL_REPORTS:               'view_payroll_reports',
+  EXPORT_PAYROLL_REPORTS:             'export_payroll_reports',
+  MANAGE_PAYROLL_COLUMNS:             'manage_payroll_columns',
+  MANAGE_CALCULATION_GROUPS:          'manage_calculation_groups',
 
+  // ── Reports ────────────────────────────────────────────────
+  VIEW_REPORTS:                       'view_reports',
+  GENERATE_REPORTS:                   'generate_reports',
+  EXPORT_REPORTS:                     'export_reports',
 
-  // ── Teachers ─────────────────────────────────────
-  VIEW_TEACHERS:                  'view_teachers',
-  DEACTIVATE_TEACHERS:            'de/activate_teachers',
-  ASSIGN_SUBJECTS_TEACHERS:         'assign_subjects_teachers',
+  // ── System ─────────────────────────────────────────────────
+  VIEW_SYSTEM:                        'view_system',
+  MANAGE_APP_SETUP:                   'manage_app_setup',
+  MANAGE_CODE_LISTS:                  'manage_code_lists',
+  CREATE_CODE_LISTS:                  'create_code_lists',
+  EDIT_CODE_LISTS:                    'edit_code_lists',
 
-  // ── Subjects ───────────────────────────────────────────────
-  VIEW_SUBJECTS:                  'view_subjects',
-  MANAGE_SUBJECTS:                'manage_subjects',
+  // ── Settings ───────────────────────────────────────────────
+  VIEW_SETTINGS:                      'view_settings',
+  EDIT_SETTINGS:                      'edit_settings',
+  MANAGE_LEAVE_SETTINGS:              'manage_leave_settings',
+  MANAGE_NOTIFICATION_SETTINGS:       'manage_notification_settings',
 
-  // ── Assessment / Exams ─────────────────────────────────────
-  VIEW_EXAMS:                     'view_exams',
-  RECORD_EXAMS:                   'record_exams',
-  APPROVE_EXAMS:                  'approve_exams',
-
-  // ── Schedule ───────────────────────────────────────────────
-  VIEW_SCHEDULE:                  'view_schedule',
-  MANAGE_SCHEDULE:                'manage_schedule',
-
-  // ── Library ────────────────────────────────────────────────
-  VIEW_LIBRARY:                   'view_library',
-  MANAGE_LIBRARY_BOOKS:           'manage_library_books',
-  MANAGE_LIBRARY_MEMBERS:         'manage_library_members',
-  MANAGE_LIBRARY_ISSUES:          'manage_library_issues',
-
-  // ── Attendance ─────────────────────────────────────────────
-  VIEW_ATTENDANCE:                'view_attendance',
-  MARK_ATTENDANCE:                'mark_attendance',
-
-  // ── Transport ──────────────────────────────────────────────
-  VIEW_TRANSPORT:                 'view_transport',
-  MANAGE_TRANSPORT_VEHICLES:      'manage_transport_vehicles',
-  MANAGE_TRANSPORT_ROUTES:        'manage_transport_routes',
-  MANAGE_TRANSPORT_ASSIGNMENTS:   'manage_transport_assignments',
-
-  // ── Notices ────────────────────────────────────────────────
-  VIEW_NOTICES:                   'view_notices',
-  CREATE_NOTICES:                 'create_notices',
-  SEND_NOTICES:                   'send_notices',
-  DELETE_NOTICES:                 'delete_notices',
-  MANAGE_NOTICE_TEMPLATES:        'manage_notice_templates',
+  // ── Audit ──────────────────────────────────────────────────
+  VIEW_AUDIT_LOGS:                    'view_audit_logs',
 } as const;
 
 export type PermissionKey = typeof PERMISSIONS[keyof typeof PERMISSIONS];
@@ -145,72 +121,45 @@ export type PermissionKey = typeof PERMISSIONS[keyof typeof PERMISSIONS];
 // Empty array = always visible to authenticated users.
 // ─────────────────────────────────────────────────────────────
 export const NAV_PERMISSIONS: Record<string, string[]> = {
-  // Always visible
-  dashboard:              [],
+  // ── Always visible ────────────────────────────────────────────
+  Dashboard:          [],
+  Modules:            [],
+  PersonalInfo:       [],
+  Help:               [],
 
-  // ── Academics parent ──────────────────────────────────────────
-  academics: [
-    PERMISSIONS.VIEW_STUDENTS,
-    PERMISSIONS.VIEW_EMPLOYEES,
-    PERMISSIONS.VIEW_CLASSES,    PERMISSIONS.MANAGE_CLASSES,
-    PERMISSIONS.VIEW_SUBJECTS,   PERMISSIONS.MANAGE_SUBJECTS,
-    PERMISSIONS.VIEW_EXAMS,      PERMISSIONS.RECORD_EXAMS,
-    PERMISSIONS.VIEW_SCHEDULE,   PERMISSIONS.MANAGE_SCHEDULE,
-    PERMISSIONS.VIEW_LIBRARY,
-  ],
+  // ── Main Menu ─────────────────────────────────────────────────
+  Admin:              ['manage_app_setup', 'edit_settings', 'view_employees'],
+  JobTitleSetups:     ['manage_app_setup', 'edit_settings'],
+  QualificationSetups:['manage_app_setup', 'edit_settings'],
+  LeavingSettings:    ['manage_app_setup', 'edit_settings'],
+  AdminReports:       ['generate_reports', 'view_employees'],
+  CentralApproval:    ['approve_leave', 'approve_payroll', 'view_subordinate_leave'],
+  UserReports:        ['view_reports'],
 
-  // Students
-  students:               [PERMISSIONS.VIEW_STUDENTS],
+  // ── Management ────────────────────────────────────────────────
+  Employees:          ['view_employees'],
+  Organogram:         ['view_company_structure', 'view_employees'],
+  Company:            ['view_company_structure', 'view_employees'],
+  Documents:          ['view_documents', 'download_documents'],
 
-  // Teachers
-  teachers:               [PERMISSIONS.VIEW_TEACHERS, PERMISSIONS.DEACTIVATE_TEACHERS, PERMISSIONS.ASSIGN_SUBJECTS_TEACHERS],
+  // Leave
+  Leave:              ['view_leave', 'apply_leave', 'approve_leave', 'view_leave_setup', 'manage_leave_types'],
+  LeaveSetup:         ['view_leave_setup', 'manage_leave_types', 'manage_leave_periods', 'manage_holidays'],
+  LeaveCalendar:      ['view_leave', 'apply_leave'],
+  LeaveManagement:    ['view_leave', 'apply_leave'],
 
-  // Subject & Class
-  subject:                [PERMISSIONS.VIEW_SUBJECTS,  PERMISSIONS.MANAGE_SUBJECTS],
-  class:                  [PERMISSIONS.VIEW_CLASSES,PERMISSIONS.EDIT_CLASSES,PERMISSIONS.MANAGE_CLASSES,PERMISSIONS.CREATE_CLASSES],
-  'sections':             [PERMISSIONS.CREATE_SECTIONS,   PERMISSIONS.EDIT_SECTIONS, PERMISSIONS.DELETE_SECTIONS, PERMISSIONS.MANAGE_SECTIONS],
+  // Payroll
+  Payroll:            ['view_payroll', 'process_payroll', 'approve_payroll', 'manage_payroll_employees'],
+  Salary:             ['view_salary_setup', 'manage_salary_component_types', 'manage_salary_components', 'manage_notch_setup'],
 
-  // Schedule, Library
-  schedule:               [PERMISSIONS.VIEW_SCHEDULE,  PERMISSIONS.MANAGE_SCHEDULE],
-  library:                [PERMISSIONS.VIEW_LIBRARY,   PERMISSIONS.MANAGE_LIBRARY_BOOKS, PERMISSIONS.MANAGE_LIBRARY_ISSUES],
+  // Medical
+  Medical:            [],
+  PersonalMedical:    [],
+  AdminMedical:       ['view_employees'],
 
-  // ── Attendance ────────────────────────────────────────────────
-  attendance:             [PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MARK_ATTENDANCE],
-  'attendance-student':   [PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MARK_ATTENDANCE],
-  'attendance-teacher':   [PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MARK_ATTENDANCE],
-
-  // Notice, Transport
-  notice:                 [PERMISSIONS.VIEW_NOTICES,   PERMISSIONS.CREATE_NOTICES],
-  transport:              [PERMISSIONS.VIEW_TRANSPORT, PERMISSIONS.MANAGE_TRANSPORT_VEHICLES, PERMISSIONS.MANAGE_TRANSPORT_ROUTES],
-
-  // ── Fees parent ───────────────────────────────────────────────
-  fees:                   [PERMISSIONS.VIEW_FEE_STRUCTURE, PERMISSIONS.VIEW_PAYMENTS],
-  'fees-structure':       [PERMISSIONS.VIEW_FEE_STRUCTURE, PERMISSIONS.MANAGE_FEE_STRUCTURE],
-  'fees-payment':         [PERMISSIONS.VIEW_PAYMENTS,      PERMISSIONS.RECORD_PAYMENTS],
-
-  // ── Enrollment parent ─────────────────────────────────────────
-  enrollment:             [PERMISSIONS.VIEW_APPLICANTS, PERMISSIONS.VIEW_ADMISSIONS, PERMISSIONS.VIEW_INTERVIEWS],
-  admission:              [PERMISSIONS.VIEW_APPLICANTS, PERMISSIONS.VIEW_ADMISSIONS, PERMISSIONS.VIEW_INTERVIEWS],
-  'admission-applicants': [PERMISSIONS.VIEW_APPLICANTS, PERMISSIONS.CREATE_APPLICANTS],
-  'admission-interviews': [PERMISSIONS.VIEW_INTERVIEWS, PERMISSIONS.INTERVIEWS_APPLICANTS],
-  'admission-admissions': [PERMISSIONS.VIEW_ADMISSIONS, PERMISSIONS.CONFIRM_ADMISSIONS],
-
-  // ── HR Management ─────────────────────────────────────────────
-  hr:                     [PERMISSIONS.VIEW_EMPLOYEES, PERMISSIONS.VIEW_PAYROLL, PERMISSIONS.VIEW_LEAVE],
-  'create-employee':      [PERMISSIONS.VIEW_EMPLOYEES, PERMISSIONS.CREATE_EMPLOYEES],
-  'create-payroll':       [PERMISSIONS.VIEW_PAYROLL,   PERMISSIONS.MANAGE_PAYROLL_COMPONENTS, PERMISSIONS.PROCESS_PAYROLL],
-  'create-leave':         [PERMISSIONS.VIEW_LEAVE,     PERMISSIONS.MANAGE_LEAVE],
-
-  // ── Exams / Assessment ────────────────────────────────────────
-  exams:                  [PERMISSIONS.VIEW_EXAMS, PERMISSIONS.RECORD_EXAMS, PERMISSIONS.APPROVE_EXAMS],
-  'exam-record':          [PERMISSIONS.RECORD_EXAMS],
-  'exam-approve':         [PERMISSIONS.APPROVE_EXAMS],
-  'exam-broadsheet':      [PERMISSIONS.VIEW_EXAMS,  PERMISSIONS.GENERATE_REPORTS],
-  'exam-report-card':     [PERMISSIONS.VIEW_EXAMS,  PERMISSIONS.GENERATE_REPORTS],
-
-  // ── Settings ──────────────────────────────────────────────────
-  settings:               [PERMISSIONS.VIEW_SETTINGS, PERMISSIONS.EDIT_SETTINGS, PERMISSIONS.VIEW_USERS, PERMISSIONS.VIEW_ROLES],
-  'settings-users':       [PERMISSIONS.VIEW_USERS,    PERMISSIONS.CREATE_USERS],
-  'settings-system':      [PERMISSIONS.EDIT_SETTINGS, PERMISSIONS.MANAGE_CODE_LISTS, PERMISSIONS.MANAGE_ACADEMIC_SETUP],
-  'settings-super-admin': [PERMISSIONS.ASSIGN_PERMISSIONS, PERMISSIONS.REVOKE_PERMISSIONS, PERMISSIONS.VIEW_PERMISSIONS],
+  // Users & System
+  Users:              ['view_users', 'view_roles'],
+  System:             ['view_system', 'manage_app_setup', 'manage_code_lists'],
+  Settings:           ['view_settings', 'edit_settings', 'manage_leave_settings'],
+  AuditLogs:          ['view_audit_logs'],
 };

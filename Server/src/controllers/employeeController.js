@@ -179,7 +179,7 @@ const getAllEmployees = asyncHandler(async (req, res) => {
 const getActiveEmployees = asyncHandler(async (req, res) => {
   const { search } = req.query;
 
-  const where = { lifecycleStatus: LIFECYCLE.ACTIVE };
+  const where = { lifecycleStatus: LIFECYCLE.ACTIVE, approvalStatus: APPROVAL.APPROVED };
   if (search) {
     where.OR = [
       { firstName:   { contains: search } },
@@ -432,6 +432,13 @@ const updateEmployee = asyncHandler(async (req, res) => {
     updateData.personal_email = pe;
   }
 
+  // Re-submit for approval when a rejected employee is updated
+  if (existing.approvalStatus === APPROVAL.REJECTED) {
+    updateData.approvalStatus  = APPROVAL.PENDING;
+    updateData.lifecycleStatus = LIFECYCLE.PENDING;
+    updateData.actionReason    = null;
+  }
+
   await prisma.employee.update({ where: { id }, data: updateData });
 
   const refreshed = await prisma.employee.findUnique({ where: { id } });
@@ -558,6 +565,30 @@ const getAllNotches = asyncHandler(async (req, res) => {
   })));
 });
 
+// PUT /employees/:id/reject
+const rejectEmployee = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+  if (!id) return respond.badReq(res, 'Invalid employee ID');
+
+  const emp = await prisma.employee.findUnique({ where: { id } });
+  if (!emp) return respond.notFound(res, 'Employee not found');
+  if (emp.approvalStatus !== APPROVAL.PENDING)
+    return respond.badReq(res, `Employee is already ${emp.approvalStatus.toLowerCase()}`);
+
+  const { reason } = req.body;
+  await prisma.employee.update({
+    where: { id },
+    data:  {
+      approvalStatus: APPROVAL.REJECTED,
+      actionReason:   reason?.trim() || null,
+      updatedAt:      new Date(),
+    },
+  });
+
+  logActivity({ module: 'Employees', action: 'reject', entityId: String(id), entityName: `${emp.firstName} ${emp.lastName}`, reason: reason || null, ...fromReq(req) });
+  respond.ok(res, 'Employee application rejected');
+});
+
 module.exports = {
   getAllEmployees,
   getActiveEmployees,
@@ -565,6 +596,7 @@ module.exports = {
   createEmployee,
   updateEmployee,
   approveEmployee,
+  rejectEmployee,
   changeEmployeeStatus,
   initiateResignation,
   getAllPaygrades,

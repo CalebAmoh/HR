@@ -3,7 +3,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 const { Parser } = require('expr-eval');
 const { logActivity, fromReq } = require('./auditController');
-const axios = require('axios');
+const { postToGL, cfg: glCfg } = require('../helpers/glHelper');
 const _parser = new Parser({ operators: { logical: false, comparison: false, conditional: false } });
 
 function serialize(obj) {
@@ -45,7 +45,7 @@ async function exec(sql, ...params) {
       )
     `);
     await exec(`ALTER TABLE payrollruns ADD COLUMN payment_type_id BIGINT NULL`).catch(() => {});
-    await exec(`ALTER TABLE payrollruns MODIFY COLUMN status ENUM('Draft','Processing','Pending Approval','Rejected','Approved','Completed') DEFAULT 'Draft'`).catch(() => {});
+    await exec(`ALTER TABLE payrollruns MODIFY COLUMN status ENUM('Draft','Processing','Pending Approval','Rejected','Approved','Completed','GL Failed') DEFAULT 'Draft'`).catch(() => {});
     await exec(`ALTER TABLE payrollruns ADD COLUMN submitted_by BIGINT NULL`).catch(() => {});
     await exec(`ALTER TABLE payrollruns ADD COLUMN approved_by BIGINT NULL`).catch(() => {});
     await exec(`ALTER TABLE payrollruns ADD COLUMN approved_at DATETIME NULL`).catch(() => {});
@@ -224,7 +224,7 @@ const RUNS_SELECT = `
          cg.name AS group_name, pr.payment_type_id, pt.name AS type_name,
          pr.status, pr.created_at,
          pr.submitted_by, pr.approved_by, pr.approved_at, pr.rejection_reason,
-         pr.document_ref, pr.finalized_at
+         pr.document_ref, pr.payment_log, pr.finalized_at
   FROM   payrollruns pr
   LEFT JOIN payfrequencies     pf ON pf.id = pr.pay_frequency
   LEFT JOIN calculationgroups  cg ON cg.id = pr.deduction_group
@@ -364,8 +364,9 @@ const generatePayroll = asyncHandler(async (req, res) => {
   salaryRows.forEach(row => {
     const eid = String(Number(row.employee));
     if (!salaryByEmp[eid]) salaryByEmp[eid] = {};
-    // NULL or missing amount → treat as 0 so the column's default_value fallback can fire.
-    // The notch is already inserted under its own name below; no need to duplicate it here.
+    // Skip NULL amounts entirely — a null amount means "assigned but not yet configured".
+    // Storing it as 0 would block notch overrides and prevent default_value from firing.
+    if (row.amount === null || row.amount === undefined || row.amount === '') return;
     const amt = parseFloat(row.amount) || 0;
     salaryByEmp[eid][row.comp_name.toUpperCase()] = amt;
   });
@@ -399,9 +400,16 @@ const generatePayroll = asyncHandler(async (req, res) => {
   // Diagnostics
   const emptySalaryEmps = empIdNums.filter(eid => !salaryByEmp[eid] || Object.keys(salaryByEmp[eid]).length === 0);
 
-  // Detect which salary components payroll columns need but no employee has in their map
+  // Detect salary components that applicable payroll columns need but no selected employee has.
+  // Columns with a default value can still calculate without an employee salary row, so skip them.
+  const applicableCols = allCols.filter(col =>
+    payrollEmps.some(pe => !col.deduction_group || String(col.deduction_group) === String(pe.deduction_group ?? ''))
+  );
   const neededComponents = new Set();
-  allCols.forEach(col => {
+  applicableCols.forEach(col => {
+    const hasDefault = (parseFloat(col.default_value || '0') || 0) > 0;
+    if (hasDefault) return;
+    if (col.calculation_function && col.calculation_function.trim()) return;
     (col.salary_components || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
       .forEach(name => neededComponents.add(name));
   });
@@ -464,6 +472,73 @@ const getPayrollData = asyncHandler(async (req, res) => {
   respond.ok(res, 'Payroll data retrieved', { cells, staleColumnCount, totalEnabledCols: Number(totalEnabled) });
 });
 
+// ── Debug: show salary map + column results for a run (read-only, admin only) ──
+const debugPayrollRun = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const [run] = await query(`SELECT id, pay_frequency, deduction_group FROM payrollruns WHERE id = ? LIMIT 1`, BigInt(id));
+  if (!run) return respond.notFound(res, 'Run not found');
+
+  const allCols = await query(
+    `SELECT id, name, salary_components, add_columns, sub_columns, calculation_function,
+            payment_deduction, colorder, default_value, calculation_rule, deduction_group
+     FROM payrollcolumns WHERE enabled='Yes' ORDER BY COALESCE(colorder, 99999), id`
+  );
+
+  let empQuery = `SELECT pe.id, pe.employee, pe.deduction_group, pe.deduction_exemptions FROM payrollemployees pe WHERE pe.pay_frequency = ?`;
+  const empParams = [parseInt(run.pay_frequency)];
+  if (run.deduction_group) { empQuery += ` AND pe.deduction_group = ?`; empParams.push(BigInt(run.deduction_group)); }
+  const payrollEmps = await query(empQuery, ...empParams);
+
+  const empIdBigs = payrollEmps.map(e => BigInt(e.employee));
+  const salaryRows = empIdBigs.length
+    ? await query(`SELECT es.employee, sc.name AS comp_name, CAST(es.amount AS CHAR) AS amount
+                   FROM employeesalary es JOIN salarycomponent sc ON sc.id = es.component
+                   WHERE es.employee IN (${empIdBigs.map(() => '?').join(',')})`, ...empIdBigs)
+    : [];
+  const notchRows = empIdBigs.length
+    ? await query(`SELECT e.id AS employee, CAST(n.amount AS CHAR) AS amount, n.name AS notch_name
+                   FROM employee e JOIN notches n ON n.id = e.notcheId
+                   WHERE e.id IN (${empIdBigs.map(() => '?').join(',')})`, ...empIdBigs)
+    : [];
+  const [notchLinkedComp] = await query(`SELECT name FROM salarycomponent WHERE is_notch_linked = 1 LIMIT 1`);
+  const notchCompKey = notchLinkedComp?.name?.toUpperCase() || null;
+
+  const salaryByEmp = {};
+  salaryRows.forEach(row => {
+    const eid = String(Number(row.employee));
+    if (!salaryByEmp[eid]) salaryByEmp[eid] = {};
+    if (row.amount === null || row.amount === undefined || row.amount === '') return;
+    salaryByEmp[eid][row.comp_name.toUpperCase()] = parseFloat(row.amount) || 0;
+  });
+  notchRows.forEach(row => {
+    const eid = String(Number(row.employee));
+    if (!salaryByEmp[eid]) salaryByEmp[eid] = {};
+    const amt = parseFloat(row.amount) || 0;
+    salaryByEmp[eid][row.notch_name.toUpperCase()] = amt;
+    if (notchCompKey && !(notchCompKey in salaryByEmp[eid])) salaryByEmp[eid][notchCompKey] = amt;
+    if (!('BASIC SALARY' in salaryByEmp[eid])) salaryByEmp[eid]['BASIC SALARY'] = amt;
+  });
+
+  const savedCalcs = await query(`SELECT sc.id, sc.name, sc.target_type, sc.target_name FROM savedcalculations sc`);
+  const calcItems = await query(`SELECT * FROM calculationprocessitems ORDER BY sort_order`);
+  savedCalcs.forEach(sc => { sc.items = calcItems.filter(i => String(i.saved_calculation_id) === String(sc.id)); });
+
+  const result = payrollEmps.map(pe => {
+    const eid = String(Number(pe.employee));
+    const salaryMap = salaryByEmp[eid] || {};
+    const cache = {};
+    const colResults = [];
+    for (const col of allCols) {
+      if (col.deduction_group && String(col.deduction_group) !== String(pe.deduction_group ?? '')) continue;
+      const amount = calcColumn(col, salaryMap, allCols, savedCalcs, pe.employee, pe.deduction_exemptions, cache);
+      colResults.push({ id: col.id, name: col.name, salary_components: col.salary_components, default_value: col.default_value, calculation_function: col.calculation_function, amount });
+    }
+    return { employee: eid, salaryMap, columns: colResults };
+  });
+
+  respond.ok(res, 'Debug info', { notchLinkedComponent: notchLinkedComp?.name || null, employees: result });
+});
+
 const updatePayrollDataItem = asyncHandler(async (req, res) => {
   const { id, itemId } = req.params;
   const { amount } = req.body;
@@ -473,6 +548,63 @@ const updatePayrollDataItem = asyncHandler(async (req, res) => {
   await exec(`UPDATE payrolldata SET amount = ? WHERE id = ? AND payroll = ?`, String(amount ?? ''), parseInt(itemId), BigInt(id));
   respond.ok(res, 'Updated');
 });
+
+// ── GL posting helper (shared by finalize + retry) ───────────────────────────
+async function buildAndPostGL(id, req) {
+  const postingRows = await query(`
+    SELECT pd.employee, pd.amount,
+           pc.name AS col_name, pc.payment_deduction, pc.salarycomponent_gl, pc.posting_branch,
+           TRIM(CONCAT(IFNULL(e.firstName,''), ' ', IFNULL(e.lastName,''))) AS emp_name,
+           e.bankAccount,
+           COALESCE(pe.currency, ?) AS currency
+    FROM   payrolldata pd
+    JOIN   payrollcolumns    pc ON pc.id       = pd.payroll_item
+    JOIN   employee           e  ON e.id        = pd.employee
+    LEFT JOIN payrollemployees pe ON pe.employee = pd.employee
+    WHERE  pd.payroll = ? AND pc.posting_column = 'Yes'
+    ORDER  BY pd.employee, COALESCE(pc.colorder, 99999)
+  `, glCfg.currency(), BigInt(id));
+
+  const debitAccounts  = [];
+  const creditAccounts = [];
+  const approvedBy  = req.user?.username || req.user?.email || 'System';
+  const referenceNo = `PR${id}${String(Date.now()).slice(-7)}`;
+
+  const fallbackExpenseGL   = (process.env.PAYROLL_EXPENSE_GL   || '').trim();
+  const fallbackDeductionGL = (process.env.PAYROLL_DEDUCTION_GL || '').trim();
+  const fallbackNetGL       = (process.env.PAYROLL_NET_PAYABLE_GL || '').trim();
+
+  for (const row of postingRows) {
+    const amount   = parseFloat(row.amount || '0');
+    if (!amount || amount <= 0) continue;
+    const branch   = row.posting_branch || glCfg.branch();
+    const currency = row.currency       || glCfg.currency();
+    const prodRef  = `HR_${id}_${row.employee}`;
+    const isNet    = (row.col_name || '').toLowerCase().startsWith('net');
+
+    if (isNet) {
+      const acct = row.bankAccount || fallbackNetGL;
+      if (!acct) continue;
+      creditAccounts.push({ creditAmount: amount, creditAccount: acct, creditCurrency: currency, creditNarration: `${row.col_name} - ${row.emp_name}`, creditProdRef: prodRef, creditBranch: branch });
+    } else if (row.payment_deduction === 'Deduction') {
+      const acct = row.salarycomponent_gl || fallbackDeductionGL;
+      if (!acct) continue;
+      creditAccounts.push({ creditAmount: amount, creditAccount: acct, creditCurrency: currency, creditNarration: `${row.col_name} - ${row.emp_name}`, creditProdRef: prodRef, creditBranch: branch });
+    } else if (row.payment_deduction === 'Payment') {
+      const acct = row.salarycomponent_gl || fallbackExpenseGL;
+      if (!acct) continue;
+      debitAccounts.push({ debitAmount: amount, debitAccount: acct, debitCurrency: currency, debitNarration: `${row.col_name} - ${row.emp_name}`, debitProdRef: prodRef, debitBranch: branch });
+    }
+  }
+
+  const totalDr = debitAccounts.reduce((s, e) => s + e.debitAmount, 0);
+  const totalCr = creditAccounts.reduce((s, e) => s + e.creditAmount, 0);
+  if (Math.abs(totalDr - totalCr) > 0.01) {
+    console.warn(`[payroll GL] run ${id} imbalanced — DR ${totalDr.toFixed(2)} CR ${totalCr.toFixed(2)} diff ${(totalCr - totalDr).toFixed(2)}.`);
+  }
+
+  return postToGL({ approvedBy, referenceNo, debitAccounts, creditAccounts });
+}
 
 // ── Finalize ──────────────────────────────────────────────────────────────────
 const finalizePayroll = asyncHandler(async (req, res) => {
@@ -486,113 +618,61 @@ const finalizePayroll = asyncHandler(async (req, res) => {
 
   let documentRef = null;
   let paymentLog  = null;
+  let finalStatus = 'Completed';
 
-  // Build GL posting payload — always runs (URL is set in .env)
-  const postingUrl = process.env.POSTING_API_URL;
-  if (postingUrl) {
-    const postingRows = await query(`
-      SELECT pd.employee, pd.amount,
-             pc.name AS col_name, pc.payment_deduction, pc.salarycomponent_gl, pc.posting_branch,
-             TRIM(CONCAT(IFNULL(e.firstName,''), ' ', IFNULL(e.lastName,''))) AS emp_name,
-             e.bankAccount,
-             COALESCE(pe.currency, ?) AS currency
-      FROM   payrolldata pd
-      JOIN   payrollcolumns    pc ON pc.id       = pd.payroll_item
-      JOIN   employee           e  ON e.id        = pd.employee
-      LEFT JOIN payrollemployees pe ON pe.employee = pd.employee
-      WHERE  pd.payroll = ? AND pc.posting_column = 'Yes'
-      ORDER  BY pd.employee, COALESCE(pc.colorder, 99999)
-    `, process.env.POSTING_DEFAULT_CURRENCY || 'SLL', BigInt(id));
-
-    const debitAccounts  = [];
-    const creditAccounts = [];
-    const approvedBy = req.user?.username || req.user?.email || 'System';
-    const referenceNo = `HR-${id}-${Date.now()}`;
-    const defaultBranch = process.env.POSTING_DEFAULT_BRANCH || '000';
-
-    for (const row of postingRows) {
-      const amount = parseFloat(row.amount || '0');
-      if (!amount || amount <= 0) continue;
-      const branch   = row.posting_branch || defaultBranch;
-      const currency = row.currency || process.env.POSTING_DEFAULT_CURRENCY || 'SLL';
-      const prodRef  = `${id}_${row.employee}`;
-      const isNet    = (row.col_name || '').toLowerCase().startsWith('net');
-
-      if (isNet) {
-        // Net pay — CREDIT to employee bank account
-        creditAccounts.push({
-          creditAmount:      amount,
-          creditAccount:     row.bankAccount || '',
-          creditCurrency:    currency,
-          creditNarration:   `${row.col_name} - ${row.emp_name}`,
-          creditProdRef:     prodRef,
-          creditBranch:      branch,
-        });
-      } else if (row.payment_deduction === 'Deduction' && row.salarycomponent_gl) {
-        // Deduction liability — CREDIT to GL code
-        creditAccounts.push({
-          creditAmount:      amount,
-          creditAccount:     row.salarycomponent_gl,
-          creditCurrency:    currency,
-          creditNarration:   `${row.col_name} - ${row.emp_name}`,
-          creditProdRef:     prodRef,
-          creditBranch:      branch,
-        });
-      } else if (row.payment_deduction === 'Payment' && row.salarycomponent_gl) {
-        // Salary expense — DEBIT to GL code
-        debitAccounts.push({
-          debitAmount:       amount,
-          debitAccount:      row.salarycomponent_gl,
-          debitCurrency:     currency,
-          debitNarration:    `${row.col_name} - ${row.emp_name}`,
-          debitProdRef:      prodRef,
-          debitBranch:       branch,
-        });
-      }
-    }
-
-    const payload = {
-      approvedBy,
-      channelCode: process.env.POSTING_CHANNEL_CODE || 'HRP',
-      transType:   process.env.POSTING_TRANS_TYPE   || '1504',
-      debitAccounts,
-      creditAccounts,
-      referenceNo,
-      postedBy:    process.env.POSTING_POSTED_BY    || 'HRMS',
-    };
-
+  // ── GL posting ───────────────────────────────────────────────────────────────
+  if (glCfg.url()) {
     try {
-      const apiRes = await axios({
-        method:          'put',
-        maxBodyLength:   Infinity,
-        url:             postingUrl,
-        headers: {
-          'Content-Type':    'application/json',
-          'x-api-key':       process.env.POSTING_API_KEY    || '',
-          'x-api-secret':    process.env.POSTING_API_SECRET || '',
-          'X-FORWARDED-FOR': '10.203.14.169',
-        },
-        data: payload,
-        timeout: 30000,
-      });
-      const apiData = apiRes.data || {};
-      documentRef = apiData.documentRef || apiData.document_ref || apiData.referenceNo || referenceNo;
-      paymentLog  = JSON.stringify(apiData);
+      const result = await buildAndPostGL(id, req);
+      documentRef = result.documentRef;
+      paymentLog  = JSON.stringify(result.raw);
       console.log('[finalize] GL posting success, ref:', documentRef);
     } catch (e) {
-      console.error('[finalize] GL posting error:', e.response?.data || e.message);
-      paymentLog = JSON.stringify({ error: e.response?.data || e.message });
+      const errData = e.glResponse || e.response?.data || e.message;
+      console.error('[finalize] GL posting error:', errData);
+      paymentLog  = JSON.stringify({ error: errData });
+      finalStatus = 'GL Failed';
     }
   }
 
   await exec(
-    `UPDATE payrollruns SET status='Completed', document_ref=?, payment_log=?, finalized_at=NOW(), updated_at=NOW() WHERE id=?`,
-    documentRef, paymentLog, BigInt(id)
+    `UPDATE payrollruns SET status=?, document_ref=?, payment_log=?, finalized_at=NOW(), updated_at=NOW() WHERE id=?`,
+    finalStatus, documentRef, paymentLog, BigInt(id)
   );
   await logAudit(id, 'finalize', req, { documentRef });
   logActivity({ module: 'Payroll', action: 'finalize', entityId: String(id), entityName: run.name, ...fromReq(req), details: { documentRef } });
   const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
   respond.ok(res, 'Payroll finalized', rows[0] || null);
+});
+
+// ── Retry GL posting (for GL Failed runs) ────────────────────────────────────
+const retryGLPosting = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const [run] = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+  if (!run) return respond.notFound(res, 'Run not found');
+  if (run.status !== 'GL Failed') return respond.badReq(res, 'Only a GL Failed run can retry GL posting');
+  if (run.document_ref) return respond.badReq(res, 'GL already posted for this run');
+  if (!glCfg.url()) return respond.badReq(res, 'POSTING_API_URL not configured');
+
+  try {
+    const result = await buildAndPostGL(id, req);
+    await exec(
+      `UPDATE payrollruns SET status='Completed', document_ref=?, payment_log=?, updated_at=NOW() WHERE id=?`,
+      result.documentRef, JSON.stringify(result.raw), BigInt(id)
+    );
+    logActivity({ module: 'Payroll', action: 'gl_retry_success', entityId: String(id), entityName: run.name, ...fromReq(req), details: { documentRef: result.documentRef } });
+    const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+    respond.ok(res, 'GL posted successfully', rows[0] || null);
+  } catch (e) {
+    const errData = e.glResponse || e.response?.data || e.message;
+    console.error('[gl retry] error:', errData);
+    await exec(
+      `UPDATE payrollruns SET payment_log=?, updated_at=NOW() WHERE id=?`,
+      JSON.stringify({ error: errData }), BigInt(id)
+    );
+    const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+    respond.ok(res, 'GL posting failed', rows[0] || null);
+  }
 });
 
 // ── Approval workflow ─────────────────────────────────────────────────────────
@@ -672,6 +752,7 @@ const duplicatePayrollRun = asyncHandler(async (req, res) => {
 
 module.exports = {
   getPayrollRuns, createPayrollRun, updatePayrollRun, deletePayrollRun,
-  generatePayroll, getPayrollData, updatePayrollDataItem, finalizePayroll,
+  generatePayroll, getPayrollData, updatePayrollDataItem, finalizePayroll, retryGLPosting,
   submitPayroll, approvePayroll, rejectPayroll, getPayrollAudit, duplicatePayrollRun,
+  debugPayrollRun,
 };

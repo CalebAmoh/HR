@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { User } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { User, ShieldCheck } from 'lucide-react';
 import { FormModal } from './ui/FormModal';
 import { Combobox } from './EmployeeTabs';
 import api from '../../lib/api';
@@ -110,7 +110,25 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
   }, [type]);
 
   useEffect(() => {
-    setFormData(initialData ?? blank(type));
+    if (initialData) {
+      const normalizedStatus = (initialData.status === '1' || initialData.status === 'Active') ? 'Active' : 'Inactive';
+      if (type === 'Roles') {
+        const normalizedPerms = (initialData.permissions ?? []).map((p: any) => typeof p === 'object' ? p.name : p);
+        setFormData({
+          ...initialData,
+          roleName: initialData.roleName || initialData.name || '',
+          status: normalizedStatus,
+          permissions: normalizedPerms,
+        });
+      } else {
+        setFormData({
+          ...initialData,
+          status: normalizedStatus,
+        });
+      }
+    } else {
+      setFormData(blank(type));
+    }
   }, [initialData, type]);
 
   const empOpts = employees.map((e) => ({
@@ -133,8 +151,20 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
 
   const permKey = type === 'Users' ? 'directPermissions' : 'permissions';
 
+  // Compute which permissions are inherited from the selected role (Users mode only)
+  const roleInheritedPerms: Set<string> = useMemo(() => {
+    if (type !== 'Users' || !formData.roleId) return new Set<string>();
+    const selectedRole = roles.find((r: any) => String(r.id) === String(formData.roleId));
+    if (!selectedRole?.permissions) return new Set<string>();
+    return new Set(
+      selectedRole.permissions.map((p: any) => (typeof p === 'object' ? p.name : p))
+    );
+  }, [type, formData.roleId, roles]);
+
   // Selected perms stored as permission names; on save, map to IDs
   const togglePerm = (perm: string) => {
+    // Don't toggle if it's an inherited (role) permission in Users mode
+    if (type === 'Users' && roleInheritedPerms.has(perm)) return;
     const list: string[] = formData[permKey] ?? [];
     set(permKey, list.includes(perm) ? list.filter((p) => p !== perm) : [...list, perm]);
   };
@@ -275,7 +305,7 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
               {type === 'Users' ? 'Direct Permissions' : 'Permissions'}
             </span>
             <span className="text-xs font-semibold" style={{ color: '#7c3aed' }}>
-              ({selectedPerms.length} selected)
+              ({[...new Set([...selectedPerms, ...roleInheritedPerms])].length} selected)
             </span>
           </div>
           <span className="text-[11px] font-medium text-[var(--text-secondary)] border border-[var(--border)] rounded-full px-3 py-1 bg-[var(--bg)]">
@@ -285,13 +315,17 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
 
         <div className="border border-[var(--border)] rounded-xl overflow-hidden" style={{ maxHeight: 420, overflowY: 'auto' }}>
           {PERMISSION_GROUPS.map((group, gi) => {
-            const groupCount = group.perms.filter(p => selectedPerms.includes(p)).length;
+            const groupCount = group.perms.filter(p => selectedPerms.includes(p) || roleInheritedPerms.has(p)).length;
             const allSelected = groupCount === group.perms.length;
 
             const selectAll = () => {
-              const next = allSelected
-                ? selectedPerms.filter(p => !group.perms.includes(p))
-                : [...new Set([...selectedPerms, ...group.perms])];
+              // Only operate on non-inherited perms in this group
+              const nonInherited = group.perms.filter(p => !roleInheritedPerms.has(p));
+              const directInGroup = nonInherited.filter(p => selectedPerms.includes(p));
+              const allDirectSelected = directInGroup.length === nonInherited.length;
+              const next = allDirectSelected
+                ? selectedPerms.filter(p => !nonInherited.includes(p))
+                : [...new Set([...selectedPerms, ...nonInherited])];
               set(permKey, next);
             };
 
@@ -323,16 +357,20 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
                 {/* Chips */}
                 <div className="p-3 flex flex-wrap gap-2 bg-[var(--surface)]">
                   {group.perms.map((perm) => {
-                    const on = selectedPerms.includes(perm);
+                    const inherited = type === 'Users' && roleInheritedPerms.has(perm);
+                    const on = selectedPerms.includes(perm) || inherited;
                     return (
                       <button
                         key={perm}
                         type="button"
                         onClick={() => togglePerm(perm)}
+                        disabled={inherited}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-medium transition-all select-none"
-                        style={on
-                          ? { backgroundColor: group.color.light, borderColor: group.color.active, color: group.color.text }
-                          : { backgroundColor: 'var(--surface)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }
+                        style={inherited
+                          ? { backgroundColor: group.color.light, borderColor: group.color.active, color: group.color.text, opacity: 0.85, cursor: 'default' }
+                          : on
+                            ? { backgroundColor: group.color.light, borderColor: group.color.active, color: group.color.text }
+                            : { backgroundColor: 'var(--surface)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }
                         }
                       >
                         <span
@@ -345,6 +383,11 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
                           {on && <span className="w-1.5 h-1.5 rounded-full bg-white block" />}
                         </span>
                         {fmtPerm(perm)}
+                        {inherited && (
+                          <span className="flex items-center gap-0.5 ml-0.5 text-[10px] font-semibold" style={{ color: group.color.active }}>
+                            <ShieldCheck size={10} /> Role
+                          </span>
+                        )}
                       </button>
                     );
                   })}

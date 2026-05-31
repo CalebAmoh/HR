@@ -665,15 +665,15 @@ model employeedatahistory {
 }
 
 model employeedependents {
-  id             BigInt                           @id @default(autoincrement())
+  id             BigInt    @id @default(autoincrement())
   employee       BigInt
-  name           String                           @db.VarChar(100)
-  gender         String?                          @db.Text
-  place_of_birth String?                          @db.VarChar(30)
+  name           String    @db.VarChar(100)
+  gender         String?   @db.Text
+  place_of_birth String?   @db.VarChar(30)
   address        Int?
-  relationship   String?                          @db.VarChar(100)
-  dob            DateTime?                        @db.Date
-  id_number      String?                          @db.VarChar(25)
+  relationship   String?   @db.VarChar(100)
+  dob            DateTime? @db.Date
+  id_number      String?   @db.VarChar(25)
 }
 
 model employeedocuments {
@@ -851,7 +851,7 @@ model employeeleaves {
   leave_gl         String?                @db.VarChar(50)
   leave_name       String?                @db.VarChar(50)
   department       String?                @db.VarChar(50)
-  status           employeeleaves_status? @default(Pending)
+  status           employeeleaves_status? @default(Draft)
   allowance_status String?                @db.VarChar(20)
   amount           String?                @db.VarChar(30)
   documentref      String?                @db.VarChar(20)
@@ -1326,8 +1326,8 @@ model leaveperiods {
 model leaverules {
   id                                 BigInt                                  @id @default(autoincrement())
   leave_type                         BigInt
-  job_title                          BigInt?
-  employment_status                  BigInt?
+  job_title                          String?                                 @db.VarChar(191)
+  employment_status                  String?                                 @db.VarChar(191)
   employee                           BigInt?
   supervisor_leave_assign            leaverules_supervisor_leave_assign?     @default(Yes)
   employee_can_apply                 leaverules_employee_can_apply?          @default(Yes)
@@ -1344,6 +1344,8 @@ model leaverules {
   leave_period                       BigInt?
   department                         BigInt?
   employee_leave_period              leaverules_employee_leave_period?       @default(No)
+  accrual_frequency                  String?                                 @default("Monthly") @db.VarChar(20)
+  accrual_rate                       Decimal?                                @db.Decimal(10, 3)
 }
 
 model leavestartingbalance {
@@ -1375,6 +1377,8 @@ model leavetypes {
   leave_color                        String?                                 @db.VarChar(10)
   max_carried_forward_amount         Int?                                    @default(0)
   employee_leave_period              leavetypes_employee_leave_period?       @default(No)
+  accrual_frequency                  String?                                 @default("Monthly") @db.VarChar(20)
+  accrual_rate                       Decimal?                                @db.Decimal(10, 3)
 
   @@unique([id, name], map: "leavetypes_id_name")
 }
@@ -1469,7 +1473,7 @@ model payfrequency {
 model paygrades {
   id         BigInt   @id @default(autoincrement())
   name       String?  @db.VarChar(100)
-  currency   String   @db.VarChar(3)
+  currency   String   @default("") @db.VarChar(50)
   min_salary Decimal? @default(0.00) @db.Decimal(12, 2)
   max_salary Decimal? @default(0.00) @db.Decimal(12, 2)
 }
@@ -1518,6 +1522,11 @@ model payrollcolumns {
   calculation_function String?                       @db.Text
   deduction_group      BigInt?
   function_type        payrollcolumns_function_type? @default(Simple)
+  pay_frequency        Int?
+  calculation_rule     Int?
+  visible              Boolean                       @default(true)
+  include_in_net       Boolean                       @default(true)
+  payslip_label        String?                       @db.VarChar(100)
 }
 
 model payrollcolumntemplates {
@@ -1538,7 +1547,7 @@ model payrollemployees {
   id                   BigInt  @id @default(autoincrement())
   employee             BigInt
   pay_frequency        Int?
-  currency             BigInt?
+  currency             String? @db.VarChar(20)
   deduction_exemptions String? @db.VarChar(250)
   deduction_allowed    String? @db.VarChar(250)
   deduction_group      BigInt?
@@ -1662,6 +1671,7 @@ model salarycomponent {
   processing_code String? @db.VarChar(20)
   componentType   BigInt?
   details         String? @db.Text
+  is_notch_linked Boolean @default(false)
 }
 
 /// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
@@ -1729,6 +1739,10 @@ model staffmedical {
   attachment3      String?              @db.Text
   reference        String?              @db.VarChar(50)
   api_response     String?              @db.VarChar(100)
+  rejection_reason String?              @db.Text
+  submitted_by     BigInt?
+  document_ref     String?              @db.VarChar(100)
+  payment_log      String?              @db.Text
 }
 
 /// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
@@ -2049,6 +2063,11 @@ model dependentmedical {
   attachment3           String?                 @db.Text
   reference             String?                 @db.VarChar(50)
   api_response          String?                 @db.VarChar(200)
+  dependent_id          BigInt?
+  rejection_reason      String?                 @db.Text
+  submitted_by          BigInt?
+  document_ref          String?                 @db.VarChar(100)
+  payment_log           String?                 @db.Text
 }
 
 /// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
@@ -2130,6 +2149,8 @@ model hospitalclaims {
   approved_by         BigInt?
   reference_no        String?   @db.VarChar(20)
   response            String?   @db.Text
+  document_ref        String?   @db.VarChar(100)
+  payment_log         String?   @db.Text
 }
 
 /// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
@@ -2229,6 +2250,8 @@ model medicallimit {
   status        String?   @db.VarChar(20)
   approved_by   String?   @db.VarChar(50)
   approved_date DateTime? @db.Date
+  paygrade_id   BigInt?
+  currency      String?   @default("SLE") @db.VarChar(10)
 }
 
 /// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
@@ -2363,9 +2386,10 @@ model paygrades_1 {
 }
 
 model paymenttype {
-  id          BigInt  @id @default(autoincrement())
-  name        String  @db.VarChar(50)
-  description String? @db.VarChar(100)
+  id               BigInt  @id @default(autoincrement())
+  name             String  @db.VarChar(50)
+  description      String? @db.VarChar(100)
+  generate_payslip Boolean @default(true)
 }
 
 /// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
@@ -2381,6 +2405,7 @@ model registeredhospitals {
   account    String    @unique(map: "account") @db.VarChar(30)
   created_at DateTime  @default(now()) @db.Timestamp(0)
   updated_at DateTime? @db.DateTime(0)
+  type       String    @default("Hospital") @db.VarChar(20)
 }
 
 /// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
@@ -2699,6 +2724,122 @@ model workinjuries {
   status         String?   @db.VarChar(10)
 }
 
+model auditlogs {
+  id          BigInt    @id @default(autoincrement())
+  module      String    @db.VarChar(60)
+  action      String    @db.VarChar(60)
+  entity_id   String?   @db.VarChar(60)
+  entity_name String?   @db.VarChar(255)
+  user_id     BigInt?
+  user_name   String?   @db.VarChar(200)
+  ip_address  String?   @db.VarChar(60)
+  details     String?   @db.Text
+  created_at  DateTime? @default(now()) @db.DateTime(0)
+}
+
+model calculationgroups {
+  id         BigInt    @id @default(autoincrement())
+  name       String    @db.VarChar(200)
+  details    String?   @db.Text
+  created_at DateTime? @default(now()) @db.DateTime(0)
+  updated_at DateTime? @default(now()) @db.DateTime(0)
+}
+
+model calculationprocessitems {
+  id                    BigInt    @id @default(autoincrement())
+  saved_calculation_id  BigInt
+  lower_limit_condition String    @default("NO_LOWER_LIMIT") @db.VarChar(50)
+  lower_limit           Decimal?  @db.Decimal(18, 4)
+  upper_limit_condition String    @default("NO_UPPER_LIMIT") @db.VarChar(50)
+  upper_limit           Decimal?  @db.Decimal(18, 4)
+  value                 String    @default("0") @db.VarChar(200)
+  sort_order            Int?      @default(0)
+  created_at            DateTime? @default(now()) @db.DateTime(0)
+}
+
+model payfrequencies {
+  id          Int     @id @default(autoincrement())
+  name        String  @db.VarChar(100)
+  description String? @db.VarChar(200)
+  sort_order  Int     @default(99)
+  is_active   Boolean @default(true)
+}
+
+model payrollrunaudit {
+  id         BigInt    @id @default(autoincrement())
+  run_id     BigInt
+  action     String    @db.VarChar(50)
+  user_id    BigInt?
+  user_name  String?   @db.VarChar(200)
+  details    String?   @db.Text
+  created_at DateTime? @default(now()) @db.DateTime(0)
+}
+
+model payrollruns {
+  id               BigInt              @id @default(autoincrement())
+  name             String              @db.VarChar(200)
+  pay_frequency    Int?
+  date_start       DateTime?           @db.Date
+  date_end         DateTime?           @db.Date
+  deduction_group  BigInt?
+  status           payrollruns_status? @default(Draft)
+  created_at       DateTime?           @default(now()) @db.DateTime(0)
+  updated_at       DateTime?           @default(now()) @db.DateTime(0)
+  payment_type_id  BigInt?
+  submitted_by     BigInt?
+  approved_by      BigInt?
+  approved_at      DateTime?           @db.DateTime(0)
+  rejection_reason String?             @db.Text
+  document_ref     String?             @db.VarChar(100)
+  payment_log      String?             @db.Text
+  finalized_at     DateTime?           @db.DateTime(0)
+}
+
+model payslip_settings {
+  id                 Int       @id @default(autoincrement())
+  company_name       String?   @db.VarChar(200)
+  company_address    String?   @db.Text
+  company_logo_url   String?   @db.VarChar(500)
+  header_note        String?   @db.Text
+  footer_note        String?   @db.Text
+  accent_color       String?   @default("#3B82F6") @db.VarChar(20)
+  show_emp_id        Boolean   @default(true)
+  show_department    Boolean   @default(true)
+  show_position      Boolean   @default(true)
+  show_bank_account  Boolean   @default(false)
+  updated_at         DateTime? @default(now()) @db.DateTime(0)
+  template_name      String    @default("Default") @db.VarChar(100)
+  deduction_group_id BigInt?
+  visible_columns    String?   @db.Text
+  net_columns        String?   @db.Text
+  payment_type_id    BigInt?
+}
+
+model salary_history {
+  id             BigInt                @id @default(autoincrement())
+  employee_id    BigInt
+  component_id   BigInt
+  component_name String?               @db.VarChar(200)
+  action         salary_history_action
+  old_amount     String?               @db.VarChar(30)
+  new_amount     String?               @db.VarChar(30)
+  old_currency   String?               @db.VarChar(10)
+  new_currency   String?               @db.VarChar(10)
+  changed_by     String?               @db.VarChar(200)
+  created_at     DateTime?             @default(now()) @db.DateTime(0)
+}
+
+model savedcalculations {
+  id                   BigInt    @id @default(autoincrement())
+  name                 String    @db.VarChar(200)
+  target_type          String    @default("component") @db.VarChar(20)
+  target_id            BigInt?
+  target_name          String?   @db.VarChar(200)
+  calculation_group_id BigInt?
+  created_at           DateTime? @default(now()) @db.DateTime(0)
+  updated_at           DateTime? @default(now()) @db.DateTime(0)
+}
+
 enum leavetypes_supervisor_leave_assign {
   Yes
   No
@@ -2713,13 +2854,6 @@ enum workdays_status {
 enum documents_expire_notification {
   Yes
   No
-}
-
-enum employeedependents_relationship {
-  Child
-  Spouse
-  Parent
-  Other
 }
 
 enum employeeforms_status {
@@ -3070,6 +3204,7 @@ enum employeecompanyloans_status {
 }
 
 enum employeeleaves_status {
+  Draft
   Approved
   Pending
   Rejected
@@ -3289,4 +3424,19 @@ enum vw_employeeimprest_status {
 enum candidates_source {
   Sourced
   Applied
+}
+
+enum salary_history_action {
+  created
+  updated
+  deleted
+}
+
+enum payrollruns_status {
+  Draft
+  Processing
+  Pending_Approval @map("Pending Approval")
+  Rejected
+  Approved
+  Completed
 }

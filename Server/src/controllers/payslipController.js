@@ -2,6 +2,8 @@ const PDFDocument = require('pdfkit');
 const { prisma }  = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond      = require('../helpers/respondHelper');
+const axios        = require('axios');
+const fs           = require('fs');
 
 function serialize(obj) {
   if (typeof obj === 'bigint') return obj.toString();
@@ -21,6 +23,14 @@ async function query(sql, ...params) {
   return serialize(rows);
 }
 
+// Ensure payslip_label column exists — calculationController adds it too, but payslipController
+// runs this query independently and may load before calculationController on some restarts.
+(async () => {
+  try {
+    await prisma.$executeRawUnsafe(`ALTER TABLE payrollcolumns ADD COLUMN payslip_label VARCHAR(100) NULL`);
+  } catch { /* column already exists — safe to ignore */ }
+})();
+
 function fmt(val) {
   const n = parseFloat(val || '0');
   if (!Number.isFinite(n)) return '0.00';
@@ -35,14 +45,56 @@ function hexToRgb(hex) {
   return [r, g, b];
 }
 
+function fmtDate(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+  return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+async function loadLogoBuffer(src) {
+  if (!src || !String(src).trim()) return null;
+  const value = String(src).trim();
+
+  try {
+    const dataUri = value.match(/^data:image\/(?:png|jpe?g);base64,(.+)$/i);
+    if (dataUri) return Buffer.from(dataUri[1], 'base64');
+
+    if (/^https?:\/\//i.test(value)) {
+      const res = await axios.get(value, { responseType: 'arraybuffer', timeout: 5000 });
+      return Buffer.from(res.data);
+    }
+
+    if (fs.existsSync(value)) return fs.readFileSync(value);
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 // ── Download payslip PDF ──────────────────────────────────────────────────────
 const downloadPayslip = asyncHandler(async (req, res) => {
   const { id: runId, empId } = req.params;
 
   // Auth guard: employees can only fetch their own payslip
-  if (req.user?.role !== 'admin' && req.user?.role !== 'super-admin') {
-    const [self] = await query('SELECT id FROM employee WHERE email = ? OR username = ? LIMIT 1',
-      req.user?.email || '', req.user?.username || '');
+  const roles = req.user?.roles || [];
+  const permissions = req.user?.permissions || [];
+  const canDownloadForOthers =
+    roles.includes('admin') ||
+    roles.includes('super-admin') ||
+    permissions.includes('view_payroll_reports') ||
+    permissions.includes('export_payroll_reports') ||
+    permissions.includes('view_reports') ||
+    permissions.includes('export_reports');
+
+  if (!canDownloadForOthers) {
+    const [self] = await query(
+      'SELECT id FROM employee WHERE email = ? OR work_email = ? OR employee_id = ? LIMIT 1',
+      req.user?.email || '',
+      req.user?.email || '',
+      req.user?.username || ''
+    );
     if (!self || String(self.id) !== String(empId)) {
       return respond.badReq(res, 'You can only download your own payslip');
     }
@@ -50,33 +102,59 @@ const downloadPayslip = asyncHandler(async (req, res) => {
 
   // ── Fetch run, settings, employee ──────────────────────────────────────────
   const [run] = await query(`
-    SELECT pr.id, pr.name, pr.date_start, pr.date_end, pr.status,
+    SELECT pr.id, pr.name, pr.date_start, pr.date_end, pr.status, pr.payment_type_id,
            pf.name AS freq_name
     FROM payrollruns pr
     LEFT JOIN payfrequencies pf ON pf.id = pr.pay_frequency
     WHERE pr.id = ? LIMIT 1`, BigInt(runId));
   if (!run) return respond.notFound(res, 'Payroll run not found');
 
+  if (run.payment_type_id) {
+    const [pt] = await query(
+      `SELECT generate_payslip FROM paymenttype WHERE id = ? LIMIT 1`,
+      BigInt(run.payment_type_id)
+    ).catch(() => [null]);
+    if (pt && !pt.generate_payslip) {
+      return res.status(403).json({ success: false, message: 'Payslips are not generated for this payment type.' });
+    }
+  }
+
   const [emp] = await query(`
     SELECT e.id, e.employee_id, e.firstName, e.lastName, e.email,
-           e.bankAccount, e.designation, e.department
-    FROM employee e WHERE e.id = ? LIMIT 1`, BigInt(empId));
+           e.bankAccount,
+           COALESCE(jt.label, e.jobTitleId) AS designation,
+           COALESCE(dept.title, CAST(e.departmentId AS CHAR)) AS department
+    FROM employee e
+    LEFT JOIN codelistvalue jt ON jt.id = e.jobTitleId
+    LEFT JOIN companystructures dept ON dept.id = e.departmentId
+    WHERE e.id = ? LIMIT 1`, BigInt(empId));
   if (!emp) return respond.notFound(res, 'Employee not found');
 
   const payrollData = await query(`
-    SELECT pc.id AS payroll_item_id, pc.name, pc.payment_deduction, pc.visible, pc.include_in_net,
+    SELECT pc.id AS payroll_item_id,
+           COALESCE(NULLIF(pc.payslip_label,''), pc.name) AS name,
+           pc.payment_deduction, pc.visible, pc.include_in_net,
            CAST(pd.amount AS CHAR) AS amount
     FROM payrolldata pd
     JOIN payrollcolumns pc ON pc.id = pd.payroll_item
     WHERE pd.payroll = ? AND pd.employee = ?
     ORDER BY COALESCE(pc.colorder, 99999)`, BigInt(runId), BigInt(empId));
 
-  // Find the best-matching template: first by deduction group, then the default (NULL group)
-  const allTemplates = await query('SELECT * FROM payslip_settings ORDER BY deduction_group_id IS NULL ASC, id ASC').catch(() => []);
+  // Find the best-matching template: payment type + group, then payment type,
+  // then group, then the default template.
+  const allTemplates = await query(`
+    SELECT * FROM payslip_settings
+    ORDER BY payment_type_id IS NULL ASC, deduction_group_id IS NULL ASC, id ASC
+  `).catch(() => []);
   const [empPe] = await query('SELECT deduction_group FROM payrollemployees WHERE employee = ? LIMIT 1', BigInt(empId)).catch(() => [null]);
   const empGroup = empPe?.deduction_group ? String(empPe.deduction_group) : null;
-  const [settings] = allTemplates.filter(t => empGroup && String(t.deduction_group_id) === empGroup)
-    .concat(allTemplates.filter(t => !t.deduction_group_id));
+  const runPaymentType = run.payment_type_id ? String(run.payment_type_id) : null;
+  const [settings] = allTemplates
+    .filter(t => runPaymentType && empGroup && String(t.payment_type_id) === runPaymentType && String(t.deduction_group_id) === empGroup)
+    .concat(allTemplates.filter(t => runPaymentType && String(t.payment_type_id) === runPaymentType && !t.deduction_group_id))
+    .concat(allTemplates.filter(t => empGroup && !t.payment_type_id && String(t.deduction_group_id) === empGroup))
+    .concat(allTemplates.filter(t => !t.payment_type_id && !t.deduction_group_id));
+  const hasTemplate = !!settings;
   const s = settings || {};
 
   // ── Categorise columns ──────────────────────────────────────────────────────
@@ -84,13 +162,23 @@ const downloadPayslip = asyncHandler(async (req, res) => {
   if (s.visible_columns) {
     try { visibleIds = new Set(JSON.parse(s.visible_columns).map(String)); } catch { /* ignore */ }
   }
-  const colVisible = (r) => r.visible != 0 && (!visibleIds || visibleIds.has(String(r.payroll_item_id)));
+  let netIds = null;
+  if (s.net_columns) {
+    try { netIds = new Set(JSON.parse(s.net_columns).map(String)); } catch { /* ignore */ }
+  }
+  const colVisible = (r) => hasTemplate
+    ? (visibleIds ? visibleIds.has(String(r.payroll_item_id)) : true)
+    : r.visible != 0;
   const earnings   = payrollData.filter(r => r.payment_deduction === 'Payment'   && colVisible(r));
   const deductions = payrollData.filter(r => r.payment_deduction === 'Deduction' && colVisible(r));
   const netRow     = payrollData.find(r => (r.name || '').toLowerCase().startsWith('net'));
   const totalEarnings  = earnings.reduce((s, r) => s + parseFloat(r.amount || '0'), 0);
   const totalDeductions = deductions.reduce((s, r) => s + parseFloat(r.amount || '0'), 0);
-  const netPay = netRow ? parseFloat(netRow.amount || '0') : (totalEarnings - totalDeductions);
+  const netPay = netIds
+    ? payrollData
+        .filter(r => netIds.has(String(r.payroll_item_id)))
+        .reduce((sum, r) => sum + (parseFloat(r.amount || '0') || 0) * (r.payment_deduction === 'Deduction' ? -1 : 1), 0)
+    : (netRow ? parseFloat(netRow.amount || '0') : (totalEarnings - totalDeductions));
 
   const [acR, acG, acB] = hexToRgb(s.accent_color);
   const empName = `${emp.firstName || ''} ${emp.lastName || ''}`.trim();
@@ -203,8 +291,10 @@ const downloadPayslip = asyncHandler(async (req, res) => {
 // ── My payslips list (for employee self-service) ──────────────────────────────
 const getMyPayslips = asyncHandler(async (req, res) => {
   const [self] = await query(
-    'SELECT id FROM employee WHERE email = ? OR username = ? LIMIT 1',
-    req.user?.email || '', req.user?.username || ''
+    'SELECT id FROM employee WHERE email = ? OR work_email = ? OR employee_id = ? LIMIT 1',
+    req.user?.email || '',
+    req.user?.email || '',
+    req.user?.username || ''
   );
   if (!self) return respond.notFound(res, 'Employee record not found for this user');
   const rows = await query(`
@@ -212,7 +302,9 @@ const getMyPayslips = asyncHandler(async (req, res) => {
            pf.name AS freq_name
     FROM payrollruns pr
     LEFT JOIN payfrequencies pf ON pf.id = pr.pay_frequency
+    LEFT JOIN paymenttype pt ON pt.id = pr.payment_type_id
     WHERE pr.status IN ('Completed','Approved')
+      AND COALESCE(pt.generate_payslip, 1) = 1
       AND EXISTS (
         SELECT 1 FROM payrolldata pd WHERE pd.payroll = pr.id AND pd.employee = ?
       )

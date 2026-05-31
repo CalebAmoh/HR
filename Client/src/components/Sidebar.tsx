@@ -3,7 +3,7 @@ import {
   ShieldAlert, Users, FileText, Settings, PieChart,
   User, CalendarCheck, FolderOpen, Building2, FileSpreadsheet,
   ChevronRight, ChevronDown, LayoutDashboard, X,
-  PanelLeftClose, PanelLeftOpen, Banknote, CheckCircle, HelpCircle
+  PanelLeftClose, PanelLeftOpen, Banknote, CheckCircle, HelpCircle, Stethoscope
 } from 'lucide-react';
 import { usePermission } from '@/hooks/usePermission';
 import { AppUser } from '@/types/permissions';
@@ -55,7 +55,7 @@ const menuSections: MenuSection[] = [
       },
       { icon: FileText,      label: 'Admin Reports',      id: 'AdminReports'    },
       { icon: CheckCircle,   label: 'Central Approval',   id: 'CentralApproval' },
-      { icon: User,          label: 'Personal Info',      hasSubmenu: true      },
+      { icon: User,          label: 'Personal Info',      id: 'PersonalInfo'    },
       { icon: FileSpreadsheet, label: 'User Reports',     id: 'UserReports'     },
     ],
   },
@@ -83,6 +83,15 @@ const menuSections: MenuSection[] = [
         subItems: [
           { label: 'Salary',  id: 'Salary'  },
           { label: 'Payroll', id: 'Payroll' },
+        ],
+      },
+      {
+        icon: Stethoscope,
+        label: 'Medical',
+        hasSubmenu: true,
+        subItems: [
+          { label: 'Personal Medical', id: 'PersonalMedical' },
+          { label: 'Admin Medical',    id: 'AdminMedical'    },
         ],
       },
       { icon: Users,  label: 'Users', hasSubmenu: true },
@@ -158,7 +167,7 @@ export function Sidebar({ currentUser,activeView, setActiveView, isOpen, onClose
           {!isCollapsed && (
             <div className="flex flex-col min-w-0 overflow-hidden">
               <span className="syne text-[11.5px] font-bold text-[var(--text-primary)] tracking-wider uppercase truncate leading-tight">
-                Union Admin
+                {currentUser?.name || currentUser?.email || 'User'}
               </span>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-[var(--success)] flex-shrink-0" />
@@ -212,9 +221,20 @@ export function Sidebar({ currentUser,activeView, setActiveView, isOpen, onClose
               {/* Items */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 1, padding: '0 6px' }}>
                 {section.items.map((item, idx) => {
+                  // Filter sub-items the user can't access
+                  const visibleSubItems = item.subItems
+                    ? item.subItems.filter(s => canNav(s.id))
+                    : undefined;
+
+                  // Hide parent if it has sub-items and ALL are hidden
+                  // or if the parent itself requires permissions the user lacks
+                  const parentKey = item.id ?? item.label;
+                  if (visibleSubItems !== undefined && visibleSubItems.length === 0) return null;
+                  if (!item.subItems && !canNav(parentKey)) return null;
+
                   const isActive =
                     activeView === (item.id ?? item.label) ||
-                    (item.subItems?.some(s => activeView === s.id) ?? false);
+                    (visibleSubItems?.some(s => activeView === s.id) ?? false);
                   const isExpanded = expandedItems.includes(item.label);
 
                   return (
@@ -307,7 +327,7 @@ export function Sidebar({ currentUser,activeView, setActiveView, isOpen, onClose
                           )}
                         </span>
 
-                        {!isCollapsed && item.hasSubmenu && (
+                        {!isCollapsed && visibleSubItems && (
                           <span className="flex-shrink-0 ml-1">
                             {isExpanded
                               ? <ChevronDown className="w-3 h-3 text-[var(--accent)]" />
@@ -318,7 +338,7 @@ export function Sidebar({ currentUser,activeView, setActiveView, isOpen, onClose
                       </button>
 
                       {/* Submenu */}
-                      {item.subItems && isExpanded && !isCollapsed && (
+                      {visibleSubItems && isExpanded && !isCollapsed && (
                         <div
                           style={{
                             marginTop: 2,
@@ -338,7 +358,7 @@ export function Sidebar({ currentUser,activeView, setActiveView, isOpen, onClose
                               background: 'var(--border)',
                             }}
                           />
-                          {item.subItems.map((sub, si2) => {
+                          {visibleSubItems.map((sub, si2) => {
                             const isSubActive = activeView === sub.id;
                             return (
                               <button

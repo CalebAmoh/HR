@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
-import { CheckCircle, X, Eye, Users, Banknote, RefreshCw, Check, XCircle } from 'lucide-react';
+import { CheckCircle, X, Eye, Users, Banknote, RefreshCw, Check, XCircle, Stethoscope, FileText, Download, CalendarClock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { FormField, inputClass } from './ui/FormField';
 import api from '../../lib/api';
+import { getCurrentUser } from '../../lib/auth';
 
-type ApprovalModule = 'Employee' | 'Payroll';
+type ApprovalModule = 'Employee' | 'Payroll' | 'Medical' | 'Leave';
 
 // Safely extract a display string from a value that may be a plain string,
 // a code-list-value object {label}, or a structure object {name}.
@@ -24,13 +25,25 @@ interface ApprovalItem {
   title: string;
   subtitle: string;
   submittedAt: string | null;
+  status: string;
   raw: any;
 }
 
+function StatusChip({ status }: { status: string }) {
+  const s = status ?? '';
+  let cls = 'pill text-[11px]';
+  if (/pending/i.test(s))  cls += ' pill-warning';
+  else if (/approved/i.test(s)) cls += ' pill-success';
+  else if (/rejected/i.test(s)) cls += ' pill-danger';
+  const label = s === 'PENDING' ? 'Pending' : s === 'APPROVED' ? 'Approved' : s === 'REJECTED' ? 'Rejected' : s;
+  return <span className={cls}>{label}</span>;
+}
+
 function ModulePill({ module }: { module: ApprovalModule }) {
-  return module === 'Employee'
-    ? <span className="pill pill-accent text-[11px]"><Users size={10} className="inline mr-1" />Employee</span>
-    : <span className="pill pill-warning text-[11px]"><Banknote size={10} className="inline mr-1" />Payroll</span>;
+  if (module === 'Employee') return <span className="pill pill-accent text-[11px]"><Users size={10} className="inline mr-1" />Employee</span>;
+  if (module === 'Payroll')  return <span className="pill pill-warning text-[11px]"><Banknote size={10} className="inline mr-1" />Payroll</span>;
+  if (module === 'Leave')    return <span className="pill text-[11px] bg-purple-500/10 text-purple-700 border border-purple-200/50"><CalendarClock size={10} className="inline mr-1" />Leave</span>;
+  return <span className="pill pill-success text-[11px]"><Stethoscope size={10} className="inline mr-1" />Medical</span>;
 }
 
 // ── Employee detail panel ─────────────────────────────────────────────────────
@@ -154,6 +167,269 @@ function PayrollDetail({ run, onApprove, onReject, onClose, busy }: { run: any; 
   );
 }
 
+// ── Document preview modal ────────────────────────────────────────────────────
+function DocModal({ url, filename, onClose }: { url: string; filename: string; onClose: () => void }) {
+  const isImg = /\.(png|jpg|jpeg|gif|webp)$/i.test(filename ?? '');
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={onClose} />
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
+        className="relative z-10 bg-[var(--surface)] rounded-2xl shadow-2xl flex flex-col w-full max-w-3xl max-h-[90vh] overflow-hidden border border-[var(--border)]"
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)] shrink-0 bg-slate-50/60">
+          <p className="text-[13px] font-semibold text-[var(--text-primary)] truncate max-w-[80%]">{filename}</p>
+          <div className="flex items-center gap-1">
+            <a href={url} download={filename} className="action-btn text-[var(--accent)]" title="Download"><Download size={14} /></a>
+            <button onClick={onClose} className="action-btn"><X size={16} /></button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-auto bg-slate-100 flex items-center justify-center" style={{ minHeight: 400 }}>
+          {isImg
+            ? <img src={url} alt={filename} className="max-w-full max-h-full object-contain p-2" />
+            : <iframe src={url} title={filename} className="w-full border-0" style={{ height: 600 }} />}
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+// ── Medical detail panel ──────────────────────────────────────────────────────
+function MedicalDetail({ rec, onApprove, onReject, onClose, busy }: {
+  rec: any; onApprove: () => void; onReject: (reason: string) => void; onClose: () => void; busy: boolean;
+}) {
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason]       = useState('');
+  const [docOpen, setDocOpen]     = useState(false);
+  const isDependent = !!rec.dependent_name;
+
+  const rows = [
+    ['Employee',        rec.employee_name  || '—'],
+    ...(isDependent ? [['Dependent', rec.dependent_name || '—'], ['Relationship', rec.relationship || '—']] : []),
+    ['Admission Date',  (isDependent ? rec.date_attended : rec.admission_date)  || '—'],
+    ['Discharged Date', (isDependent ? rec.date_discharged : rec.discharged_date) || '—'],
+    ['Admission Type',  rec.admission_type || '—'],
+    ['Illness Type',    rec.illness_type   || '—'],
+    ['Medication',      rec.medication     || '—'],
+    ['Hospital',        rec.hospital       || '—'],
+    ['Physician',       rec.physician      || '—'],
+    ['Cost',            parseFloat(String(rec.cost ?? 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })],
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3 pb-3 border-b border-[var(--border)]">
+        <div className="w-10 h-10 rounded-full bg-[color-mix(in_srgb,var(--success)_15%,transparent)] flex items-center justify-center">
+          <Stethoscope size={18} className="text-[var(--success)]" />
+        </div>
+        <div>
+          <p className="font-bold text-[var(--text-primary)]">{rec.employee_name}</p>
+          <p className="text-xs text-[var(--text-muted)]">{isDependent ? 'Dependent medical request' : 'Staff medical request'}</p>
+        </div>
+      </div>
+
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-2">
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <dt className="text-[11px] text-[var(--text-muted)] font-medium">{label}</dt>
+            <dd className="text-[13px] text-[var(--text-primary)] font-semibold mt-0.5">{value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {/* Audit trail */}
+      <div className="grid grid-cols-2 gap-x-6 gap-y-2 pt-3 border-t border-[var(--border)]">
+        <div>
+          <dt className="text-[11px] text-[var(--text-muted)] font-medium">Posted By</dt>
+          <dd className="text-[13px] text-[var(--text-primary)] font-semibold mt-0.5">{rec.posted_by_name || '—'}</dd>
+        </div>
+        {rec.approved_by_name && (
+          <div>
+            <dt className="text-[11px] text-[var(--text-muted)] font-medium">
+              {rec.status === 'Rejected' ? 'Rejected By' : 'Approved By'}
+            </dt>
+            <dd className="text-[13px] text-[var(--text-primary)] font-semibold mt-0.5">{rec.approved_by_name}</dd>
+          </div>
+        )}
+      </div>
+
+      {rec.rejection_reason && (
+        <div className="rounded-lg bg-red-50 border border-red-100 px-4 py-3">
+          <p className="text-[10px] font-bold text-red-500 uppercase tracking-wider mb-1">Rejection Reason</p>
+          <p className="text-[12px] text-red-700">{rec.rejection_reason}</p>
+        </div>
+      )}
+
+      {rec.attachment1 && (
+        <div>
+          <p className="text-[11px] text-[var(--text-muted)] font-medium mb-1">Attachment</p>
+          <button type="button" onClick={() => setDocOpen(true)}
+            className="inline-flex items-center gap-1.5 text-[12px] text-[var(--accent)] hover:underline">
+            <FileText size={12} /> {rec.attachment1}
+          </button>
+        </div>
+      )}
+
+      {rejecting && (
+        <FormField label="Rejection Reason">
+          <textarea className={inputClass + ' resize-none'} rows={3}
+            placeholder="Enter reason for rejection…"
+            value={reason} onChange={e => setReason(e.target.value)} />
+        </FormField>
+      )}
+
+      <div className="flex justify-end gap-3 pt-2 border-t border-[var(--border)]">
+        <button className="secondary-btn" onClick={onClose} disabled={busy}>Cancel</button>
+        {rejecting ? (
+          <>
+            <button className="secondary-btn" onClick={() => setRejecting(false)} disabled={busy}>Back</button>
+            <button className="primary-btn !bg-red-600 hover:!bg-red-700"
+              onClick={() => onReject(reason)} disabled={busy || !reason.trim()}>
+              <XCircle size={14} /><span>{busy ? 'Rejecting…' : 'Confirm Reject'}</span>
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="secondary-btn !border-red-500 !text-red-600 hover:!bg-red-50"
+              onClick={() => setRejecting(true)} disabled={busy}>
+              <XCircle size={14} /><span>Reject</span>
+            </button>
+            <button className="primary-btn !bg-green-600 hover:!bg-green-700"
+              onClick={onApprove} disabled={busy}>
+              <Check size={14} /><span>{busy ? 'Approving…' : 'Approve'}</span>
+            </button>
+          </>
+        )}
+      </div>
+
+      <AnimatePresence>
+        {docOpen && (
+          <DocModal
+            url={`/v1/api/hr/documents/${rec.attachment1}`}
+            filename={rec.attachment1}
+            onClose={() => setDocOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ── Leave detail panel ────────────────────────────────────────────────────────
+function LeaveApprovalDetail({ item, onApprove, onReject, onApproveAllowance, onClose, busy }: {
+  item: ApprovalItem;
+  onApprove: () => void;
+  onReject: (reason: string) => void;
+  onApproveAllowance: () => void;
+  onClose: () => void;
+  busy: boolean;
+}) {
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason]       = useState('');
+  const l = item.raw;
+  const isPendingFinancial = l._isPendingFinancial as boolean;
+  const amount    = parseFloat(l.amount    ?? 0) || 0;
+  const taxAmount = parseFloat(l.leave_tax ?? 0) || 0;
+
+  const rows = [
+    ['Employee',    l.employee_name    || '—'],
+    ['Employee ID', l.employee_code    || '—'],
+    ['Department',  l.department_name  || '—'],
+    ['Leave Type',  l.leave_type_name  || '—'],
+    ['Period',      l.period_name      || '—'],
+    ['From',        l.date_start ? String(l.date_start).slice(0, 10) : '—'],
+    ['To',          l.date_end   ? String(l.date_end).slice(0, 10)   : '—'],
+    ['Days',        String(l.day_count ?? '—')],
+    ['Status',      l.status           || '—'],
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3 pb-3 border-b border-[var(--border)]">
+        <div className="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center">
+          <CalendarClock size={18} className="text-purple-600" />
+        </div>
+        <div>
+          <p className="font-bold text-[var(--text-primary)]">{l.employee_name}</p>
+          <p className="text-xs text-[var(--text-muted)]">
+            {isPendingFinancial ? 'Leave allowance pending financial approval' : 'Leave application pending approval'}
+          </p>
+        </div>
+      </div>
+
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-2">
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <dt className="text-[11px] text-[var(--text-muted)] font-medium">{label}</dt>
+            <dd className="text-[13px] text-[var(--text-primary)] font-semibold mt-0.5">{value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {isPendingFinancial && amount > 0 && (
+        <div className="rounded-lg bg-purple-50 border border-purple-100 px-4 py-3 space-y-1">
+          <p className="text-[10px] font-bold text-purple-600 uppercase tracking-wider mb-2">Allowance Summary</p>
+          <div className="flex justify-between text-[13px]">
+            <span className="text-[var(--text-muted)]">Gross Allowance</span>
+            <span className="font-semibold text-[var(--text-primary)]">{amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+          </div>
+          <div className="flex justify-between text-[13px]">
+            <span className="text-[var(--text-muted)]">Tax</span>
+            <span className="font-semibold text-red-600">-{taxAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+          </div>
+          <div className="flex justify-between text-[13px] border-t border-purple-100 pt-1 mt-1">
+            <span className="font-semibold text-[var(--text-primary)]">Net Payout</span>
+            <span className="font-bold text-purple-700">{(amount - taxAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+          </div>
+        </div>
+      )}
+
+      {!isPendingFinancial && l.details && (
+        <div className="rounded-lg bg-slate-50 border border-slate-100 px-4 py-3">
+          <p className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1">Details</p>
+          <p className="text-[12px] text-[var(--text-primary)]">{l.details}</p>
+        </div>
+      )}
+
+      {rejecting && (
+        <FormField label="Rejection Reason">
+          <textarea className={inputClass + ' resize-none'} rows={3}
+            placeholder="Enter reason for rejection…"
+            value={reason} onChange={e => setReason(e.target.value)} />
+        </FormField>
+      )}
+
+      <div className="flex justify-end gap-3 pt-2 border-t border-[var(--border)]">
+        <button className="secondary-btn" onClick={onClose} disabled={busy}>Cancel</button>
+        {isPendingFinancial ? (
+          <button className="primary-btn !bg-purple-600 hover:!bg-purple-700" onClick={onApproveAllowance} disabled={busy}>
+            <Check size={14} />
+            <span>{busy ? 'Approving…' : 'Approve Allowance'}</span>
+          </button>
+        ) : rejecting ? (
+          <>
+            <button className="secondary-btn" onClick={() => setRejecting(false)} disabled={busy}>Back</button>
+            <button className="primary-btn !bg-red-600 hover:!bg-red-700"
+              onClick={() => onReject(reason)} disabled={busy || !reason.trim()}>
+              <XCircle size={14} /><span>{busy ? 'Rejecting…' : 'Confirm Reject'}</span>
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="secondary-btn !border-red-500 !text-red-600 hover:!bg-red-50"
+              onClick={() => setRejecting(true)} disabled={busy}>
+              <XCircle size={14} /><span>Reject</span>
+            </button>
+            <button className="primary-btn !bg-green-600 hover:!bg-green-700" onClick={onApprove} disabled={busy}>
+              <Check size={14} /><span>{busy ? 'Approving…' : 'Approve'}</span>
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Slide-over panel wrapper ──────────────────────────────────────────────────
 function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () => void; onDone: (id: string) => void }) {
   const [busy, setBusy] = useState(false);
@@ -191,6 +467,65 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
     } finally { setBusy(false); }
   }
 
+  async function approveMedical() {
+    setBusy(true);
+    const isDep = item.raw._medType === 'dependent';
+    const url = isDep ? `/medical/dependents-requests/${item.id}` : `/medical/staff/${item.id}`;
+    try {
+      await api.put(url, { status: 'Approved' });
+      toast.success('Medical request approved');
+      onDone(item.id);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Approval failed');
+    } finally { setBusy(false); }
+  }
+
+  async function rejectMedical(reason: string) {
+    setBusy(true);
+    const isDep = item.raw._medType === 'dependent';
+    const url = isDep ? `/medical/dependents-requests/${item.id}` : `/medical/staff/${item.id}`;
+    try {
+      await api.put(url, { status: 'Rejected', rejection_reason: reason });
+      toast.success('Medical request rejected');
+      onDone(item.id);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Rejection failed');
+    } finally { setBusy(false); }
+  }
+
+  async function approveLeave() {
+    setBusy(true);
+    try {
+      await api.post(`/leave/leaves/${item.id}/approve`);
+      toast.success('Leave approved');
+      onDone(item.id);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Approval failed');
+    } finally { setBusy(false); }
+  }
+
+  async function rejectLeave(reason: string) {
+    setBusy(true);
+    try {
+      await api.post(`/leave/leaves/${item.id}/reject`, { reason });
+      toast.success('Leave rejected');
+      onDone(item.id);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Rejection failed');
+    } finally { setBusy(false); }
+  }
+
+  async function approveLeaveAllowance() {
+    setBusy(true);
+    try {
+      await api.post(`/leave/leaves/${item.id}/approve-allowance`);
+      toast.success('Financial approval granted — GL posting in progress');
+      onDone(item.id);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Approval failed');
+    } finally { setBusy(false); }
+  }
+
   return (
     <>
       <div className="fixed inset-0 bg-slate-900/30 z-40 backdrop-blur-sm" onClick={onClose} />
@@ -212,8 +547,19 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
         <div className="flex-1 overflow-y-auto p-6">
           {item.module === 'Employee' ? (
             <EmployeeDetail emp={item.raw} onApprove={approveEmployee} onClose={onClose} busy={busy} />
-          ) : (
+          ) : item.module === 'Payroll' ? (
             <PayrollDetail run={item.raw} onApprove={approvePayroll} onReject={rejectPayroll} onClose={onClose} busy={busy} />
+          ) : item.module === 'Leave' ? (
+            <LeaveApprovalDetail
+              item={item}
+              onApprove={approveLeave}
+              onReject={rejectLeave}
+              onApproveAllowance={approveLeaveAllowance}
+              onClose={onClose}
+              busy={busy}
+            />
+          ) : (
+            <MedicalDetail rec={item.raw} onApprove={approveMedical} onReject={rejectMedical} onClose={onClose} busy={busy} />
           )}
         </div>
       </motion.div>
@@ -222,7 +568,7 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export function CentralApproval() {
+export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) => void }) {
   const [items, setItems]           = useState<ApprovalItem[]>([]);
   const [loading, setLoading]       = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -231,9 +577,25 @@ export function CentralApproval() {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [empRes, runRes] = await Promise.allSettled([
+      const currentUser = getCurrentUser();
+      const isAdmin = currentUser?.allRoles?.some(r => ['admin', 'super-admin', 'hr'].includes(r.name)) ?? false;
+
+      // Employee/Payroll/Medical queues are only for HR/admin users
+      const adminFetches = isAdmin ? [
         api.get('/employees'),
         api.get('/payroll/runs'),
+        api.get('/medical/staff'),
+        api.get('/medical/dependents-requests'),
+      ] : [
+        Promise.resolve({ data: { data: [] } }),
+        Promise.resolve({ data: { data: [] } }),
+        Promise.resolve({ data: { data: [] } }),
+        Promise.resolve({ data: { data: [] } }),
+      ];
+
+      const [empRes, runRes, staffMedRes, depMedRes, leaveRes] = await Promise.allSettled([
+        ...adminFetches,
+        api.get('/leave/central-approval'),
       ]);
 
       const pending: ApprovalItem[] = [];
@@ -249,6 +611,7 @@ export function CentralApproval() {
               title:       `${e.firstName ?? ''} ${e.lastName ?? ''}`.trim() || 'Unknown Employee',
               subtitle:    toStr(e.jobTitle) || toStr(e.department) || String(e.email || ''),
               submittedAt: e.createdAt || e.created_at || null,
+              status:      e.approvalStatus === 'PENDING' ? 'Pending' : (e.approvalStatus || 'Pending'),
               raw:         e,
             });
           });
@@ -265,9 +628,63 @@ export function CentralApproval() {
               title:       r.name || 'Unnamed Run',
               subtitle:    r.freq_name || r.date_start ? `${String(r.date_start || '').slice(0,10)}` : '',
               submittedAt: r.updated_at || r.created_at || null,
+              status:      r.status || 'Pending Approval',
               raw:         r,
             });
           });
+      }
+
+      if (staffMedRes.status === 'fulfilled') {
+        const records: any[] = staffMedRes.value.data.data ?? [];
+        records
+          .filter((r: any) => r.status === 'Pending Approval')
+          .forEach((r: any) => {
+            pending.push({
+              id:          String(r.id),
+              module:      'Medical',
+              title:       r.employee_name || 'Unknown Employee',
+              subtitle:    `Staff — ${r.illness_type || ''}`,
+              submittedAt: r.admission_date || null,
+              status:      r.status || 'Pending Approval',
+              raw:         { ...r, _medType: 'staff' },
+            });
+          });
+      }
+
+      if (depMedRes.status === 'fulfilled') {
+        const records: any[] = depMedRes.value.data.data ?? [];
+        records
+          .filter((r: any) => r.status === 'Pending Approval')
+          .forEach((r: any) => {
+            pending.push({
+              id:          String(r.id),
+              module:      'Medical',
+              title:       r.employee_name || 'Unknown Employee',
+              subtitle:    `Dependent (${r.dependent_name || ''}) — ${r.illness_type || ''}`,
+              submittedAt: r.date_attended || null,
+              status:      r.status || 'Pending Approval',
+              raw:         { ...r, _medType: 'dependent' },
+            });
+          });
+      }
+
+      if (leaveRes.status === 'fulfilled') {
+        const leaves: any[] = (leaveRes as any).value.data.data ?? [];
+        leaves.forEach((l: any) => {
+          const isPendingFinancial = l.allowance_status === 'Pending Financial Approval';
+          const allowanceNote = isPendingFinancial && l.amount
+            ? ` — Allowance: ${parseFloat(l.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+            : '';
+          pending.push({
+            id:          String(l.id),
+            module:      'Leave',
+            title:       l.employee_name ?? 'Employee',
+            subtitle:    `${l.leave_type_name ?? ''} — ${l.day_count ?? 0} day(s)${allowanceNote}`,
+            submittedAt: l.posted_date ?? null,
+            status:      isPendingFinancial ? 'Pending Financial Approval' : (l.status ?? ''),
+            raw:         { ...l, _isPendingFinancial: isPendingFinancial },
+          });
+        });
       }
 
       setItems(pending);
@@ -283,6 +700,23 @@ export function CentralApproval() {
   function handleDone(id: string) {
     setItems(prev => prev.filter(i => i.id !== id));
     setSelectedItem(null);
+  }
+
+  function handleView(item: ApprovalItem) {
+    if (item.module === 'Employee') {
+      sessionStorage.setItem('centralApproval.employeeId', item.id);
+      if (onNavigate) onNavigate('Employees');
+      else setSelectedItem(item);
+      return;
+    }
+    if (item.module === 'Payroll') {
+      sessionStorage.setItem('centralApproval.payrollRunId', item.id);
+      if (onNavigate) onNavigate('Payroll');
+      else setSelectedItem(item);
+      return;
+    }
+    // Medical and Leave — always handled in-panel
+    setSelectedItem(item);
   }
 
   const filtered = items.filter(i =>
@@ -328,6 +762,7 @@ export function CentralApproval() {
                   <th scope="col" className="th">Module</th>
                   <th scope="col" className="th">Name</th>
                   <th scope="col" className="th">Details</th>
+                  <th scope="col" className="th">Status</th>
                   <th scope="col" className="th">Submitted</th>
                   <th scope="col" className="th text-right">Action</th>
                 </tr>
@@ -335,13 +770,13 @@ export function CentralApproval() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={5} className="td text-center py-12">
+                    <td colSpan={6} className="td text-center py-12">
                       <p className="text-[var(--text-muted)] text-[13px]">Loading pending approvals…</p>
                     </td>
                   </tr>
                 ) : filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="td text-center py-12">
+                    <td colSpan={6} className="td text-center py-12">
                       {items.length === 0
                         ? <div>
                             <CheckCircle size={32} className="text-green-400 mx-auto mb-2" />
@@ -363,16 +798,17 @@ export function CentralApproval() {
                       <td className="td"><ModulePill module={item.module} /></td>
                       <td className="td font-medium text-[var(--text-primary)]">{item.title}</td>
                       <td className="td text-[var(--text-muted)] text-[13px]">{item.subtitle || '—'}</td>
+                      <td className="td"><StatusChip status={item.status} /></td>
                       <td className="td text-[var(--text-muted)] text-[12px]">
                         {item.submittedAt ? String(item.submittedAt).slice(0, 10) : '—'}
                       </td>
                       <td className="td text-right">
                         <button
                           className="primary-btn"
-                          onClick={() => setSelectedItem(item)}
+                          onClick={() => handleView(item)}
                         >
                           <Eye size={14} />
-                          <span>View</span>
+                          <span>{item.module === 'Payroll' ? 'View Report' : 'View Details'}</span>
                         </button>
                       </td>
                     </motion.tr>

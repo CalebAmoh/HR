@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Zap, Menu, LayoutGrid, UserCircle, CalendarDays, Bell, Search, Settings, LogOut, Moon, Sun } from 'lucide-react';
+import { AppUser } from '@/types/permissions';
 
-export function Header( { onMenuToggle, onLogout }: { onMenuToggle: () => void, onLogout?: () => void }) {
+export function Header({ onMenuToggle, onLogout, currentUser }: { onMenuToggle: () => void; onLogout?: () => void; currentUser?: AppUser | null }) {
   const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
@@ -90,7 +91,7 @@ export function Header( { onMenuToggle, onLogout }: { onMenuToggle: () => void, 
         {/* User Profile */}
         <div className="flex items-center gap-2 hover:bg-[var(--surface-hover)] p-1.5 pl-2 rounded-full transition-colors flex-shrink-0 cursor-default border border-transparent hover:border-[var(--border)]">
           <div className="hidden sm:flex flex-col items-end">
-             <span className="text-[12px] font-semibold text-[var(--text-primary)] leading-tight">Union Admin</span>
+             <span className="text-[12px] font-semibold text-[var(--text-primary)] leading-tight">{currentUser?.name || currentUser?.email || 'User'}</span>
           </div>
           <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-[var(--accent-dim)] flex items-center justify-center overflow-hidden shrink-0">
             <UserCircle className="w-full h-full text-[var(--accent)] p-0.5" />

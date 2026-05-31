@@ -255,9 +255,11 @@ const deleteLanguage = asyncHandler(async (req, res) => {
 const getAllDependents = asyncHandler(async (req, res) => {
   const rows = await prisma.employeedependents.findMany({ orderBy: { id: 'desc' } });
   const em = await empMap(rows.map(r => r.employee));
+  const cm = await clvMap(rows.map(r => r.relationship).filter(Boolean));
   respond.ok(res, 'Dependents retrieved', rows.map(r => ({
     ...s(r),
-    employee: em[r.employee.toString()] ?? null,
+    employee:          em[r.employee.toString()] ?? null,
+    relationshipLabel: r.relationship ? (cm[r.relationship] ?? r.relationship) : null,
   })));
 });
 

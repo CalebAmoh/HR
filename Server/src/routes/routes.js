@@ -18,6 +18,7 @@ const {
   createEmployee,
   updateEmployee,
   approveEmployee,
+  rejectEmployee,
   changeEmployeeStatus,
   initiateResignation,
   getAllPaygrades,
@@ -60,6 +61,9 @@ const {
     activateCodeListValue
   } = require("../controllers/systemController.js")
 
+const med   = require('../controllers/medicalController');
+const leave = require('../controllers/leaveController');
+
 // ─────────────────────────────────────────────
 // Public routes (no auth required)
 // ─────────────────────────────────────────────
@@ -70,6 +74,8 @@ router.get('/health', (req, res) => {
 router.post('/login', loginUser);
 router.get('/user/refresh-token', handleRefreshToken);
 
+// Document view — public because filenames are unguessable SHA-256 hashes
+router.get('/documents/:filename', downloadDocument);
 
 // ─────────────────────────────────────────────
 // All routes below require a valid token
@@ -117,7 +123,6 @@ router.delete('/permissions/revoke', roleGuard('admin','super-admin'), revokePer
 // Document upload / download
 // ─────────────────────────────────────────────
 router.post('/employees/documents/upload', upload.single('file'), uploadDocument);
-router.get('/documents/:filename',         downloadDocument);
 
 // ─────────────────────────────────────────────
 // Employee routes  (static before /:id)
@@ -130,6 +135,7 @@ router.post  ('/employees',                createEmployee);
 router.get   ('/employees/:id',            getEmployeeById);
 router.put   ('/employees/:id',            updateEmployee);
 router.put   ('/employees/:id/approve',    approveEmployee);
+router.put   ('/employees/:id/reject',     rejectEmployee);
 router.put   ('/employees/:id/status',     changeEmployeeStatus);
 router.post  ('/employees/:id/resign',     initiateResignation);
 
@@ -223,11 +229,13 @@ router.put   ('/payroll/runs/:id',                run.updatePayrollRun);
 router.delete('/payroll/runs/:id',                run.deletePayrollRun);
 router.post  ('/payroll/runs/:id/generate',       run.generatePayroll);
 router.post  ('/payroll/runs/:id/finalize',       run.finalizePayroll);
+router.post  ('/payroll/runs/:id/retry-gl',       run.retryGLPosting);
 router.post  ('/payroll/runs/:id/submit',         run.submitPayroll);
 router.post  ('/payroll/runs/:id/approve',        run.approvePayroll);
 router.post  ('/payroll/runs/:id/reject',         run.rejectPayroll);
 router.get   ('/payroll/runs/:id/audit',          run.getPayrollAudit);
 router.get   ('/payroll/runs/:id/data',           run.getPayrollData);
+router.get   ('/payroll/runs/:id/debug',          run.debugPayrollRun);
 router.put   ('/payroll/runs/:id/data/:itemId',   run.updatePayrollDataItem);
 
 // ─────────────────────────────────────────────
@@ -265,6 +273,132 @@ router.delete('/payroll/payslip-templates/:id',               calc.deletePayslip
 const payslip = require('../controllers/payslipController');
 router.get   ('/payroll/my-payslips',                         payslip.getMyPayslips);
 router.get   ('/payroll/runs/:id/employees/:empId/payslip.pdf', payslip.downloadPayslip);
+
+// ─────────────────────────────────────────────
+// Medical routes
+// ─────────────────────────────────────────────
+router.get   ('/medical/staff',                             med.getStaffMedical);
+router.post  ('/medical/staff',                             med.createStaffMedical);
+router.put   ('/medical/staff/:id',                         med.updateStaffMedical);
+router.delete('/medical/staff/:id',                         med.deleteStaffMedical);
+router.post  ('/medical/staff/:id/submit',                  med.submitStaffMedical);
+router.post  ('/medical/staff/:id/approve',                 med.approveStaffMedical);
+router.post  ('/medical/staff/:id/reject',                  med.rejectStaffMedical);
+router.post  ('/medical/staff/:id/finalize',                med.finalizeStaffMedical);
+router.post  ('/medical/staff/:id/retry-gl',               med.retryStaffMedicalGL);
+
+router.get   ('/medical/dependents-requests',               med.getDependentMedical);
+router.post  ('/medical/dependents-requests',               med.createDependentMedical);
+router.put   ('/medical/dependents-requests/:id',           med.updateDependentMedical);
+router.delete('/medical/dependents-requests/:id',           med.deleteDependentMedical);
+router.post  ('/medical/dependents-requests/:id/submit',    med.submitDependentMedical);
+router.post  ('/medical/dependents-requests/:id/approve',   med.approveDependentMedical);
+router.post  ('/medical/dependents-requests/:id/reject',    med.rejectDependentMedical);
+router.post  ('/medical/dependents-requests/:id/finalize',  med.finalizeDependentMedical);
+router.post  ('/medical/dependents-requests/:id/retry-gl', med.retryDependentMedicalGL);
+
+router.get   ('/medical/limits',                   med.getMedicalLimits);
+router.post  ('/medical/limits',                   med.createMedicalLimit);
+router.put   ('/medical/limits/:id',               med.updateMedicalLimit);
+router.delete('/medical/limits/:id',               med.deleteMedicalLimit);
+
+router.get   ('/medical/enquiry/:id',               med.getMedicalEnquiryByEmployee);
+router.get   ('/medical/enquiry',                  med.getMedicalEnquiry);
+router.get   ('/medical/my-enquiry',               med.getMyMedicalEnquiry);
+
+router.get   ('/medical/settings',                 med.getMedicalSettings);
+router.put   ('/medical/settings',                 med.updateMedicalSettings);
+router.get   ('/medical/gl-settings',              med.getMedicalGLSettings);
+router.put   ('/medical/gl-settings',              med.updateMedicalGLSettings);
+
+router.get   ('/medical/hospitals',                med.getHospitals);
+router.post  ('/medical/hospitals',                med.createHospital);
+router.put   ('/medical/hospitals/:id',            med.updateHospital);
+router.delete('/medical/hospitals/:id',            med.deleteHospital);
+
+router.get   ('/medical/claims',                   med.getHospitalClaims);
+router.post  ('/medical/claims',                   med.createHospitalClaim);
+router.put   ('/medical/claims/:id',               med.updateHospitalClaim);
+router.delete('/medical/claims/:id',               med.deleteHospitalClaim);
+router.post  ('/medical/claims/:id/submit',        med.submitHospitalClaim);
+router.post  ('/medical/claims/:id/approve',       med.approveHospitalClaim);
+router.post  ('/medical/claims/:id/retry-gl',     med.retryHospitalClaimGL);
+router.post  ('/medical/claims/:id/reject',        med.rejectHospitalClaim);
+
+// ─────────────────────────────────────────────
+// Leave Setup
+// ─────────────────────────────────────────────
+router.get   ('/leave/types',                        leave.getLeaveTypes);
+router.post  ('/leave/types',                        permissionGuard('manage_leave_types'),   leave.createLeaveType);
+router.put   ('/leave/types/:id',                    permissionGuard('manage_leave_types'),   leave.updateLeaveType);
+router.delete('/leave/types/:id',                    permissionGuard('manage_leave_types'),   leave.deleteLeaveType);
+
+router.get   ('/leave/periods',                      leave.getLeavePeriods);
+router.post  ('/leave/periods',                      permissionGuard('manage_leave_periods'), leave.createLeavePeriod);
+router.put   ('/leave/periods/:id',                  permissionGuard('manage_leave_periods'), leave.updateLeavePeriod);
+router.delete('/leave/periods/:id',                  permissionGuard('manage_leave_periods'), leave.deleteLeavePeriod);
+router.post  ('/leave/periods/:id/activate',                  permissionGuard('manage_leave_periods'), leave.activateLeavePeriod);
+router.post  ('/leave/periods/:id/recalculate-carryforward',  permissionGuard('manage_leave_periods'), leave.recalculateCarryForward);
+
+router.get   ('/leave/holidays',                     leave.getHolidays);
+router.post  ('/leave/holidays',                     permissionGuard('manage_holidays'),      leave.createHoliday);
+router.put   ('/leave/holidays/:id',                 permissionGuard('manage_holidays'),      leave.updateHoliday);
+router.delete('/leave/holidays/:id',                 permissionGuard('manage_holidays'),      leave.deleteHoliday);
+
+router.get   ('/leave/workweek',                     leave.getWorkWeek);
+router.put   ('/leave/workweek',                     permissionGuard('manage_work_week'),     leave.updateWorkWeek);
+
+router.get   ('/leave/groups',                       leave.getLeaveGroups);
+router.post  ('/leave/groups',                       permissionGuard('manage_leave_groups'),  leave.createLeaveGroup);
+router.put   ('/leave/groups/:id',                   permissionGuard('manage_leave_groups'),  leave.updateLeaveGroup);
+router.delete('/leave/groups/:id',                   permissionGuard('manage_leave_groups'),  leave.deleteLeaveGroup);
+router.get   ('/leave/groups/:id/employees',         leave.getLeaveGroupEmployees);
+router.post  ('/leave/groups/:id/employees',         permissionGuard('manage_leave_groups'),  leave.addLeaveGroupEmployee);
+router.delete('/leave/groups/:id/employees/:eid',    permissionGuard('manage_leave_groups'),  leave.removeLeaveGroupEmployee);
+router.get   ('/leave/groups/:id/paygrades',         leave.getLeaveGroupPaygrades);
+router.post  ('/leave/groups/:id/paygrades',         permissionGuard('manage_leave_groups'),  leave.addLeaveGroupPaygrade);
+router.delete('/leave/groups/:id/paygrades/:pgId',   permissionGuard('manage_leave_groups'),  leave.removeLeaveGroupPaygrade);
+
+router.get   ('/leave/allowance-settings',            leave.getLeaveAllowanceSettings);
+router.put   ('/leave/allowance-settings',            permissionGuard('manage_leave_settings'), leave.updateLeaveAllowanceSettings);
+
+router.get   ('/leave/approval-settings',             leave.getApprovalFlowSettings);
+router.put   ('/leave/approval-settings',             permissionGuard('manage_leave_settings'), leave.updateApprovalFlowSettings);
+
+router.get   ('/leave/threshold-settings',            leave.getThresholdSettings);
+router.put   ('/leave/threshold-settings',            permissionGuard('manage_leave_settings'), leave.updateThresholdSettings);
+
+router.get   ('/leave/calendar-settings',             leave.getCalendarSettings);
+router.put   ('/leave/calendar-settings',             permissionGuard('manage_leave_settings'), leave.updateCalendarSettings);
+
+// Static before parameterised :id — must come before /leave/leaves/:id block
+router.get   ('/leave/central-approval',              leave.getLeaveCentralApproval);
+router.get   ('/leave/calendar',                      leave.getCalendarLeaves);
+
+router.get   ('/leave/rules',                        leave.getLeaveRules);
+router.post  ('/leave/rules',                        permissionGuard('manage_leave_rules'),   leave.createLeaveRule);
+router.put   ('/leave/rules/:id',                    permissionGuard('manage_leave_rules'),   leave.updateLeaveRule);
+router.delete('/leave/rules/:id',                    permissionGuard('manage_leave_rules'),   leave.deleteLeaveRule);
+
+// ─────────────────────────────────────────────
+// Leave Management — static sub-paths BEFORE :id
+// ─────────────────────────────────────────────
+router.get   ('/leave/subordinates',                 permissionGuard('view_subordinate_leave'), leave.getSubordinateEmployees);
+router.get   ('/leave/leaves/subordinates',          permissionGuard('view_subordinate_leave'), leave.getSubordinateLeaves);
+router.get   ('/leave/leaves/all',                   permissionGuard('approve_leave'),           leave.getAllEmployeeLeaves);
+router.get   ('/leave/balance/:employeeId',          leave.getLeaveBalance);
+
+router.get   ('/leave/leaves',                       leave.getLeaves);
+router.post  ('/leave/leaves',                       permissionGuard('apply_leave'),             leave.applyLeave);
+router.put   ('/leave/leaves/:id',                   leave.updateLeave);
+router.delete('/leave/leaves/:id',                   leave.deleteLeave);
+router.post  ('/leave/leaves/:id/submit',            permissionGuard('apply_leave'),             leave.submitLeave);
+router.post  ('/leave/leaves/:id/approve',           permissionGuard('approve_leave'),           leave.approveLeave);
+router.post  ('/leave/leaves/:id/reject',            permissionGuard('approve_leave'),           leave.rejectLeave);
+router.post  ('/leave/leaves/:id/cancel',            permissionGuard('cancel_leave'),            leave.cancelLeave);
+router.post  ('/leave/leaves/:id/finalize',          permissionGuard('approve_leave'),           leave.finalizeLeave);
+router.post  ('/leave/leaves/:id/approve-allowance', permissionGuard('approve_leave'),           leave.approveAllowanceLeave);
+router.post  ('/leave/leaves/:id/retry-gl',          permissionGuard('approve_leave'),           leave.retryLeaveGL);
 
 router.get('/:id/access',          roleGuard('admin','super-admin'), getUserAccess);
 router.get('/:id',                 getUserById);

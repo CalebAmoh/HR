@@ -32,7 +32,7 @@ const blankForm = (tab: string) => {
     case 'Component Types':     return { code: '', name: '', description: '' };
     case 'Components':          return { name: '', details: '', is_notch_linked: 0 };
     case 'Employee Components': return { employees: [], component: '', working_days: '', amount: '' };
-    case 'Payment Types':       return { name: '', description: '' };
+    case 'Payment Types':       return { name: '', description: '', generate_payslip: 1 };
     case 'Increment/Decrement': return { notchIds: [], operation: 'Increment', percentage: '', date: new Date().toISOString().slice(0, 10) };
     default:                    return {};
   }
@@ -239,6 +239,9 @@ export function Salary() {
   const PG_PAGE_SIZE    = 8;
   const NOTCH_PAGE_SIZE = 6;
 
+  const [tablePage, setTablePage]         = useState(1);
+  const [tablePageSize, setTablePageSize] = useState(10);
+
   const [historyEmployee, setHistoryEmployee] = useState<{ id: string; name: string } | null>(null);
   const [historyRows, setHistoryRows]         = useState<any[]>([]);
   const [historyLoading, setHistoryLoading]   = useState(false);
@@ -399,6 +402,10 @@ export function Salary() {
     return result;
   }, [rows, searchQuery, filter, activeTab]);
 
+  useEffect(() => { setTablePage(1); }, [activeTab, searchQuery, filter]);
+
+  const pagedRows: any[] = filteredRows.slice((tablePage - 1) * tablePageSize, tablePage * tablePageSize);
+
   const openAdd = () => { setSelectedRow(null); setForm(blankForm(activeTab)); setIsModalOpen(true); };
   const openEdit = (row: any) => {
     setSelectedRow(row);
@@ -414,6 +421,17 @@ export function Salary() {
     if (activeTab === 'Component Types' && (!form.code?.trim() || !form.name?.trim())) return 'Code and name are required';
     if (activeTab === 'Components' && !form.name?.trim()) return 'Component name is required';
     if (activeTab === 'Employee Components' && (!form.employees?.length || !form.component)) return 'Employee and component are required';
+    if (activeTab === 'Employee Components') {
+      const duplicates = rows.filter((row: any) =>
+        String(row.component) === String(form.component) &&
+        form.employees.map(String).includes(String(row.employee)) &&
+        (!selectedRow || String(row.id) !== String(selectedRow.id))
+      );
+      if (duplicates.length) {
+        const names = duplicates.map((row: any) => row.employeeName ?? row.employee).join(', ');
+        return `Component already assigned to: ${names}`;
+      }
+    }
     if (activeTab === 'Payment Types' && !form.name?.trim()) return 'Payment type is required';
     if (activeTab === 'Increment/Decrement' && (!form.notchIds?.length || !form.percentage)) return 'Select at least one notch and provide a percentage';
     return null;
@@ -545,6 +563,19 @@ export function Salary() {
           <>
             <div className="mb-4"><label className="label">Payment Type <span className="text-[var(--danger)]">*</span></label><input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Enter payment type" /></div>
             <div className="mb-4"><label className="label">Description</label><textarea rows={3} value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="Enter description" /></div>
+            <div className="mb-4">
+              <label className="label">Payslip Generation</label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!form.generate_payslip}
+                  onChange={(e: any) => set('generate_payslip', e.target.checked ? 1 : 0)}
+                  className="accent-[var(--accent)]"
+                />
+                <span className="text-[13px] text-[var(--text-primary)]">Generate employee payslips for runs of this type</span>
+              </label>
+              <p className="text-[11px] text-[var(--text-muted)] mt-1">Disable for allowances, 13th month, or other payments that don't need individual payslips.</p>
+            </div>
           </>
         );
       case 'Increment/Decrement':
@@ -583,7 +614,13 @@ export function Salary() {
       row.details ?? '-',
     ];
     if (activeTab === 'Employee Components') return [row.employeeName ?? '-', row.componentName ?? '-', row.working_days ?? '-', fmtMoney(row.amount)];
-    if (activeTab === 'Payment Types')       return [row.name, row.description ?? '-'];
+    if (activeTab === 'Payment Types')       return [
+      <span key="name" className="flex items-center gap-1.5">
+        {row.name}
+        {!row.generate_payslip ? <span className="pill text-[10px]">No Payslip</span> : null}
+      </span>,
+      row.description ?? '-',
+    ];
     return [row.date ? new Date(row.date).toLocaleDateString() : '-', row.employees, row.no_notches];
   };
 
@@ -815,7 +852,7 @@ export function Salary() {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.length ? filteredRows.map((row, i) => (
+                {filteredRows.length ? pagedRows.map((row, i) => (
                   <motion.tr key={row.id ?? i} className="tr" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.04 + i * 0.03 }}>
                     {renderCells(row).map((cell, idx) => <td key={idx} className={`td ${idx === 0 ? 'font-medium text-[var(--text-primary)]' : ''}`}>{cell}</td>)}
                     {canEditDelete && (
@@ -838,7 +875,12 @@ export function Salary() {
           )}
         </div>
 
-        <TablePagination total={rows.length} filtered={filteredRows.length} />
+        <TablePagination
+          total={rows.length} filtered={filteredRows.length}
+          page={tablePage} pageSize={tablePageSize}
+          onPageChange={setTablePage}
+          onPageSizeChange={(s) => { setTablePageSize(s); setTablePage(1); }}
+        />
       </div>
 
       {isModalOpen && (
