@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, Eye, FileEdit, Filter, Plus, X, Users, Award, FileBadge, Globe, Baby, HeartPulse } from 'lucide-react';
+import { ChevronDown, Eye, FileEdit, Filter, Plus, X, Users, Award, FileBadge, Globe, Baby, HeartPulse, RefreshCw, WifiOff } from 'lucide-react';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
 import { ConfirmAlert } from './ConfirmAlert';
@@ -117,11 +117,27 @@ export function Employees() {
   const handleViewClick = (emp: any) => { setSelectedEmployee(emp); setIsDetailsOpen(true); };
 
 
+  const [syncingId, setSyncingId] = useState<string | null>(null);
+
+  const handleSync = async (emp: any) => {
+    setSyncingId(emp.id);
+    try {
+      await api.post(`/employees/${emp.id}/sync`);
+      toast.success(`${emp.firstName} ${emp.lastName} synced successfully`);
+      await fetchEmployees();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Sync failed');
+      await fetchEmployees();
+    } finally {
+      setSyncingId(null);
+    }
+  };
+
   const handleSave = async (data: any, id?: string) => {
     try {
       if (id) {
         await api.put(`/employees/${id}`, data);
-        toast.success('Employee updated');
+        toast.success('Employee updated — pending re-approval');
       } else {
         await api.post('/employees', data);
         toast.success('Employee created — pending approval');
@@ -295,6 +311,14 @@ export function Employees() {
                         <div className="flex items-center gap-1.5 flex-wrap">
                           {row.approvalStatus !== 'REJECTED' && <LifecyclePill status={row.lifecycleStatus} />}
                           <ApprovalPill status={row.approvalStatus} />
+                          {row.sync_status === 'failed' && (
+                            <span
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-red-50 text-red-600 border border-red-200"
+                              title={row.sync_error || 'External sync failed'}
+                            >
+                              <WifiOff size={9} /> Sync Failed
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="td">
@@ -305,6 +329,16 @@ export function Employees() {
                           <button onClick={() => handleEditClick(row)} className="action-btn text-[var(--warning)]" title="Edit">
                             <FileEdit size={14} />
                           </button>
+                          {row.sync_status === 'failed' && (
+                            <button
+                              onClick={() => handleSync(row)}
+                              disabled={syncingId === row.id}
+                              className="action-btn text-red-500 disabled:opacity-40"
+                              title="Retry external sync"
+                            >
+                              <RefreshCw size={14} className={syncingId === row.id ? 'animate-spin' : ''} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </motion.tr>

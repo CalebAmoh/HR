@@ -88,6 +88,8 @@ model employee {
   staff_role          String?   @db.VarChar(36)
   termination_date    DateTime? @db.Date
   work_email          String?   @unique @db.VarChar(100)
+  sync_status         String?   @db.VarChar(20)
+  sync_error          String?   @db.VarChar(500)
 }
 
 model refresh_tokens {
@@ -321,8 +323,12 @@ model candidates {
   googleProfileId         String?                    @db.VarChar(50)
   hiringStage             BigInt?
   jobId                   BigInt?
-  source                  candidates_source?         @default(Sourced)
+  source                  String?                    @db.VarChar(20)
   emailSent               Int?                       @default(0)
+  rejection_reason        String?                    @db.VarChar(500)
+  offer_amount            Decimal?                   @db.Decimal(12, 2)
+  offer_date              DateTime?                  @db.Date
+  cv_file                 String?                    @db.VarChar(500)
 }
 
 model certifications {
@@ -1222,23 +1228,25 @@ model industry {
   name String @default("") @db.VarChar(250)
 }
 
-/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
 model interviews {
-  id              BigInt
-  job             BigInt
-  candidate       BigInt?
-  level           String?   @db.VarChar(100)
-  created         DateTime? @db.DateTime(0)
-  updated         DateTime? @db.DateTime(0)
-  scheduled       DateTime? @db.DateTime(0)
-  location        String?   @db.VarChar(500)
-  mapId           BigInt?
-  status          String?   @db.VarChar(100)
-  notes           String?   @db.Text
-  scheduleUpdated Int?      @default(0)
-  interviewers    String?   @db.Text
-
-  @@ignore
+  id               BigInt    @id @default(autoincrement())
+  job              BigInt
+  candidate        BigInt?
+  level            String?   @db.VarChar(100)
+  created          DateTime? @db.DateTime(0)
+  updated          DateTime? @db.DateTime(0)
+  scheduled        DateTime? @db.DateTime(0)
+  location         String?   @db.VarChar(500)
+  mapId            BigInt?
+  status           String?   @db.VarChar(100)
+  notes            String?   @db.Text
+  scheduleUpdated  Int?      @default(0)
+  interviewers     String?   @db.Text
+  feedback         String?   @db.Text
+  outcome          String?   @db.VarChar(20)
+  schedule_token   String?   @db.VarChar(100)
+  schedule_options String?   @db.Text
+  schedule_expires DateTime? @db.DateTime(0)
 }
 
 model job {
@@ -1249,21 +1257,21 @@ model job {
   description       String?         @db.Text
   requirements      String?         @db.Text
   benefits          String?         @db.Text
-  country           BigInt?
+  country           String?         @db.VarChar(100)
   location          String?         @db.VarChar(50)
   companyName       String?         @db.VarChar(50)
   company           BigInt?
   department        String?         @db.VarChar(100)
   code              String?         @db.VarChar(20)
-  employementType   BigInt?
-  hiringManager     BigInt?
+  employementType   String?         @db.VarChar(100)
+  hiringManager     String?         @db.VarChar(200)
   showHiringManager String?         @db.VarChar(50)
   industry          BigInt?
   postalCode        String?         @db.VarChar(20)
-  experienceLevel   BigInt?
-  jobFunction       BigInt?
-  educationLevel    BigInt?
-  currency          BigInt?
+  experienceLevel   String?         @db.VarChar(100)
+  jobFunction       String?         @db.VarChar(100)
+  educationLevel    String?         @db.VarChar(100)
+  currency          String?         @db.VarChar(20)
   showSalary        job_showSalary?
   salaryMin         BigInt?
   salaryMax         BigInt?
@@ -2123,14 +2131,11 @@ model expensesbusinesspurpose {
   @@ignore
 }
 
-/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
 model hiringpipeline {
-  id    BigInt
+  id    BigInt               @id @default(autoincrement())
   name  String?              @db.VarChar(100)
   type  hiringpipeline_type? @default(Short_Listed)
   notes String?              @db.Text
-
-  @@ignore
 }
 
 model hospitalclaims {

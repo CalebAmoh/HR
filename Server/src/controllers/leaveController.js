@@ -54,6 +54,7 @@ function monthsDiff(dateA, dateB) {
   await safeAlter(`ALTER TABLE leaveperiods ADD COLUMN name VARCHAR(100) NOT NULL DEFAULT ''`);
   await safeAlter(`ALTER TABLE holidays ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'Full_Day'`);
   await safeAlter(`ALTER TABLE workdays ADD COLUMN country BIGINT NULL`);
+  await safeAlter(`ALTER TABLE leavetypes ADD COLUMN gender VARCHAR(5) NOT NULL DEFAULT 'All'`);
   await safeAlter(`ALTER TABLE leavetypes ADD COLUMN leave_allowance VARCHAR(3) NOT NULL DEFAULT 'No'`);
   await safeAlter(`ALTER TABLE leavetypes ADD COLUMN leave_allowance_once VARCHAR(3) NOT NULL DEFAULT 'No'`);
   await safeAlter(`ALTER TABLE leaverules ADD COLUMN leave_allowance VARCHAR(3) NOT NULL DEFAULT 'No'`);
@@ -777,6 +778,7 @@ exports.getLeaveTypes = asyncHandler(async (req, res) => {
   // Look up the requesting user's paygrade from the users → employee link.
   // Always query directly — req.user may not carry employeeId (auth middleware omits it).
   let empPaygradeId = null;
+  let empGenderCode  = null;
   if (!skipFilter) {
     const userId = toBigInt(req.user?.id);
     if (userId) {
@@ -786,9 +788,13 @@ exports.getLeaveTypes = asyncHandler(async (req, res) => {
       const empId = toBigInt(userRow[0]?.employeeId);
       if (empId) {
         const empRow = await prisma.$queryRawUnsafe(
-          `SELECT paygradeId FROM employee WHERE id=?`, empId
+          `SELECT e.paygradeId, UPPER(LEFT(clv.label,1)) AS gender_code
+           FROM employee e
+           LEFT JOIN CodeListValue clv ON clv.id = e.genderId
+           WHERE e.id=?`, empId
         ).catch(() => []);
         empPaygradeId = empRow[0]?.paygradeId != null ? String(empRow[0].paygradeId) : null;
+        empGenderCode = empRow[0]?.gender_code ?? null;
       }
     }
   }
@@ -796,10 +802,13 @@ exports.getLeaveTypes = asyncHandler(async (req, res) => {
   const result = types
     .filter(t => {
       if (skipFilter) return true;
+      // Paygrade group check
       const groupIds = (groupsByType[t.id.toString()] ?? []).map(g => g.id);
-      if (groupIds.length === 0) return true; // no paygrade restriction — visible to all
-      if (empPaygradeId === null) return true; // user has no employee/paygrade → show all
-      return groupIds.includes(empPaygradeId);
+      if (groupIds.length > 0 && empPaygradeId !== null && !groupIds.includes(empPaygradeId)) return false;
+      // Gender check
+      const tg = t.gender ?? 'All';
+      if (tg !== 'All' && empGenderCode !== null && empGenderCode !== tg) return false;
+      return true;
     })
     .map(t => ({
       ...s(t),
@@ -842,12 +851,14 @@ exports.createLeaveType = asyncHandler(async (req, res) => {
     },
   });
   const { accrual_frequency, accrual_rate } = req.body;
+  const { gender } = req.body;
   await prisma.$executeRawUnsafe(
-    `UPDATE leavetypes SET leave_allowance=?, leave_allowance_once=?, accrual_frequency=?, accrual_rate=? WHERE id=?`,
+    `UPDATE leavetypes SET leave_allowance=?, leave_allowance_once=?, accrual_frequency=?, accrual_rate=?, gender=? WHERE id=?`,
     leave_allowance === 'Yes' ? 'Yes' : 'No',
     leave_allowance_once === 'Yes' ? 'Yes' : 'No',
     accrual_frequency || 'Monthly',
     accrual_rate ? parseFloat(accrual_rate) : null,
+    ['M','F'].includes(gender) ? gender : 'All',
     created.id
   ).catch(() => {});
   await syncLeaveTypeGroups(created.id, group_ids);
@@ -904,6 +915,13 @@ exports.updateLeaveType = asyncHandler(async (req, res) => {
     } else if (ar !== undefined) {
       await prisma.$executeRawUnsafe(`UPDATE leavetypes SET accrual_rate=? WHERE id=?`, ar, id).catch(() => {});
     }
+  }
+  if (req.body.gender !== undefined) {
+    const g = req.body.gender;
+    await prisma.$executeRawUnsafe(
+      `UPDATE leavetypes SET gender=? WHERE id=?`,
+      ['M','F'].includes(g) ? g : 'All', id
+    ).catch(() => {});
   }
   if (req.body.group_ids !== undefined) await syncLeaveTypeGroups(id, req.body.group_ids);
   logActivity({ module: 'Leave Setup', action: 'update_leave_type', entityId: String(id), entityName: updated.name, ...fromReq(req) });
@@ -1503,7 +1521,7 @@ exports.getLeaves = asyncHandler(async (req, res) => {
 });
 
 exports.getAllEmployeeLeaves = asyncHandler(async (req, res) => {
-  const { status } = req.query;
+  const { status, employee } = req.query;
   let sql = `
     SELECT el.*,
            TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS employee_name,
@@ -1520,7 +1538,10 @@ exports.getAllEmployeeLeaves = asyncHandler(async (req, res) => {
     LEFT JOIN notches     nt ON nt.id = e.notcheId
   `;
   const params = [];
-  if (status) { sql += ` WHERE el.status = ?`; params.push(status); }
+  const where = [];
+  if (status)   { where.push('el.status = ?');   params.push(status); }
+  if (employee) { where.push('el.employee = ?'); params.push(toBigInt(employee)); }
+  if (where.length) sql += ` WHERE ` + where.join(' AND ');
   sql += ` ORDER BY el.posted_date DESC`;
   const rows = await prisma.$queryRawUnsafe(sql, ...params).catch(() => []);
 
@@ -1603,13 +1624,23 @@ exports.applyLeave = asyncHandler(async (req, res) => {
 
   // ── Fetch employee details (needed for rule matching + exp_days) ──────────
   const empRows = await prisma.$queryRawUnsafe(
-    `SELECT id, status, hireDate, jobTitleId AS job_title_id, departmentId,
-            employmentStatusId AS emp_status_id, paygradeId
-     FROM employee WHERE id=?`, toBigInt(employee)
+    `SELECT e.id, e.status, e.hireDate, e.jobTitleId AS job_title_id, e.departmentId,
+            e.employmentStatusId AS emp_status_id, e.paygradeId,
+            UPPER(LEFT(clv.label,1)) AS gender_code
+     FROM employee e
+     LEFT JOIN CodeListValue clv ON clv.id = e.genderId
+     WHERE e.id=?`, toBigInt(employee)
   ).catch(() => []);
   const emp = empRows[0] ?? {};
   if (!emp.id) return respond.badReq(res, 'Employee not found');
   if (emp.status !== '1') return respond.badReq(res, 'Cannot apply leave for an inactive employee');
+
+  // ── Gender restriction check ──────────────────────────────────────────────
+  const typeGender = (typeRow.gender ?? 'All');
+  if (typeGender !== 'All' && emp.gender_code !== typeGender) {
+    const label = typeGender === 'M' ? 'male' : 'female';
+    return respond.badReq(res, `This leave type is restricted to ${label} employees`);
+  }
 
   // ── Match leave rule ──────────────────────────────────────────────────────
   const matchingRules = await prisma.$queryRawUnsafe(
@@ -2004,8 +2035,11 @@ exports.getLeaveBalance = asyncHandler(async (req, res) => {
 
   // Employee profile for rule matching
   const empRows = await prisma.$queryRawUnsafe(
-    `SELECT id, jobTitleId AS job_title_id, departmentId, employmentStatusId AS emp_status_id, paygradeId, hireDate
-     FROM employee WHERE id=?`, toBigInt(employeeId)
+    `SELECT e.id, e.jobTitleId AS job_title_id, e.departmentId, e.employmentStatusId AS emp_status_id, e.paygradeId, e.hireDate,
+            UPPER(LEFT(clv.label,1)) AS gender_code
+     FROM employee e
+     LEFT JOIN CodeListValue clv ON clv.id = e.genderId
+     WHERE e.id=?`, toBigInt(employeeId)
   ).catch(() => []);
   const emp = empRows[0] ?? {};
 
@@ -2023,12 +2057,16 @@ exports.getLeaveBalance = asyncHandler(async (req, res) => {
     if (!pgByType[key]) pgByType[key] = [];
     pgByType[key].push(String(a.leave_group_id));
   }
-  const empPgId = emp.paygradeId != null ? String(emp.paygradeId) : null;
+  const empPgId      = emp.paygradeId != null ? String(emp.paygradeId) : null;
+  const empGenderCode = emp.gender_code ?? null;
   const types = allTypes.filter(t => {
+    // Paygrade group check
     const allowed = pgByType[String(t.id)] ?? [];
-    if (allowed.length === 0) return true;   // no restriction — visible to all
-    if (empPgId === null)     return false;  // no paygrade → blocked from restricted types
-    return allowed.includes(empPgId);
+    if (allowed.length > 0 && (empPgId === null || !allowed.includes(empPgId))) return false;
+    // Gender check
+    const tg = t.gender ?? 'All';
+    if (tg !== 'All' && empGenderCode !== null && empGenderCode !== tg) return false;
+    return true;
   });
 
   // Most recent period that ended before the active period started — used for lazy CF computation.

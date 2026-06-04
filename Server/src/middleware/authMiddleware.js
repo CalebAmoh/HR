@@ -42,7 +42,7 @@ const checkToken = asyncHandler(async (req, res, next) => {
   const userResult = await helper.selectRecordsWithCondition(
     'users',
     { id: decoded.id },
-    { select: { id: true, username: true, status: true } }
+    { select: { id: true, username: true, status: true, employeeId: true } }
   );
 
   if (userResult.status === 'error' || userResult.data.length === 0) {

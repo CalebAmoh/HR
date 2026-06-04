@@ -3,7 +3,7 @@ import {
   ShieldAlert, Users, FileText, Settings, PieChart,
   User, CalendarCheck, FolderOpen, Building2, FileSpreadsheet,
   ChevronRight, ChevronDown, LayoutDashboard, X,
-  PanelLeftClose, PanelLeftOpen, Banknote, CheckCircle, HelpCircle, Stethoscope
+  PanelLeftClose, PanelLeftOpen, Banknote, CheckCircle, HelpCircle, Stethoscope, Briefcase
 } from 'lucide-react';
 import { usePermission } from '@/hooks/usePermission';
 import { AppUser } from '@/types/permissions';
@@ -64,16 +64,24 @@ const menuSections: MenuSection[] = [
     items: [
       { icon: Users,       label: 'Employees', hasSubmenu: true },
       { icon: Building2,   label: 'Company',   hasSubmenu: true },
-      { icon: FolderOpen,  label: 'Documents', hasSubmenu: true },
+      {
+        icon: FolderOpen,
+        label: 'Documents',
+        hasSubmenu: true,
+        subItems: [
+          { label: 'Manage Documents',   id: 'Documents'         },
+          { label: 'Personal Documents', id: 'PersonalDocuments' },
+        ],
+      },
       {
         icon: CalendarCheck,
         label: 'Leave',
         id: 'Leave',
         hasSubmenu: true,
         subItems: [
-          { label: 'Leave Setup',     id: 'LeaveSetup'      },
+          { label: 'Manage Leave',     id: 'LeaveSetup'      },
           { label: 'Leave Calendar',  id: 'LeaveCalendar'   },
-          { label: 'Leave',           id: 'LeaveManagement' },
+          { label: 'Personal Leave',           id: 'LeaveManagement' },
         ],
       },
       {
@@ -90,10 +98,11 @@ const menuSections: MenuSection[] = [
         label: 'Medical',
         hasSubmenu: true,
         subItems: [
+          { label: 'Manage Medical',    id: 'AdminMedical'    },
           { label: 'Personal Medical', id: 'PersonalMedical' },
-          { label: 'Admin Medical',    id: 'AdminMedical'    },
         ],
       },
+      { icon: Briefcase, label: 'Recruitment', id: 'Recruitment' },
       { icon: Users,  label: 'Users', hasSubmenu: true },
     ],
   },

@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   LayoutGrid, CalendarRange, Bell, SlidersHorizontal,
-  Building2, Users, ShieldCheck, Stethoscope, Banknote, Network, CalendarClock,
+  Building2, Users, ShieldCheck, Stethoscope, Banknote, Network, CalendarClock, FileText, Briefcase,
+  Mail, Server, AtSign, Eye, EyeOff, Send, Loader2,
 } from 'lucide-react';
 import { Modules } from './Modules';
 import { getSettings, saveSetting } from '../../lib/settings';
@@ -182,7 +183,8 @@ function CurrencySelect({ value, onChange }: { value: string; onChange: (code: s
 // ─── Controls sub-tab sections ────────────────────────────────────────────────
 
 function GeneralSection({
-  autoGenCode, setAutoGenCode, autoGenEmpNum, setAutoGenEmpNum, currency, setCurrency,
+  autoGenCode, setAutoGenCode, autoGenEmpNum, setAutoGenEmpNum, autoGenJobCode, setAutoGenJobCode,
+  currency, setCurrency, allowDocumentDownload, setAllowDocumentDownload, saveDocumentSetting,
 }: any) {
   return (
     <div className="space-y-4">
@@ -204,6 +206,15 @@ function GeneralSection({
         />
       </SectionCard>
 
+      <SectionCard icon={<Briefcase size={13} />} title="Recruitment">
+        <ControlRow
+          label="Auto Generate Job Code"
+          description="Automatically generate a unique job code (e.g. JOB-A1B2) when creating a new job posting. When off, you can enter the code manually."
+          checked={autoGenJobCode}
+          onChange={(v) => { setAutoGenJobCode(v); saveSetting('recruitment', { autoGenerateCode: v }); }}
+        />
+      </SectionCard>
+
       <SectionCard icon={<Banknote size={13} />} title="General">
         <div className="flex items-center gap-4 px-5 py-4">
           <div className="flex-1 min-w-0">
@@ -214,6 +225,15 @@ function GeneralSection({
           </div>
           <CurrencySelect value={currency} onChange={v => { setCurrency(v); saveSetting('general', { currency: v }); }} />
         </div>
+      </SectionCard>
+
+      <SectionCard icon={<FileText size={13} />} title="Documents">
+        <ControlRow
+          label="Allow Document Downloads"
+          description="When enabled, employees can download documents from their Personal Documents view. When off, documents are view-only in the browser — no download prompt is shown."
+          checked={allowDocumentDownload}
+          onChange={(v) => { setAllowDocumentDownload(v); saveDocumentSetting(v ? 'Yes' : 'No'); }}
+        />
       </SectionCard>
     </div>
   );
@@ -517,6 +537,7 @@ function ControlsTab() {
   // ── General / Approvals state (localStorage) ──────────────────────────────
   const [autoGenCode,          setAutoGenCode]          = useState(() => getSettings().companyStructure.autoGenerateCode);
   const [autoGenEmpNum,        setAutoGenEmpNum]        = useState(() => getSettings().employees.autoGenerateNumber);
+  const [autoGenJobCode,       setAutoGenJobCode]       = useState(() => getSettings().recruitment.autoGenerateCode);
   const [employeeApproval,     setEmployeeApproval]     = useState(() => getSettings().approvals.employeeApproval);
   const [employeeSelfApproval, setEmployeeSelfApproval] = useState(() => getSettings().approvals.employeeSelfApproval);
   const [payrollApproval,      setPayrollApproval]      = useState(() => getSettings().approvals.payrollApproval);
@@ -550,6 +571,9 @@ function ControlsTab() {
 
   // ── Calendar visibility state (backend) ──────────────────────────────────
   const [calendarShowAll, setCalendarShowAll] = useState(false);
+
+  // ── Document settings state (backend) ────────────────────────────────────
+  const [allowDocumentDownload, setAllowDocumentDownload] = useState(false);
 
   // ── Load from backend on mount ────────────────────────────────────────────
   useEffect(() => {
@@ -590,6 +614,11 @@ function ControlsTab() {
     api.get('/leave/calendar-settings').then(r => {
       const d = r.data.data ?? {};
       setCalendarShowAll(d.calendar_show_all === 'Yes');
+    }).catch(() => {});
+
+    api.get('/documents/settings').then(r => {
+      const d = r.data.data ?? {};
+      setAllowDocumentDownload(d.allow_document_download === 'Yes');
     }).catch(() => {});
 
     api.get('/users').then(r => {
@@ -652,6 +681,12 @@ function ControlsTab() {
       .catch(() => toast.error('Failed to save calendar settings'));
   }
 
+  function saveDocumentSetting(val: string) {
+    api.put('/documents/settings', { allow_document_download: val })
+      .then(() => toast.success('Document settings saved'))
+      .catch(() => toast.error('Failed to save document settings'));
+  }
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Sub-tab strip */}
@@ -678,7 +713,10 @@ function ControlsTab() {
           <GeneralSection
             autoGenCode={autoGenCode} setAutoGenCode={setAutoGenCode}
             autoGenEmpNum={autoGenEmpNum} setAutoGenEmpNum={setAutoGenEmpNum}
+            autoGenJobCode={autoGenJobCode} setAutoGenJobCode={setAutoGenJobCode}
             currency={currency} setCurrency={setCurrency}
+            allowDocumentDownload={allowDocumentDownload} setAllowDocumentDownload={setAllowDocumentDownload}
+            saveDocumentSetting={saveDocumentSetting}
           />
         )}
         {subTab === 'Approvals' && (
@@ -722,6 +760,198 @@ function ControlsTab() {
   );
 }
 
+// ─── Email Setup tab ──────────────────────────────────────────────────────────
+
+const DEFAULT_EMAIL: Record<string, string> = {
+  email_enabled:     '1',
+  email_smtp_host:   '',
+  email_smtp_port:   '587',
+  email_smtp_secure: 'false',
+  email_smtp_user:   '',
+  email_smtp_pass:   '',
+  email_from:        '',
+};
+
+function EmailSetupTab() {
+  const [settings,  setSettings]  = useState<Record<string, string>>(DEFAULT_EMAIL);
+  const [saving,    setSaving]    = useState(false);
+  const [testTo,    setTestTo]    = useState('');
+  const [testing,   setTesting]   = useState(false);
+  const [showPass,  setShowPass]  = useState(false);
+
+  useEffect(() => {
+    api.get('/settings/email').then(r => {
+      const d = r.data.data ?? {};
+      setSettings(prev => ({ ...prev, ...d }));
+    }).catch(() => {});
+  }, []);
+
+  const set = (key: string, val: string) =>
+    setSettings(prev => ({ ...prev, [key]: val }));
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.put('/settings/email', settings);
+      toast.success('Email settings saved');
+    } catch {
+      toast.error('Failed to save settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
+    if (!testTo.trim()) { toast.error('Enter a recipient email address'); return; }
+    setTesting(true);
+    try {
+      await api.post('/settings/email/test', { to: testTo.trim() });
+      toast.success(`Test email sent to ${testTo.trim()}`);
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to send test email');
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="flex-1 overflow-y-auto p-5 space-y-4">
+
+        {/* Enable toggle */}
+        <SectionCard icon={<Mail size={13} />} title="Email Notifications">
+          <ControlRow
+            label="Enable Outgoing Emails"
+            description="When disabled, no emails (welcome messages, leave notifications, scheduling invites, calendar confirmations) will be sent from the system."
+            checked={settings.email_enabled === '1'}
+            onChange={v => set('email_enabled', v ? '1' : '0')}
+          />
+        </SectionCard>
+
+        {/* SMTP Server */}
+        <SectionCard icon={<Server size={13} />} title="SMTP Server">
+          <div className="px-5 py-4 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 border-b border-[var(--border)]">
+            <div className="space-y-1.5">
+              <p className="text-[13px] font-semibold text-[var(--text-primary)]">SMTP Host</p>
+              <p className="text-[12px] text-[var(--text-muted)]">Hostname or IP address of your mail server.</p>
+              <input
+                type="text"
+                className={`${inputClass} w-full`}
+                value={settings.email_smtp_host}
+                onChange={e => set('email_smtp_host', e.target.value)}
+                placeholder="e.g. server.company.com"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-[13px] font-semibold text-[var(--text-primary)]">SMTP Port</p>
+              <p className="text-[12px] text-[var(--text-muted)]">587 (STARTTLS) · 465 (SSL) · 25 (plain).</p>
+              <input
+                type="number"
+                className={`${inputClass} w-full`}
+                value={settings.email_smtp_port}
+                onChange={e => set('email_smtp_port', e.target.value)}
+                placeholder="587"
+              />
+            </div>
+          </div>
+          <ControlRow
+            label="Use TLS / SSL"
+            description="Enable for port 465 (implicit TLS). For port 587 with STARTTLS, leave this off."
+            checked={settings.email_smtp_secure === 'true'}
+            onChange={v => set('email_smtp_secure', v ? 'true' : 'false')}
+          />
+        </SectionCard>
+
+        {/* Authentication */}
+        <SectionCard icon={<AtSign size={13} />} title="Authentication">
+          <div className="px-5 py-4 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
+            <div className="space-y-1.5">
+              <p className="text-[13px] font-semibold text-[var(--text-primary)]">Username / Email</p>
+              <p className="text-[12px] text-[var(--text-muted)]">The account used to authenticate with the SMTP server.</p>
+              <input
+                type="text"
+                className={`${inputClass} w-full`}
+                value={settings.email_smtp_user}
+                onChange={e => set('email_smtp_user', e.target.value)}
+                placeholder="hr@company.com"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-[13px] font-semibold text-[var(--text-primary)]">Password / App Password</p>
+              <p className="text-[12px] text-[var(--text-muted)]">Use an app-specific password if 2FA is enabled.</p>
+              <div className="relative">
+                <input
+                  type={showPass ? 'text' : 'password'}
+                  className={`${inputClass} w-full pr-9`}
+                  value={settings.email_smtp_pass}
+                  onChange={e => set('email_smtp_pass', e.target.value)}
+                  placeholder="Enter password…"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPass(p => !p)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  {showPass ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <p className="text-[13px] font-semibold text-[var(--text-primary)]">From Address</p>
+              <p className="text-[12px] text-[var(--text-muted)]">
+                Displayed as the sender on all outgoing emails. Can include a display name:
+                <span className="font-mono ml-1">HR System &lt;hr@company.com&gt;</span>
+              </p>
+              <input
+                type="text"
+                className={`${inputClass} w-full`}
+                value={settings.email_from}
+                onChange={e => set('email_from', e.target.value)}
+                placeholder='HR System <hr@company.com>'
+              />
+            </div>
+          </div>
+        </SectionCard>
+
+        {/* Save button */}
+        <div className="flex justify-end">
+          <button className="primary-btn" onClick={handleSave} disabled={saving}>
+            {saving && <Loader2 size={13} className="animate-spin" />}
+            Save Settings
+          </button>
+        </div>
+
+        {/* Test email */}
+        <SectionCard icon={<Send size={13} />} title="Send Test Email">
+          <div className="px-5 py-4">
+            <p className="text-[12px] text-[var(--text-muted)] mb-3">
+              Verify your SMTP configuration by sending a test email. Make sure to save settings first.
+            </p>
+            <div className="flex items-center gap-3">
+              <input
+                type="email"
+                className={`${inputClass} flex-1`}
+                value={testTo}
+                onChange={e => setTestTo(e.target.value)}
+                placeholder="recipient@example.com"
+                onKeyDown={e => { if (e.key === 'Enter') handleTest(); }}
+              />
+              <button className="primary-btn shrink-0" onClick={handleTest} disabled={testing}>
+                {testing
+                  ? <Loader2 size={13} className="animate-spin" />
+                  : <Send size={13} />
+                }
+                {testing ? 'Sending…' : 'Send Test'}
+              </button>
+            </div>
+          </div>
+        </SectionCard>
+
+      </div>
+    </div>
+  );
+}
+
 // ─── Placeholder tabs ──────────────────────────────────────────────────────────
 
 function LeaveSettingsTab() {
@@ -744,7 +974,7 @@ function NotificationSettingsTab() {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-const TABS = ['Modules', 'Leave Settings', 'Notification Settings', 'Controls'] as const;
+const TABS = ['Modules', 'Leave Settings', 'Notification Settings', 'Controls', 'Email Setup'] as const;
 type Tab = (typeof TABS)[number];
 
 export function Settings() {
@@ -776,6 +1006,7 @@ export function Settings() {
             {tab === 'Leave Settings'         && <CalendarRange       size={13} />}
             {tab === 'Notification Settings'  && <Bell                size={13} />}
             {tab === 'Controls'               && <SlidersHorizontal   size={13} />}
+            {tab === 'Email Setup'            && <Mail                size={13} />}
             {tab}
           </button>
         ))}
@@ -807,6 +1038,7 @@ export function Settings() {
                 {activeTab === 'Leave Settings'        && <LeaveSettingsTab />}
                 {activeTab === 'Notification Settings' && <NotificationSettingsTab />}
                 {activeTab === 'Controls'              && <ControlsTab />}
+                {activeTab === 'Email Setup'           && <EmailSetupTab />}
               </div>
             )}
           </motion.div>

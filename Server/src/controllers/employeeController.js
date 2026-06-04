@@ -1,3 +1,4 @@
+const axios = require('axios');
 const { prisma } = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
@@ -35,6 +36,90 @@ function serializeBigInt(obj) {
 function toBigInt(val) {
   if (!val && val !== 0) return null;
   try { return BigInt(val); } catch { return null; }
+}
+
+/** Push employee data to the external HR system and record the result. */
+async function pushEmployeeToExternalSystem(e) {
+  const url = process.env.EMPLOYEE_SYNC_URL;
+  if (!url) return;
+  const id = toBigInt(e.id);
+  if (!id) return;
+
+  const fmtDate = d => d ? String(d).substring(0, 10) : '';
+  const payload = {
+    address1:          e.address1                 || '',
+    address2:          '',
+    alias:             e.employee_id              || '',
+    approvedBy:        '',
+    approvedDate:      fmtDate(e.approved_date),
+    bankAccountNumber: e.bankAccount              || '',
+    bankName:          '',
+    branch:            e.branch?.comp_code         || '',
+    check:             1,
+    costCenter:        '',
+    dateAppiont:       fmtDate(e.hireDate),
+    dateOfBirth:       fmtDate(e.dateOfBirth),
+    department:        e.department?.comp_code     || '',
+    doe:               fmtDate(e.hireDate),
+    emCode:            e.employee_id              || '',
+    emType:            e.employmentStatus?.label  || '',
+    employeeID:        e.employee_id              || '',
+    employmentStatus:  e.employmentStatus?.label  || '',
+    employmentType:    e.staffRole?.label         || '',
+    endOfProb:         fmtDate(e.confirmationDate),
+    fatherName:        e.father_name              || '',
+    firstName:         e.firstName                || '',
+    gender:            (e.gender?.label || '').charAt(0).toUpperCase(),
+    lastName:          e.lastName                 || '',
+    maritalStatus:     e.marital_status           || '',
+    middleName:        e.middleName               || '',
+    motherName:        e.mother_name              || '',
+    nationality:       e.nationality?.label       || '',
+    notch:             e.notch                    || '',
+    notes:             '',
+    phone:             e.mobilePhone              || '',
+    phoneCountryCode:  '',
+    placeOfBirth:      e.place_of_birth           || '',
+    position:          e.jobTitleId               || '',
+    postedBy:          e.posted_by                || '',
+    proof:             '',
+    spouse:            e.spouse_name              || '',
+    ssn:               e.ssn_num                  || '',
+    staffCat:          e.staffLevel?.label        || '',
+    staffGrade:        e.paygradeId               || '',
+    staffStatus:       e.lifecycleStatus          || '',
+    supervisorID:      e.supervisor?.employee_id  || '',
+    unit:              e.unit?.comp_code           || '',
+    workEmail:         e.work_email               || '',
+  };
+
+  try {
+    const r = await axios.post(url, payload, {
+      headers: {
+        'x-api-key':    process.env.POSTING_API_KEY    || '',
+        'x-api-secret': process.env.POSTING_API_SECRET || '',
+        'Content-Type': 'application/json',
+      },
+      timeout: 10000,
+    });
+    console.log('[EmployeeSync] pushed', e.employee_id, '→ status:', r.status, '| response:', JSON.stringify(r.data));
+    await prisma.$executeRawUnsafe(
+      `UPDATE employee SET sync_status='synced', sync_error=NULL WHERE id=?`, id
+    );
+    return { success: true, httpStatus: r.status, data: r.data };
+  } catch (err) {
+    const msg = (err.response?.data ? JSON.stringify(err.response.data) : err.message) || 'Unknown error';
+    console.error('[EmployeeSync] failed for', e.employee_id,
+      '| http status:', err.response?.status,
+      '| response:', JSON.stringify(err.response?.data),
+      '| message:', err.message
+    );
+    await prisma.$executeRawUnsafe(
+      `UPDATE employee SET sync_status='failed', sync_error=? WHERE id=?`,
+      msg.substring(0, 500), id
+    );
+    return { success: false, httpStatus: err.response?.status, data: err.response?.data, message: err.message };
+  }
 }
 
 /** Auto-generate employee ID from the BigInt primary key */
@@ -81,7 +166,7 @@ async function enrichEmployees(employees) {
   if (structIds.size > 0) {
     const structs = await prisma.companystructures.findMany({
       where:  { id: { in: [...structIds] } },
-      select: { id: true, title: true, type: true },
+      select: { id: true, title: true, type: true, comp_code: true },
     });
     structs.forEach(s => { structMap[s.id.toString()] = serializeBigInt(s); });
   }
@@ -432,14 +517,15 @@ const updateEmployee = asyncHandler(async (req, res) => {
     updateData.personal_email = pe;
   }
 
-  // Re-submit for approval when a rejected employee is updated
-  if (existing.approvalStatus === APPROVAL.REJECTED) {
-    updateData.approvalStatus  = APPROVAL.PENDING;
-    updateData.lifecycleStatus = LIFECYCLE.PENDING;
-    updateData.actionReason    = null;
-  }
+  // Every update resets the employee to pending approval
+  updateData.approvalStatus  = APPROVAL.PENDING;
+  updateData.lifecycleStatus = LIFECYCLE.PENDING;
+  updateData.actionReason    = null;
 
   await prisma.employee.update({ where: { id }, data: updateData });
+  await prisma.$executeRawUnsafe(
+    `UPDATE employee SET sync_status=NULL, sync_error=NULL WHERE id=?`, id
+  );
 
   const refreshed = await prisma.employee.findUnique({ where: { id } });
   const [enriched] = await enrichEmployees([refreshed]);
@@ -472,7 +558,8 @@ const approveEmployee = asyncHandler(async (req, res) => {
   const refreshed = await prisma.employee.findUnique({ where: { id } });
   const [enriched] = await enrichEmployees([refreshed]);
   logActivity({ module: 'Employees', action: 'approve', entityId: String(id), entityName: `${emp.firstName} ${emp.lastName}`, ...fromReq(req) });
-  respond.ok(res, 'Employee approved and is now active', enriched);
+  const syncResult = await pushEmployeeToExternalSystem(enriched);
+  res.status(200).json({ status: '200', message: 'Employee approved and is now active', data: enriched, syncResult });
 });
 
 // PUT /employees/:id/status  — suspend | terminate | reinstate
@@ -589,6 +676,26 @@ const rejectEmployee = asyncHandler(async (req, res) => {
   respond.ok(res, 'Employee application rejected');
 });
 
+// POST /employees/:id/sync — manual retry of external system push
+const syncEmployee = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+  if (!id) return respond.badReq(res, 'Invalid employee ID');
+
+  const emp = await prisma.employee.findUnique({ where: { id } });
+  if (!emp) return respond.notFound(res, 'Employee not found');
+  if (emp.approvalStatus !== APPROVAL.APPROVED)
+    return respond.badReq(res, 'Only approved employees can be synced');
+
+  const [enriched] = await enrichEmployees([emp]);
+  await pushEmployeeToExternalSystem(enriched);
+
+  const updated = await prisma.employee.findUnique({ where: { id } });
+  if (updated?.sync_status === 'failed')
+    return respond.badReq(res, `Sync failed: ${updated.sync_error || 'Unknown error'}`);
+
+  respond.ok(res, 'Employee synced successfully');
+});
+
 module.exports = {
   getAllEmployees,
   getActiveEmployees,
@@ -601,4 +708,5 @@ module.exports = {
   initiateResignation,
   getAllPaygrades,
   getAllNotches,
+  syncEmployee,
 };

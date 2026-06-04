@@ -178,7 +178,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
   const [cl, setCl] = useState({
     titles: [] as any[], genders: [] as any[], nationalities: [] as any[],
     religions: [] as any[], empStatuses: [] as any[], jobTitles: [] as any[],
-    staffLevels: [] as any[], staffRoles: [] as any[],
+    staffLevels: [] as any[], staffRoles: [] as any[], countries: [] as any[],
   });
   const [structures, setStructures]   = useState<any[]>([]);
   const [supervisors, setSupervisors] = useState<any[]>([]);
@@ -199,7 +199,8 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
       api.get('/employees/active'),
       api.get('/employees/paygrades'),
       api.get('/employees/notches'),
-    ]).then(([t, g, n, r, e, j, sl, sr, s, sup, pg, nc]) => {
+      api.get('/system/code-lists/CT/values'),
+    ]).then(([t, g, n, r, e, j, sl, sr, s, sup, pg, nc, ct]) => {
       setCl({
         titles:       t.data.data  ?? [],
         genders:      g.data.data  ?? [],
@@ -209,6 +210,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
         jobTitles:    j.data.data  ?? [],
         staffLevels:  sl.data.data ?? [],
         staffRoles:   sr.data.data ?? [],
+        countries:    ct.data.data ?? [],
       });
       setStructures(s.data.data    ?? []);
       setSupervisors(sup.data.data ?? []);
@@ -252,20 +254,65 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
     </Field>
   );
 
-  // ── Validation & submit ────────────────────────────────────────────────────
+  // ── Per-step validation ────────────────────────────────────────────────────
+  const validateStep = (s: number): string | null => {
+    switch (s) {
+      case 0:
+        if (!form.firstName?.trim())    return 'First name is required';
+        if (!form.lastName?.trim())     return 'Last name is required';
+        if (!form.dateOfBirth)          return 'Date of birth is required';
+        if (!form.marital_status)       return 'Marital status is required';
+        if (!form.work_email?.trim())   return 'Work email is required';
+        if (!form.mobilePhone?.trim())  return 'Mobile phone is required';
+        if (!form.address1?.trim())     return 'Address is required';
+        return null;
+      case 1:
+        if (!isEdit && !autoGenEmpNum && !form.employee_id?.trim())
+          return 'Employee number is required when auto-generate is off';
+        if (!form.employmentStatusId)   return 'Employment status is required';
+        if (!form.jobTitleId)           return 'Job title is required';
+        if (!form.staff_level)          return 'Staff level is required';
+        if (!form.staff_role)           return 'Staff role is required';
+        if (!form.supervisorId)         return 'Supervisor is required';
+        if (!form.ssn_num?.trim())      return 'SSN is required';
+        if (!form.hireDate)             return 'Hire date is required';
+        if (!form.confirmationDate)     return 'Confirmation date is required';
+        return null;
+      case 2:
+        if (!form.nxt_kin_fname?.trim())   return 'Next of kin full name is required';
+        if (!form.nxt_kin_phone?.trim())   return 'Next of kin phone number is required';
+        if (!form.nxt_kin_address?.trim()) return 'Next of kin address is required';
+        return null;
+      case 3:
+        if (!form.bankAccount?.trim()) return 'Bank account number is required';
+        if (!form.paygradeId)          return 'Pay grade is required';
+        if (!form.notcheId)            return 'Salary notch is required';
+        return null;
+      case 4:
+        if (form.nationalIdNumber && !form.nationalIdExpiry)
+          return 'National ID expiry date is required when an ID number is provided';
+        if (form.nationalIdExpiry && !form.nationalIdNumber)
+          return 'National ID number is required when an expiry date is provided';
+        if (form.passportNumber && !form.passportExpiry)
+          return 'Passport expiry date is required when a passport number is provided';
+        if (form.passportExpiry && !form.passportNumber)
+          return 'Passport number is required when an expiry date is provided';
+        if (form.driverLicenseNum && !form.driverLicenseExp)
+          return "Driver's license expiry date is required when a license number is provided";
+        if (form.driverLicenseExp && !form.driverLicenseNum)
+          return "Driver's license number is required when an expiry date is provided";
+        return null;
+      default:
+        return null;
+    }
+  };
+
+  // ── Submit ─────────────────────────────────────────────────────────────────
   const handleFinish = () => {
-    if (!form.firstName?.trim())      return toast.error('First name is required');
-    if (!form.lastName?.trim())       return toast.error('Last name is required');
-    if (!form.work_email?.trim())     return toast.error('Work email is required');
-    if (!form.jobTitleId)             return toast.error('Job title is required');
-    if (!form.employmentStatusId)     return toast.error('Employment status is required');
-    if (!isEdit && !autoGenEmpNum && !form.employee_id?.trim())
-      return toast.error('Employee number is required when auto-generate is off');
-    if (!form.paygradeId)             return toast.error('Pay grade is required');
-    if (!form.notcheId)               return toast.error('Salary notch is required');
+    const err = validateStep(4);
+    if (err) { toast.error(err); return; }
 
     const payload: any = { ...form };
-
     ['titleId', 'genderId', 'nationalityId', 'religionId', 'staff_level', 'staff_role',
      'departmentId', 'branchId', 'unitId', 'outletId', 'supervisorId'].forEach(k => {
       if (!payload[k]) payload[k] = null;
@@ -280,6 +327,8 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
 
   // ── Step navigation ────────────────────────────────────────────────────────
   const goNext = () => {
+    const err = validateStep(step);
+    if (err) { toast.error(err); return; }
     if (step === STEPS.length - 1) handleFinish();
     else setStep(s => s + 1);
   };
@@ -304,7 +353,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
                 <input name="lastName" value={form.lastName} onChange={handleChange} placeholder="Last name" />
               </Field>
               {clSelect('genderId', cl.genders, 'Select Gender', false, 'Gender')}
-              <Field label="Date of Birth">
+              <Field label="Date of Birth" required>
                 <input type="date" name="dateOfBirth" value={form.dateOfBirth} onChange={handleChange} />
               </Field>
               <Field label="Place of Birth">
@@ -312,7 +361,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
               </Field>
               {clSelect('nationalityId', cl.nationalities, 'Select Nationality', false, 'Nationality')}
               {clSelect('religionId', cl.religions, 'Select Religion', false, 'Religion')}
-              <Field label="Marital Status">
+              <Field label="Marital Status" required>
                 <select name="marital_status" value={form.marital_status} onChange={handleChange}>
                   <option value="">— Select —</option>
                   {MARITAL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
@@ -341,17 +390,20 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
               <Field label="Personal Email">
                 <input type="email" name="personal_email" value={form.personal_email} onChange={handleChange} placeholder="Personal email address" />
               </Field>
-              <Field label="Mobile Phone">
+              <Field label="Mobile Phone" required>
                 <input type="tel" name="mobilePhone" value={form.mobilePhone} onChange={handleChange} placeholder="Mobile number" />
               </Field>
-              <Field label="Address" className="md:col-span-2">
+              <Field label="Address" required className="md:col-span-2">
                 <input name="address1" value={form.address1} onChange={handleChange} placeholder="Street address" />
               </Field>
               <Field label="City">
                 <input name="city" value={form.city} onChange={handleChange} placeholder="City" />
               </Field>
               <Field label="Country">
-                <input name="country" value={form.country} onChange={handleChange} placeholder="Country" />
+                <select name="country" value={form.country} onChange={handleChange}>
+                  <option value="">— Select Country —</option>
+                  {cl.countries.map(o => <option key={o.id} value={o.label}>{o.label}</option>)}
+                </select>
               </Field>
             </div>
           </div>
@@ -383,31 +435,29 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
             )}
             {clSelect('employmentStatusId', cl.empStatuses, 'Select Status', true, 'Employment Status')}
             {clSelect('jobTitleId', cl.jobTitles, 'Select Job Title', true, 'Job Title')}
-            {clSelect('staff_level', cl.staffLevels, 'Select Staff Level', false, 'Staff Level')}
-            {clSelect('staff_role', cl.staffRoles, 'Select Staff Role', false, 'Staff Role')}
-            {structSelect('departmentId', departments, 'Select Department', false, 'Department')}
+            {clSelect('staff_level', cl.staffLevels, 'Select Staff Level', true, 'Staff Level')}
+            {clSelect('staff_role', cl.staffRoles, 'Select Staff Role', true, 'Staff Role')}
             {structSelect('branchId', branches, 'Select Branch', false, 'Branch')}
+            {structSelect('departmentId', departments, 'Select Department', false, 'Department')}
             {structSelect('unitId', units, 'Select Unit', false, 'Unit')}
             {structSelect('outletId', outlets, 'Select Outlet', false, 'Outlet')}
-            <Field label="Supervisor">
-              <select name="supervisorId" value={form.supervisorId} onChange={handleChange}>
-                <option value="">— Select Supervisor —</option>
-                {supervisors
+            <Field label="Supervisor" required>
+              <Combobox
+                options={supervisors
                   .filter(s => !initialData || s.id !== initialData.id?.toString())
-                  .map(s => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}{s.employee_id ? ` (${s.employee_id})` : ''}
-                    </option>
-                  ))}
-              </select>
+                  .map(s => ({ id: String(s.id), label: s.name + (s.employee_id ? ` (${s.employee_id})` : '') }))}
+                value={form.supervisorId}
+                onChange={id => set('supervisorId', id)}
+                placeholder="Search supervisor..."
+              />
             </Field>
-            <Field label="SSN">
+            <Field label="SSN" required>
               <input name="ssn_num" value={form.ssn_num} onChange={handleChange} placeholder="Social security number" />
             </Field>
-            <Field label="Hire Date">
+            <Field label="Hire Date" required>
               <input type="date" name="hireDate" value={form.hireDate} onChange={handleChange} />
             </Field>
-            <Field label="Confirmation Date">
+            <Field label="Confirmation Date" required>
               <input type="date" name="confirmationDate" value={form.confirmationDate} onChange={handleChange} />
             </Field>
           </div>
@@ -418,16 +468,16 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
         <div>
           <SectionHeader title="Next of Kin" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-            <Field label="Full Name">
+            <Field label="Full Name" required>
               <input name="nxt_kin_fname" value={form.nxt_kin_fname} onChange={handleChange} placeholder="Next of kin full name" />
             </Field>
-            <Field label="Phone Number">
+            <Field label="Phone Number" required>
               <input type="tel" name="nxt_kin_phone" value={form.nxt_kin_phone} onChange={handleChange} placeholder="Phone number" />
             </Field>
             <Field label="Email Address">
               <input type="email" name="nxt_kin_email" value={form.nxt_kin_email} onChange={handleChange} placeholder="Email address" />
             </Field>
-            <Field label="Address" className="md:col-span-2">
+            <Field label="Address" required className="md:col-span-2">
               <input name="nxt_kin_address" value={form.nxt_kin_address} onChange={handleChange} placeholder="Residential address" />
             </Field>
           </div>
@@ -438,7 +488,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
         <div>
           <SectionHeader title="Financial Information" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-            <Field label="Bank Account Number" className="md:col-span-2">
+            <Field label="Bank Account Number" required className="md:col-span-2">
               <input name="bankAccount" value={form.bankAccount} onChange={handleChange} placeholder="Bank account number" />
             </Field>
             <Field label="Pay Grade" required>

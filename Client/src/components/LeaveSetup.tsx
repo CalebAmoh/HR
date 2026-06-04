@@ -104,6 +104,7 @@ export function LeaveSetup() {
       leave_color:                        data.leaveColor,
       leave_allowance:                    data.leaveAllowance,
       leave_allowance_once:               data.leaveAllowanceOnce,
+      gender:                             data.gender ?? 'All',
       group_ids:                          Array.isArray(data.leaveGroups) ? data.leaveGroups : [],
     };
     try {
@@ -1185,6 +1186,7 @@ export function LeaveSetup() {
                 ['Proportionate',       viewType.propotionate_on_joined_date ?? '—'],
                 ['GL Account',          viewType.leave_gl || '—'],
                 ['Leave Group',         viewType.group_name || '—'],
+                ['Gender Restriction',  viewType.gender === 'M' ? 'Male Only' : viewType.gender === 'F' ? 'Female Only' : 'All'],
                 ['Leave Allowance',     viewType.leave_allowance ?? 'No'],
                 ['Allowance Frequency', viewType.leave_allowance === 'Yes' ? (viewType.leave_allowance_once === 'Yes' ? 'Once Per Period' : 'Every Application') : '—'],
               ] as [string, string][]).map(([label, val]) => (
@@ -1453,6 +1455,7 @@ function typeToFormData(t: any) {
     leaveColor:                t.leave_color ?? '#3b82f6',
     leaveAllowance:            t.leave_allowance ?? 'No',
     leaveAllowanceOnce:        t.leave_allowance_once ?? 'No',
+    gender:                    t.gender ?? 'All',
   };
 }
 

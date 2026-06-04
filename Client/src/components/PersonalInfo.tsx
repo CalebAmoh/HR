@@ -562,7 +562,7 @@ export function PersonalInfo() {
 
           {/* Profile section */}
           <div className="px-5 sm:px-7 pb-6">
-            <div className="flex flex-col sm:flex-row sm:items-end gap-4 -mt-8 sm:-mt-10 mb-5">
+            <div className="flex flex-col sm:flex-row sm:items-end gap-4 -mt-4 sm:-mt-6 mb-5">
               {/* Avatar */}
               <div className="relative shrink-0 group">
                 <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl border-4 border-[var(--surface)] overflow-hidden shadow-lg"

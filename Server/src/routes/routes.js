@@ -8,7 +8,7 @@ const permissionGuard = require('../middleware/permissionGuard');
 
 
 /* controllers */
-const { uploadDocument, downloadDocument } = require('../controllers/documentController');
+const { uploadDocument, downloadDocument, getMySharedDocs, getMyPersonalDocs, getDocumentSettings, updateDocumentSettings, getCompanyDocs, createCompanyDoc, updateCompanyDoc, deleteCompanyDoc } = require('../controllers/documentController');
 const { upload } = require('../middleware/upload');
 
 const {
@@ -23,6 +23,7 @@ const {
   initiateResignation,
   getAllPaygrades,
   getAllNotches,
+  syncEmployee,
 } = require('../controllers/employeeController.js');
 
 const {
@@ -61,8 +62,9 @@ const {
     activateCodeListValue
   } = require("../controllers/systemController.js")
 
-const med   = require('../controllers/medicalController');
-const leave = require('../controllers/leaveController');
+const med      = require('../controllers/medicalController');
+const leave    = require('../controllers/leaveController');
+const appCfg   = require('../controllers/settingsController');
 
 // ─────────────────────────────────────────────
 // Public routes (no auth required)
@@ -74,8 +76,28 @@ router.get('/health', (req, res) => {
 router.post('/login', loginUser);
 router.get('/user/refresh-token', handleRefreshToken);
 
-// Document view — public because filenames are unguessable SHA-256 hashes
+// Specific document routes must come BEFORE the /:filename wildcard (with inline auth)
+router.get   ('/documents/company',     checkToken, getCompanyDocs);
+router.post  ('/documents/company',     checkToken, createCompanyDoc);
+router.put   ('/documents/company/:id', checkToken, updateCompanyDoc);
+router.delete('/documents/company/:id', checkToken, deleteCompanyDoc);
+router.get   ('/documents/my-shared',   checkToken, getMySharedDocs);
+router.get   ('/documents/my-personal', checkToken, getMyPersonalDocs);
+router.get   ('/documents/settings',    checkToken, getDocumentSettings);
+router.put   ('/documents/settings',    checkToken, permissionGuard('edit_settings'), updateDocumentSettings);
+
+// Public wildcard — filenames are unguessable SHA-256 hashes, must be last
 router.get('/documents/:filename', downloadDocument);
+
+// Public careers portal (no auth)
+const pub = require('../controllers/recruitmentController');
+router.get ('/public/settings',                    pub.getPublicSettings);
+router.get ('/public/jobs',                        pub.getPublicJobs);
+router.get ('/public/jobs/:code',                  pub.getPublicJobByCode);
+router.post('/public/jobs/:code/apply',            upload.single('cv'), pub.applyForJob);
+// Public self-scheduling portal (no auth)
+router.get ('/public/schedule/:token',             pub.getSchedulePage);
+router.post('/public/schedule/:token/confirm',     pub.confirmSchedule);
 
 // ─────────────────────────────────────────────
 // All routes below require a valid token
@@ -119,9 +141,7 @@ router.post('/permissions/assign',   roleGuard('admin','super-admin'), assignPer
 router.delete('/permissions/revoke', roleGuard('admin','super-admin'), revokePermissionFromUser);
 
 
-// ─────────────────────────────────────────────
-// Document upload / download
-// ─────────────────────────────────────────────
+// Document upload (needs auth — keep here)
 router.post('/employees/documents/upload', upload.single('file'), uploadDocument);
 
 // ─────────────────────────────────────────────
@@ -138,6 +158,7 @@ router.put   ('/employees/:id/approve',    approveEmployee);
 router.put   ('/employees/:id/reject',     rejectEmployee);
 router.put   ('/employees/:id/status',     changeEmployeeStatus);
 router.post  ('/employees/:id/resign',     initiateResignation);
+router.post  ('/employees/:id/sync',       syncEmployee);
 
 // ─────────────────────────────────────────────
 // Relational / HR tab routes
@@ -237,6 +258,13 @@ router.get   ('/payroll/runs/:id/audit',          run.getPayrollAudit);
 router.get   ('/payroll/runs/:id/data',           run.getPayrollData);
 router.get   ('/payroll/runs/:id/debug',          run.debugPayrollRun);
 router.put   ('/payroll/runs/:id/data/:itemId',   run.updatePayrollDataItem);
+
+// ─────────────────────────────────────────────
+// App settings (email, etc.)
+// ─────────────────────────────────────────────
+router.get ('/settings/email',       appCfg.getEmailSettings);
+router.put ('/settings/email',       appCfg.updateEmailSettings);
+router.post('/settings/email/test',  appCfg.sendTestEmail);
 
 // ─────────────────────────────────────────────
 // Audit logs
@@ -399,6 +427,34 @@ router.post  ('/leave/leaves/:id/cancel',            permissionGuard('cancel_lea
 router.post  ('/leave/leaves/:id/finalize',          permissionGuard('approve_leave'),           leave.finalizeLeave);
 router.post  ('/leave/leaves/:id/approve-allowance', permissionGuard('approve_leave'),           leave.approveAllowanceLeave);
 router.post  ('/leave/leaves/:id/retry-gl',          permissionGuard('approve_leave'),           leave.retryLeaveGL);
+
+// ─────────────────────────────────────────────
+// Recruitment
+// ─────────────────────────────────────────────
+const recruitment = require('../controllers/recruitmentController');
+router.get   ('/recruitment/pipeline',              recruitment.getPipeline);
+router.get   ('/recruitment/jobs',                  recruitment.getJobs);
+router.post  ('/recruitment/jobs',                  recruitment.createJob);
+router.put   ('/recruitment/jobs/:id',              recruitment.updateJob);
+router.delete('/recruitment/jobs/:id',              recruitment.deleteJob);
+
+router.get   ('/recruitment/candidates',            recruitment.getCandidates);
+router.get   ('/recruitment/candidates/:id',        recruitment.getCandidateById);
+router.post  ('/recruitment/candidates',            recruitment.createCandidate);
+router.put   ('/recruitment/candidates/:id',        recruitment.updateCandidate);
+router.delete('/recruitment/candidates/:id',        recruitment.deleteCandidate);
+router.put   ('/recruitment/candidates/:id/stage',  recruitment.moveCandidateStage);
+router.post  ('/recruitment/candidates/:id/hire',   recruitment.hireCandidate);
+
+router.get   ('/recruitment/applications',          recruitment.getApplications);
+router.post  ('/recruitment/applications',          recruitment.createApplication);
+router.delete('/recruitment/applications/:id',      recruitment.deleteApplication);
+
+router.get   ('/recruitment/interviews',                              recruitment.getInterviews);
+router.post  ('/recruitment/interviews',                              recruitment.createInterview);
+router.put   ('/recruitment/interviews/:id',                          recruitment.updateInterview);
+router.delete('/recruitment/interviews/:id',                          recruitment.deleteInterview);
+router.post  ('/recruitment/interviews/:id/send-schedule-link',       recruitment.sendScheduleLink);
 
 router.get('/:id/access',          roleGuard('admin','super-admin'), getUserAccess);
 router.get('/:id',                 getUserById);

@@ -27,6 +27,7 @@ export function LeaveTypeForm({ onClose, initialData, onSave, leaveGroups = [] }
       carriedForwardAvailability: '1 Month',
       proportionateOnJoined: 'Yes',
       sendNotificationEmails: 'Yes',
+      gender: 'All',
       leaveAllowance: 'No',
       leaveAllowanceOnce: 'No',
       leaveGroups: [],
@@ -135,6 +136,14 @@ export function LeaveTypeForm({ onClose, initialData, onSave, leaveGroups = [] }
 
         <FormField label="Send Notification Emails" required hint="When set to Yes, email notifications are sent to the employee and their supervisor when a leave application is submitted, approved, or rejected.">
           <select name="sendNotificationEmails" value={formData.sendNotificationEmails} onChange={handleChange} className={inputClass}>{YES_NO}</select>
+        </FormField>
+
+        <FormField label="Gender Restriction" required hint="Restrict this leave type to a specific gender. Select 'All' to make it available to everyone, 'Male Only' for male employees (e.g. Paternity Leave), or 'Female Only' for female employees (e.g. Maternity Leave).">
+          <select name="gender" value={formData.gender} onChange={handleChange} className={inputClass}>
+            <option value="All">All (No Restriction)</option>
+            <option value="M">Male Only</option>
+            <option value="F">Female Only</option>
+          </select>
         </FormField>
 
         <FormField label="Leave Allowance" required hint="When set to Yes, employees taking this leave type will receive a leave allowance payout based on the configured allowance settings. The amount is calculated from the employee's salary grade.">

@@ -5,6 +5,8 @@ import {
   ShieldAlert, PieChart, FolderOpen, Briefcase, GraduationCap,
   ArrowUpRight, Search, LayoutGrid, List
 } from 'lucide-react';
+import { usePermission } from '../../hooks/usePermission';
+import { getCurrentUser } from '../../lib/auth';
 
 /* ─────────────────────────────────────────────────────────────────────────────
    DESIGN TOKENS
@@ -417,6 +419,46 @@ export function Modules({ onNavigate, isSettings = false }: any) {
   const [viewMode, setViewMode]   = useState<'grid' | 'list'>('grid');
   const { enabled: enabledModules, toggle: toggleModule, toggleAll } = useEnabledModules();
 
+  const { canNav } = usePermission(getCurrentUser());
+
+  function resolveTarget(modId: string): string {
+    switch (modId) {
+      case 'LeaveManagement':
+        if (canNav('LeaveSetup'))    return 'LeaveSetup';
+        if (canNav('LeaveCalendar')) return 'LeaveCalendar';
+        return 'LeaveManagement';
+      case 'Documents':
+        if (canNav('Documents'))     return 'Documents';
+        return 'PersonalDocuments';
+      case 'Medical':
+      case 'AdminMedical':
+      case 'PersonalMedical':
+        if (canNav('AdminMedical'))  return 'AdminMedical';
+        return 'PersonalMedical';
+      case 'Payroll':
+        if (canNav('Payroll'))       return 'Payroll';
+        if (canNav('Salary'))        return 'Salary';
+        return 'Dashboard';
+      case 'Salary':
+        return canNav('Salary')      ? 'Salary'      : 'Dashboard';
+      case 'Insights':
+        if (canNav('AdminReports'))  return 'AdminReports';
+        return 'UserReports';
+      case 'Admin':
+        if (canNav('JobTitleSetups')) return 'JobTitleSetups';
+        if (canNav('System'))         return 'System';
+        return 'Dashboard';
+      case 'Employees':
+        return canNav('Employees')   ? 'Employees'   : 'Dashboard';
+      case 'Company':
+        return canNav('Company')     ? 'Company'     : 'Dashboard';
+      case 'Recruitment':
+        return 'Recruitment';
+      default:
+        return modId;
+    }
+  }
+
   const filtered = modules.filter((m) => {
     // In normal mode, only show enabled modules. In settings mode, show all.
     if (!isSettings && !enabledModules.includes(m.id)) return false;
@@ -692,7 +734,7 @@ export function Modules({ onNavigate, isSettings = false }: any) {
                   isSettings={isSettings}
                   isEnabled={enabledModules.includes(mod.id)}
                   onToggle={toggleModule}
-                  onClick={() => onNavigate?.(mod.id)}
+                  onClick={() => onNavigate?.(resolveTarget(mod.id))}
                 />
               ) : (
                 <ModuleRow
@@ -702,7 +744,7 @@ export function Modules({ onNavigate, isSettings = false }: any) {
                   isSettings={isSettings}
                   isEnabled={enabledModules.includes(mod.id)}
                   onToggle={toggleModule}
-                  onClick={() => onNavigate?.(mod.id)}
+                  onClick={() => onNavigate?.(resolveTarget(mod.id))}
                 />
               )
             ))}

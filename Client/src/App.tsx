@@ -22,8 +22,12 @@ import { NotificationSettings } from './components/NotificationSettings';
 import { AuditLogs } from './components/AuditLogs';
 import { CentralApproval } from './components/CentralApproval';
 import { PersonalMedical, AdminMedical } from './components/Medical';
+import { PersonalDocuments } from './components/PersonalDocuments';
 import { PersonalInfo } from './components/PersonalInfo';
 import { Help } from './components/Help';
+import { Recruitment } from './components/Recruitment';
+import { CareersPortal } from './components/CareersPortal';
+import { SchedulingPortal } from './components/SchedulingPortal';
 
 import { AppUser } from '../types/permissions';
 import { logout as authLogout, getCurrentUser, onUserChange } from '@/lib/auth';
@@ -46,6 +50,12 @@ function loadActiveView(): string {
 }
 
 export default function App() {
+  if (window.location.pathname.startsWith('/careers')) {
+    return <CareersPortal />;
+  }
+  if (window.location.pathname.startsWith('/schedule')) {
+    return <SchedulingPortal />;
+  }
   const [currentUser, setCurrentUser] = useState<AppUser | null>(loadCurrentUser);
   const [activeView, setActiveView] = useState<string>(loadActiveView);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -77,10 +87,11 @@ export default function App() {
   const renderView = () => {
     switch (activeView) {
       case 'Dashboard': return <Dashboard />;
-      case 'Modules': return <Modules />;
+      case 'Modules': return <Modules onNavigate={navigate} />;
       case 'Employees': return <Employees />;
       case 'Company': return <Company />;
-      case 'Documents': return <Documents />;
+      case 'Documents':         return <Documents />;
+      case 'PersonalDocuments': return <PersonalDocuments />;
       case 'LeaveManagement':
       case 'Leave': return <LeaveManagement />;
       case 'LeaveSetup': return <LeaveSetup />;
@@ -100,6 +111,7 @@ export default function App() {
       case 'PersonalMedical': return <PersonalMedical />;
       case 'AdminMedical':    return <AdminMedical />;
       case 'Help':            return <Help />;
+      case 'Recruitment':     return <Recruitment onNavigate={navigate} />;
       default: return <Dashboard />;
     }
   };

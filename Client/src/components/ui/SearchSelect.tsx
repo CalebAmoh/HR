@@ -81,6 +81,10 @@ export function MultiSearchSelect({ value, onChange, options, placeholder = 'Sel
   const toggle = (id: string) =>
     onChange(value.includes(id) ? value.filter(v => v !== id) : [...value, id]);
 
+  const allSelected = options.length > 0 && options.every(o => value.includes(o.id));
+  const selectAll   = () => onChange(options.map(o => o.id));
+  const clearAll    = () => onChange([]);
+
   const filtered = options.filter(o =>
     (!q || o.label.toLowerCase().includes(q.toLowerCase())) && !value.includes(o.id)
   );
@@ -114,6 +118,16 @@ export function MultiSearchSelect({ value, onChange, options, placeholder = 'Sel
               <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search…"
                 className={`${inputClass} py-1.5 text-[12px]`} />
             </div>
+            {options.length > 0 && (
+              <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--border)] bg-[var(--surface-hover)]">
+                <span className="text-[11px] text-[var(--text-muted)]">{value.length} of {options.length} selected</span>
+                <button type="button"
+                  onMouseDown={e => { e.preventDefault(); allSelected ? clearAll() : selectAll(); }}
+                  className="text-[11px] font-semibold text-[var(--accent)] hover:underline">
+                  {allSelected ? 'Clear all' : 'Select all'}
+                </button>
+              </div>
+            )}
             <div className="max-h-44 overflow-y-auto">
               {filtered.length === 0
                 ? <p className="text-[12px] text-[var(--text-muted)] px-3 py-2">{q ? 'No results' : 'All options selected'}</p>

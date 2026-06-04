@@ -220,8 +220,8 @@ const EmploymentTab: React.FC<{ employee: any }> = ({ employee }) => (
         <InfoField label="Employee ID"        value={fmt(employee.employee_id)} />
         <InfoField label="Job Title"          value={employee.jobTitle?.label} />
         <InfoField label="Employment Status"  value={employee.employmentStatus?.label} />
-        <InfoField label="Staff Level"        value={fmt(employee.staff_level)} />
-        <InfoField label="Staff Role"         value={fmt(employee.staff_role)} />
+        <InfoField label="Staff Level"        value={employee.staffLevel?.label ?? fmt(employee.staff_level)} />
+        <InfoField label="Staff Role"         value={employee.staffRole?.label ?? fmt(employee.staff_role)} />
         <InfoField label="Department"         value={employee.department?.title} />
         <InfoField label="Branch"             value={employee.branch?.title} />
         <InfoField label="Unit"               value={employee.unit?.title} />
@@ -235,8 +235,9 @@ const EmploymentTab: React.FC<{ employee: any }> = ({ employee }) => (
     <SectionCard title="Financial" icon={CreditCard} accent="#0066b3">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5">
         <InfoField label="Bank Account"  value={fmt(employee.bankAccount)} span2 />
+        <InfoField label="Pay Grade"     value={fmt(employee.paygrade)} />
+        <InfoField label="Salary Notch"  value={fmt(employee.notch)} />
       </div>
-      <p className="text-[11px] text-slate-400 mt-4 italic">Pay grade and salary notch managed separately.</p>
     </SectionCard>
   </div>
 );
@@ -419,6 +420,64 @@ const DocumentsTab: React.FC<{ employee: any; onViewDocument: (document: any) =>
   </div>
 );
 
+const statusPill = (status: string) => {
+  const map: Record<string, string> = {
+    'Approved':         'bg-emerald-50 text-emerald-700 border-emerald-200',
+    'Pending Approval': 'bg-amber-50 text-amber-700 border-amber-200',
+    'Pending HR Approval': 'bg-blue-50 text-blue-700 border-blue-200',
+    'Rejected':         'bg-rose-50 text-rose-700 border-rose-200',
+    'Cancelled':        'bg-slate-100 text-slate-500 border-slate-200',
+    'Draft':            'bg-slate-50 text-slate-500 border-slate-200',
+  };
+  const cls = map[status] ?? 'bg-slate-50 text-slate-500 border-slate-200';
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-semibold border ${cls}`}>{status}</span>;
+};
+
+const LeaveTab: React.FC<{ employee: any }> = ({ employee }) => {
+  const [leaves,  setLeaves]  = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    api.get(`/leave/leaves/all?employee=${employee.id}`)
+      .then(r => setLeaves(r.data.data ?? []))
+      .catch(() => setLeaves([]))
+      .finally(() => setLoading(false));
+  }, [employee.id]);
+
+  if (loading) return (
+    <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-slate-400" /></div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <SectionCard title="Leave Records" icon={Calendar} accent="#7c3aed">
+        {leaves.length === 0 ? (
+          <EmptyState icon={Calendar} label="No leave records found" />
+        ) : (
+          <MiniTable
+            cols={['Leave Type', 'Period', 'Start', 'End', 'Days', 'Status']}
+            rows={leaves.map(l => [
+              <span key="t" className="flex items-center gap-1.5">
+                {l.leave_color && (
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0 inline-block" style={{ background: l.leave_color }} />
+                )}
+                {l.leave_type_name ?? '—'}
+              </span>,
+              l.period_name ?? '—',
+              fmtDateLocal(l.date_start),
+              fmtDateLocal(l.date_end),
+              l.day_count ?? '—',
+              statusPill(l.status ?? 'Draft'),
+            ])}
+            empty="No leave records found"
+          />
+        )}
+      </SectionCard>
+    </div>
+  );
+};
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh }: EmployeeDetailsProps) {
@@ -518,8 +577,31 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
   const handleApprove = async () => {
     setApproving(true);
     try {
-      await api.put(`/employees/${employee.id}/approve`);
-      toast.success(`${fullName} approved`);
+      const res = await api.put(`/employees/${employee.id}/approve`);
+      toast.success(`${fullName} approved successfully`);
+
+      const sync = res.data?.syncResult;
+      if (sync) {
+        const body = sync.data != null ? JSON.stringify(sync.data, null, 2) : sync.message ?? '';
+        if (sync.success) {
+          toast.success(
+            <div>
+              <p className="font-semibold text-[13px] mb-1">External system synced</p>
+              {body && <pre className="text-[11px] whitespace-pre-wrap opacity-80">{body}</pre>}
+            </div>,
+            { duration: 8000 }
+          );
+        } else {
+          toast.error(
+            <div>
+              <p className="font-semibold text-[13px] mb-1">External sync failed {sync.httpStatus ? `(${sync.httpStatus})` : ''}</p>
+              {body && <pre className="text-[11px] whitespace-pre-wrap opacity-80">{body}</pre>}
+            </div>,
+            { duration: 10000 }
+          );
+        }
+      }
+
       onRefresh?.();
       onClose();
     } catch (err: any) {
@@ -563,7 +645,7 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
       case 'Documents':      return <DocumentsTab      employee={employee} onViewDocument={setDocumentToView} />;
       case 'Qualifications': return <QualificationsTab employee={employee} />;
       case 'Attendance':     return <EmptyState icon={Activity}      label="Attendance data not available yet" />;
-      case 'Leave':          return <EmptyState icon={Calendar}      label="Leave records not available yet" />;
+      case 'Leave':          return <LeaveTab employee={employee} />;
       default:               return null;
     }
   };
@@ -573,17 +655,105 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
       {isOpen && (
         <motion.div
           initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.18 }}
-          className="w-full h-full bg-slate-50 overflow-y-auto"
+          className="w-full h-full bg-[var(--bg)] overflow-y-auto"
         >
-          <motion.div
-            initial={{ y: 12, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 12, opacity: 0 }}
-            transition={{ duration: 0.22, ease: 'easeOut' }}
-            className="max-w-[1100px] mx-auto px-4 sm:px-6 md:px-8 py-8 space-y-4 relative"
-          >
+          <div className="max-w-[1100px] mx-auto px-4 sm:px-6 md:px-8 py-6 space-y-4">
             {/* Hidden file input for photo */}
             <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handlePhotoFile} />
 
-            {/* Profile header — gradient hero card */}
+            {/* ── Top bar: breadcrumb + actions ── */}
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-1.5 text-[12px] min-w-0">
+                <span className="text-[var(--text-muted)] font-medium whitespace-nowrap">Employees</span>
+                <ChevronRight className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
+                <span className="text-[var(--text-primary)] font-semibold truncate">{fullName}</span>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {isPending && canApprove && (
+                  <>
+                    <button
+                      onClick={handleApprove}
+                      disabled={approving || rejecting}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold text-[var(--success)] bg-[var(--success-dim)] hover:opacity-80 border border-[var(--success)]/20 transition-all disabled:opacity-50"
+                    >
+                      {approving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+                      Approve
+                    </button>
+                    <button
+                      onClick={() => { setRejectReason(''); setShowRejectModal(true); }}
+                      disabled={approving || rejecting}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold text-[var(--danger)] bg-[var(--danger-dim)] hover:opacity-80 border border-[var(--danger)]/20 transition-all disabled:opacity-50"
+                    >
+                      <XCircle className="w-3.5 h-3.5" />
+                      Reject
+                    </button>
+                  </>
+                )}
+                {isPending && !canApprove && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-[var(--warning)] bg-[var(--warning-dim)] border border-[var(--warning)]/20">
+                    <AlertTriangle className="w-3 h-3" />
+                    Self-approval not permitted
+                  </span>
+                )}
+
+                {/* More dropdown */}
+                <div className="relative" ref={dropdownRef}>
+                  <button
+                    onClick={() => setIsMoreOpen(v => !v)}
+                    className="w-8 h-8 rounded-xl bg-[var(--surface)] hover:bg-[var(--surface-hover)] border border-[var(--border)] flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-all"
+                  >
+                    <MoreHorizontal className="w-3.5 h-3.5" />
+                  </button>
+                  <AnimatePresence>
+                    {isMoreOpen && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95, y: 6 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95, y: 6 }} transition={{ duration: 0.12 }}
+                        className="absolute right-0 top-[calc(100%+6px)] w-52 bg-[var(--surface)] rounded-xl shadow-lg border border-[var(--border)] py-1.5 z-[100]"
+                      >
+                        {[
+                          { icon: AlertTriangle, label: 'Suspend Employee',     color: 'text-amber-500' },
+                          { icon: LogOut,        label: 'Initiate Resignation', color: 'text-rose-500'  },
+                        ].map(({ icon: Icon, label, color }) => (
+                          <button key={label} className="w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors text-left">
+                            <Icon className={`w-4 h-4 ${color}`} /> {label}
+                          </button>
+                        ))}
+                        <div className="my-1 border-t border-[var(--border)]" />
+                        <button
+                          onClick={() => { setIsMoreOpen(false); fileInputRef.current?.click(); }}
+                          disabled={photoUploading}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors text-left disabled:opacity-50"
+                        >
+                          {photoUploading ? <Loader2 className="w-4 h-4 text-[var(--accent)] animate-spin" /> : <UploadCloud className="w-4 h-4 text-[var(--accent)]" />}
+                          Upload Photo
+                        </button>
+                        {localPhoto && (
+                          <button
+                            onClick={() => { setIsMoreOpen(false); handlePhotoRemove(); }}
+                            disabled={photoUploading}
+                            className="w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors text-left disabled:opacity-50"
+                          >
+                            <Trash2 className="w-4 h-4 text-[var(--danger)]" /> Remove Photo
+                          </button>
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                {/* Close */}
+                <button
+                  onClick={onClose}
+                  className="w-8 h-8 rounded-xl bg-[var(--surface)] hover:bg-[var(--surface-hover)] border border-[var(--border)] flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-all"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* ── Hero card — matches PersonalInfo design ── */}
             <motion.div
               initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}
               className="bg-[var(--surface)] rounded-2xl border border-[var(--border)] overflow-hidden"
@@ -596,106 +766,14 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
                 <div className="absolute inset-0 opacity-10"
                   style={{ backgroundImage: 'radial-gradient(circle at 25% 50%, white 1px, transparent 1px), radial-gradient(circle at 75% 50%, white 1px, transparent 1px)', backgroundSize: '40px 40px' }}
                 />
-
-                {/* Breadcrumb — top left */}
-                <div className="absolute top-4 left-5 flex items-center gap-1.5 text-[11px]">
-                  <span className="font-medium text-white/90">Employees</span>
-                  <ChevronRight className="w-3 h-3 text-white/60" />
-                  <span className="text-white/70">{fullName}</span>
-                </div>
-
-                {/* Actions + close — top right */}
-                <div className="absolute top-4 right-5 flex items-center gap-2">
-                  {isPending && canApprove && (
-                    <>
-                      <button
-                        onClick={handleApprove}
-                        disabled={approving || rejecting}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold text-emerald-700 bg-white/90 hover:bg-white border border-white/20 transition-colors disabled:opacity-60"
-                      >
-                        {approving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
-                        Approve
-                      </button>
-                      <button
-                        onClick={() => { setRejectReason(''); setShowRejectModal(true); }}
-                        disabled={approving || rejecting}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold text-rose-700 bg-white/90 hover:bg-white border border-white/20 transition-colors disabled:opacity-60"
-                      >
-                        <XCircle className="w-3.5 h-3.5" />
-                        Reject
-                      </button>
-                    </>
-                  )}
-                  {isPending && !canApprove && (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-white/90 bg-white/10 border border-white/20">
-                      <AlertTriangle className="w-3 h-3 text-amber-300" />
-                      Self-approval not permitted
-                    </span>
-                  )}
-
-                  {/* More dropdown */}
-                  <div className="relative" ref={dropdownRef}>
-                    <button
-                      onClick={() => setIsMoreOpen(v => !v)}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold text-white bg-white/10 hover:bg-white/20 border border-white/20 transition-colors"
-                    >
-                      <MoreHorizontal className="w-3.5 h-3.5" />
-                    </button>
-                    <AnimatePresence>
-                      {isMoreOpen && (
-                        <motion.div
-                          initial={{ opacity: 0, scale: 0.95, y: 6 }} animate={{ opacity: 1, scale: 1, y: 0 }}
-                          exit={{ opacity: 0, scale: 0.95, y: 6 }} transition={{ duration: 0.12 }}
-                          className="absolute right-0 top-[calc(100%+6px)] w-52 bg-white rounded-xl shadow-lg border border-slate-200 py-1.5 z-[100]"
-                        >
-                          {[
-                            { icon: AlertTriangle, label: 'Suspend Employee',     color: 'text-amber-500' },
-                            { icon: LogOut,        label: 'Initiate Resignation', color: 'text-rose-500'  },
-                          ].map(({ icon: Icon, label, color }) => (
-                            <button key={label} className="w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-slate-700 hover:bg-slate-50 transition-colors text-left">
-                              <Icon className={`w-4 h-4 ${color}`} /> {label}
-                            </button>
-                          ))}
-                          <div className="my-1 border-t border-slate-100" />
-                          <button
-                            onClick={() => { setIsMoreOpen(false); fileInputRef.current?.click(); }}
-                            disabled={photoUploading}
-                            className="w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-slate-700 hover:bg-slate-50 transition-colors text-left disabled:opacity-50"
-                          >
-                            {photoUploading ? <Loader2 className="w-4 h-4 text-[#0066b3] animate-spin" /> : <UploadCloud className="w-4 h-4 text-[#0066b3]" />}
-                            Upload Photo
-                          </button>
-                          {localPhoto && (
-                            <button
-                              onClick={() => { setIsMoreOpen(false); handlePhotoRemove(); }}
-                              disabled={photoUploading}
-                              className="w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-slate-700 hover:bg-slate-50 transition-colors text-left disabled:opacity-50"
-                            >
-                              <Trash2 className="w-4 h-4 text-rose-500" /> Remove Photo
-                            </button>
-                          )}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* Close */}
-                  <button
-                    onClick={onClose}
-                    className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/25 border border-white/20 flex items-center justify-center text-white/80 hover:text-white transition-all"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-
-                {/* Lifecycle badge — bottom right of banner */}
+                {/* Status badge — top right only */}
                 {!isRejected && employee.lifecycleStatus && (
-                  <div className="absolute bottom-4 right-5">
+                  <div className="absolute top-4 right-4">
                     <LifecycleBadge status={employee.lifecycleStatus} />
                   </div>
                 )}
                 {isRejected && (
-                  <div className="absolute bottom-4 right-5">
+                  <div className="absolute top-4 right-4">
                     <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-500/20 text-white border border-rose-400/40">
                       Application Rejected
                     </span>
@@ -705,11 +783,11 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
 
               {/* Profile content */}
               <div className="px-5 sm:px-7 pb-6">
-                <div className="flex flex-col sm:flex-row sm:items-end gap-4 -mt-8 sm:-mt-10 mb-5">
+                <div className="flex flex-col sm:flex-row sm:items-end gap-4 -mt-4 sm:-mt-6 mb-5">
                   {/* Avatar */}
                   <div className="relative shrink-0 group">
                     <div
-                      className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl overflow-hidden cursor-pointer border-4 border-[var(--surface)]"
+                      className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl border-4 border-[var(--surface)] overflow-hidden cursor-pointer"
                       onClick={() => fileInputRef.current?.click()}
                       title="Click to upload photo"
                       style={{ boxShadow: '0 4px 20px rgba(0,0,0,0.15)' }}
@@ -717,9 +795,9 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
                       {localPhoto ? (
                         <img src={localPhoto} alt={fullName} className="w-full h-full object-cover" />
                       ) : (
-                        <div className="w-full h-full flex items-center justify-center text-white font-bold text-2xl"
+                        <div className="w-full h-full flex items-center justify-center text-white font-bold text-xl syne"
                           style={{ background: 'linear-gradient(135deg, #1d4ed8, #7c3aed)' }}>
-                          {initials || <User className="w-9 h-9" />}
+                          {initials || <User className="w-8 h-8" />}
                         </div>
                       )}
                       {photoUploading && (
@@ -739,7 +817,7 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
 
                   {/* Name + role */}
                   <div className="flex-1 min-w-0 pb-1">
-                    <h2 className="text-[20px] sm:text-[22px] font-bold text-[var(--text-primary)] leading-tight">{fullName}</h2>
+                    <h1 className="text-[20px] sm:text-[24px] font-bold text-[var(--text-primary)] syne leading-tight truncate">{fullName}</h1>
                     <div className="flex flex-wrap items-center gap-2 mt-1">
                       {employee.jobTitle?.label && (
                         <span className="text-[13px] text-[var(--text-secondary)] font-medium">{employee.jobTitle.label}</span>
@@ -754,26 +832,28 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
                         </span>
                       )}
                     </div>
-                    {isPending && (
-                      <span className="inline-flex items-center gap-1 mt-2 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-100">
-                        Awaiting Approval
-                      </span>
-                    )}
                   </div>
                 </div>
 
+                {/* Status badges — after flex row, before stat chips */}
+                {isPending && (
+                  <div className="mb-3">
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-[var(--warning-dim)] text-[var(--warning)] border border-[var(--warning)]/20">
+                      Awaiting Approval
+                    </span>
+                  </div>
+                )}
+
                 {/* Rejection notice */}
                 {isRejected && (
-                  <div className="mb-4 flex items-start gap-2 px-3 py-2.5 rounded-xl bg-rose-50 border border-rose-100">
-                    <XCircle className="w-3.5 h-3.5 text-rose-500 mt-0.5 shrink-0" />
+                  <div className="mb-4 flex items-start gap-2.5 px-3.5 py-3 rounded-xl bg-[var(--danger-dim)] border border-[var(--danger)]/20">
+                    <XCircle className="w-3.5 h-3.5 text-[var(--danger)] mt-0.5 shrink-0" />
                     <div>
-                      <p className="text-[12px] font-semibold text-rose-700">
-                        {employee.actionReason
-                          ? `Reason: ${employee.actionReason}`
-                          : 'This application was rejected. Edit the record to re-submit for approval.'}
+                      <p className="text-[12px] font-semibold text-[var(--danger)]">
+                        {employee.actionReason ? `Reason: ${employee.actionReason}` : 'This application was rejected. Edit the record to re-submit for approval.'}
                       </p>
                       {employee.actionReason && (
-                        <p className="text-[11px] text-rose-500 mt-0.5">Edit the record to correct and re-submit for approval.</p>
+                        <p className="text-[11px] text-[var(--danger)] opacity-75 mt-0.5">Edit the record to correct and re-submit for approval.</p>
                       )}
                     </div>
                   </div>
@@ -781,18 +861,18 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
 
                 {/* Quick stat chips */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                  <StatChipSlide icon={Building}  label="Department" value={employee.department?.title}     accent="#0066b3" />
-                  <StatChipSlide icon={Briefcase} label="Job Title"  value={employee.jobTitle?.label}       accent="#059669" />
-                  <StatChipSlide icon={Calendar}  label="Hire Date"  value={fmtDate(employee.hireDate)}     accent="#7c3aed" />
-                  <StatChipSlide icon={Phone}     label="Mobile"     value={employee.mobilePhone}           accent="#b45309" />
+                  <StatChipSlide icon={Building}  label="Department" value={employee.department?.title} accent="#0066b3" />
+                  <StatChipSlide icon={Briefcase} label="Job Title"  value={employee.jobTitle?.label}   accent="#059669" />
+                  <StatChipSlide icon={Calendar}  label="Hire Date"  value={fmtDate(employee.hireDate)} accent="#7c3aed" />
+                  <StatChipSlide icon={Phone}     label="Mobile"     value={employee.mobilePhone}       accent="#b45309" />
                 </div>
               </div>
             </motion.div>
 
-            {/* Tab bar — pill style */}
+            {/* ── Tab bar ── */}
             <motion.div
               initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3, delay: 0.06 }}
-              className="bg-[var(--surface)] rounded-2xl border border-[var(--border)] px-2 py-1.5 flex items-center gap-1 overflow-x-auto"
+              className="bg-[var(--surface)] rounded-2xl border border-[var(--border)] px-2 py-1.5 flex items-center gap-1 overflow-x-auto hide-scrollbar"
               style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}
             >
               {tabs.map(t => (
@@ -813,6 +893,7 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
               ))}
             </motion.div>
 
+            {/* ── Tab content ── */}
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeTab}
@@ -822,7 +903,7 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
                 {renderContent()}
               </motion.div>
             </AnimatePresence>
-          </motion.div>
+          </div>
           <DocumentViewer document={documentToView} onClose={() => setDocumentToView(null)} />
         </motion.div>
       )}

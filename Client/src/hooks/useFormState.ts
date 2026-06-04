@@ -1,20 +1,19 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef } from 'react';
 import type { ChangeEvent } from 'react';
 
 export function useFormState<T extends Record<string, any>>(
   initialState: T,
   initialData?: T | null
 ) {
-  const initialStateRef = useRef(initialState);
-
   const [formData, setFormData] = useState<T>(
     initialData ? { ...initialState, ...initialData } : initialState
   );
 
-  useEffect(() => {
-    const base = initialStateRef.current;
-    setFormData(initialData ? { ...base, ...initialData } : base);
-  }, [initialData]);
+  // Keep a stable ref so callers can reset to the seed data without
+  // the effect-based pattern that caused re-resets in Strict Mode.
+  const seedRef = useRef<T>(
+    initialData ? ({ ...initialState, ...initialData } as T) : initialState
+  );
 
   const handleChange = (
     e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
@@ -23,5 +22,7 @@ export function useFormState<T extends Record<string, any>>(
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  return { formData, handleChange, setFormData };
+  const resetForm = () => setFormData(seedRef.current);
+
+  return { formData, handleChange, setFormData, resetForm };
 }

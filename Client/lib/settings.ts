@@ -7,6 +7,9 @@ export interface AppSettings {
   employees: {
     autoGenerateNumber: boolean;
   };
+  recruitment: {
+    autoGenerateCode: boolean;
+  };
   approvals: {
     employeeApproval: boolean;
     employeeSelfApproval: boolean;
@@ -30,6 +33,9 @@ const DEFAULTS: AppSettings = {
   },
   employees: {
     autoGenerateNumber: true,
+  },
+  recruitment: {
+    autoGenerateCode: false,
   },
   approvals: {
     employeeApproval: true,
@@ -56,6 +62,7 @@ export function getSettings(): AppSettings {
     return {
       companyStructure: { ...DEFAULTS.companyStructure, ...(parsed.companyStructure ?? {}) },
       employees:        { ...DEFAULTS.employees,        ...(parsed.employees        ?? {}) },
+      recruitment:      { ...DEFAULTS.recruitment,      ...(parsed.recruitment      ?? {}) },
       approvals:        { ...DEFAULTS.approvals,        ...(parsed.approvals        ?? {}) },
       general:          { ...DEFAULTS.general,          ...(parsed.general          ?? {}) },
       medicalClaims:    { ...DEFAULTS.medicalClaims,    ...(parsed.medicalClaims    ?? {}) },

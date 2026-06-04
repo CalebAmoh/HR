@@ -1337,10 +1337,25 @@ export function Payroll() {
   const [psTemplates,  setPsTemplates]  = useState<any[]>([]);
   const [psSelected,   setPsSelected]   = useState<any | null>(null);
   const [psForm,       setPsForm]       = useState<any>(BLANK_PS);
-  const [psSaving,     setPsSaving]     = useState(false);
-  const [psLoading,    setPsLoading]    = useState(false);
-  const [psModalOpen,  setPsModalOpen]  = useState(false);
-  const [psDeleting,   setPsDeleting]   = useState<string | null>(null);
+  const [psSaving,        setPsSaving]        = useState(false);
+  const [psLoading,       setPsLoading]       = useState(false);
+  const [psModalOpen,     setPsModalOpen]     = useState(false);
+  const [psDeleting,      setPsDeleting]      = useState<string | null>(null);
+  const [psLogoUploading, setPsLogoUploading] = useState(false);
+  const psLogoInputRef = useRef<HTMLInputElement>(null);
+
+  async function uploadPsLogo(file: File) {
+    const fd = new FormData();
+    fd.append('file', file);
+    setPsLogoUploading(true);
+    try {
+      const res = await api.post('/employees/documents/upload', fd, { headers: { 'Content-Type': undefined } });
+      const hash = res.data?.data?.hash ?? res.data?.hash;
+      if (hash) setPsForm((f: any) => ({ ...f, company_logo_url: hash }));
+      else toast.error('Upload succeeded but no hash returned');
+    } catch { toast.error('Logo upload failed'); }
+    finally { setPsLogoUploading(false); }
+  }
 
   // ── Data loading ────────────────────────────────────────────────────────────
   useEffect(() => { if (activeTab === 'Payroll Runs')      loadRuns();          }, [activeTab]);
@@ -2701,9 +2716,42 @@ export function Payroll() {
                     <FormField label="Company Address">
                       <textarea className={inputClass} rows={2} value={ps.company_address} onChange={e => setPsForm((f: any) => ({ ...f, company_address: e.target.value }))} placeholder="Full address..." />
                     </FormField>
-                    <FormField label="Logo URL">
-                      <input className={inputClass} value={ps.company_logo_url} onChange={e => setPsForm((f: any) => ({ ...f, company_logo_url: e.target.value }))} placeholder="https://..." />
-                    </FormField>
+                    <div>
+                      <p className="text-[11.5px] font-semibold text-[var(--text-muted)] mb-1.5">Company Logo</p>
+                      <div className="flex items-center gap-3">
+                        {ps.company_logo_url && (
+                          <img
+                            src={ps.company_logo_url.startsWith('http') ? ps.company_logo_url : `${api.defaults.baseURL}/documents/${ps.company_logo_url}`}
+                            alt="Logo preview"
+                            className="h-10 w-10 rounded-lg object-contain border border-[var(--border)] bg-[var(--bg)] shrink-0"
+                          />
+                        )}
+                        <input
+                          ref={psLogoInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={e => { const f = e.target.files?.[0]; if (f) uploadPsLogo(f); e.target.value = ''; }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => psLogoInputRef.current?.click()}
+                          disabled={psLogoUploading}
+                          className="secondary-btn text-[12px] disabled:opacity-60"
+                        >
+                          {psLogoUploading ? 'Uploading…' : ps.company_logo_url ? 'Replace Logo' : 'Upload Logo'}
+                        </button>
+                        {ps.company_logo_url && (
+                          <button
+                            type="button"
+                            onClick={() => setPsForm((f: any) => ({ ...f, company_logo_url: '' }))}
+                            className="text-[12px] text-red-500 hover:text-red-700"
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    </div>
                     <FormField label="Accent Colour">
                       <div className="flex items-center gap-3">
                         <input type="color" value={ps.accent_color} onChange={e => setPsForm((f: any) => ({ ...f, accent_color: e.target.value }))} className="h-9 w-14 rounded cursor-pointer border border-[var(--border)]" />
@@ -2839,7 +2887,7 @@ export function Payroll() {
                     <div className="bg-white rounded-[14px] shadow-xl border border-gray-200 overflow-hidden font-sans">
                       {/* Header bar */}
                       <div className="px-5 py-3 flex items-center gap-3" style={{ background: accent }}>
-                        {ps.company_logo_url && <img src={ps.company_logo_url} alt="" className="h-8 w-8 rounded object-contain bg-white/20 shrink-0" />}
+                        {ps.company_logo_url && <img src={ps.company_logo_url.startsWith('http') ? ps.company_logo_url : `${api.defaults.baseURL}/documents/${ps.company_logo_url}`} alt="" className="h-8 w-8 rounded object-contain bg-white/20 shrink-0" />}
                         <div className="flex-1 min-w-0">
                           <p className="font-bold text-white text-[13px] truncate">{ps.company_name || 'Company Name'}</p>
                           {ps.company_address && <p className="text-white/75 text-[10px] mt-0.5 truncate">{ps.company_address}</p>}

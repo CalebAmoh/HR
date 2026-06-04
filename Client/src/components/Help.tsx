@@ -5,6 +5,7 @@ import {
   CheckCircle2, Clock, FileText, ListChecks, Sparkles, X, BarChart2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { inputClass } from './ui/FormField';
 
 // ─── Data types ──────────────────────────────────────────────────────────────
 
@@ -926,19 +927,19 @@ function ArticleContent({ content }: { content: ContentBlock[] }) {
 
         if (block.type === 'table') return (
           <div key={i} className="overflow-x-auto rounded-xl border border-[var(--border)]">
-            <table className="w-full border-collapse text-[13px]">
+            <table className="w-full border-collapse">
               <thead>
-                <tr className="bg-[var(--surface-hover)]">
+                <tr>
                   {block.headers.map(h => (
-                    <th key={h} className="px-4 py-3 text-left font-semibold text-[var(--text-secondary)] text-[11px] uppercase tracking-wider border-b border-[var(--border)]">{h}</th>
+                    <th key={h} className="th">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {block.rows.map((row, ri) => (
-                  <tr key={ri} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--surface-hover)] transition-colors">
+                  <tr key={ri} className="tr">
                     {row.map((cell, ci) => (
-                      <td key={ci} className={`px-4 py-3 text-[var(--text-secondary)] ${ci === 0 ? 'font-medium text-[var(--text-primary)]' : ''}`}>{cell}</td>
+                      <td key={ci} className={`td ${ci === 0 ? 'font-medium text-[var(--text-primary)]' : ''}`}>{cell}</td>
                     ))}
                   </tr>
                 ))}
@@ -1003,7 +1004,7 @@ export function Help() {
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Search for anything — leave setup, running payroll, adding employees…"
-              className="!pl-10 !pr-10 !py-3 !text-[13px] w-full shadow-sm"
+              className={`${inputClass} !pl-10 !pr-10 w-full shadow-sm`}
             />
             {query && (
               <button onClick={() => setQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
