@@ -1,23 +1,7 @@
 const { prisma } = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
-
-function toBigInt(val) {
-  if (!val && val !== 0) return null;
-  try { return BigInt(val); } catch { return null; }
-}
-
-function s(obj) {
-  if (typeof obj === 'bigint') return obj.toString();
-  if (obj instanceof Date) return obj.toISOString();
-  if (Array.isArray(obj)) return obj.map(s);
-  if (obj !== null && typeof obj === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) out[k] = s(v);
-    return out;
-  }
-  return obj;
-}
+const { toBigInt, s } = require('../helpers/controllerHelpers');
 
 async function clvMap(ids) {
   const unique = [...new Set(ids.filter(Boolean))];
@@ -44,6 +28,8 @@ async function empMap(bigIntIds) {
 
 // ─── SKILLS ───────────────────────────────────────────────────────────────────
 
+// GET /employee-relations/skills — list every skill record across all employees,
+// resolved with human-readable skill labels (from code list) and full employee names.
 const getAllSkills = asyncHandler(async (req, res) => {
   const rows = await prisma.employeeskills.findMany({ orderBy: { id: 'desc' } });
   const [cm, em] = await Promise.all([
@@ -57,6 +43,7 @@ const getAllSkills = asyncHandler(async (req, res) => {
   })));
 });
 
+// POST /employee-relations/skills — attach a skill (from code list) to an employee with optional details.
 const addSkill = asyncHandler(async (req, res) => {
   const { employee_id, skill_id, details } = req.body;
   const empId = toBigInt(employee_id);
@@ -68,6 +55,7 @@ const addSkill = asyncHandler(async (req, res) => {
   respond.created(res, 'Skill added', s(row));
 });
 
+// PUT /employee-relations/skills/:id — update the skill type or details on an existing skill record.
 const updateSkill = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -79,6 +67,7 @@ const updateSkill = asyncHandler(async (req, res) => {
   respond.ok(res, 'Skill updated', s(row));
 });
 
+// DELETE /employee-relations/skills/:id — permanently remove an employee skill record.
 const deleteSkill = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -88,6 +77,7 @@ const deleteSkill = asyncHandler(async (req, res) => {
 
 // ─── CERTIFICATIONS ───────────────────────────────────────────────────────────
 
+// GET /employee-relations/certifications — list all employee certification records with labels and employee names.
 const getAllCerts = asyncHandler(async (req, res) => {
   const rows = await prisma.employeecertifications.findMany({ orderBy: { id: 'desc' } });
   const [cm, em] = await Promise.all([
@@ -101,6 +91,7 @@ const getAllCerts = asyncHandler(async (req, res) => {
   })));
 });
 
+// POST /employee-relations/certifications — add a professional certification to an employee's profile.
 const addCert = asyncHandler(async (req, res) => {
   const { employee_id, certification_id, institute, date_start, date_end } = req.body;
   const empId = toBigInt(employee_id);
@@ -117,6 +108,7 @@ const addCert = asyncHandler(async (req, res) => {
   respond.created(res, 'Certification added', s(row));
 });
 
+// PUT /employee-relations/certifications/:id — update certification type, issuing institution, or date range.
 const updateCert = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -133,6 +125,7 @@ const updateCert = asyncHandler(async (req, res) => {
   respond.ok(res, 'Certification updated', s(row));
 });
 
+// DELETE /employee-relations/certifications/:id — permanently remove a certification record.
 const deleteCert = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -142,6 +135,7 @@ const deleteCert = asyncHandler(async (req, res) => {
 
 // ─── EDUCATION ────────────────────────────────────────────────────────────────
 
+// GET /employee-relations/education — list all education history records with institution type labels and employee names.
 const getAllEducation = asyncHandler(async (req, res) => {
   const rows = await prisma.employeeeducations.findMany({ orderBy: { id: 'desc' } });
   const [cm, em] = await Promise.all([
@@ -155,6 +149,7 @@ const getAllEducation = asyncHandler(async (req, res) => {
   })));
 });
 
+// POST /employee-relations/education — add an education history entry (school, type, dates) to an employee.
 const addEducation = asyncHandler(async (req, res) => {
   const { employee_id, education_id, institute, date_start, date_end } = req.body;
   const empId = toBigInt(employee_id);
@@ -171,6 +166,7 @@ const addEducation = asyncHandler(async (req, res) => {
   respond.created(res, 'Education record added', s(row));
 });
 
+// PUT /employee-relations/education/:id — update institution type, school name, or enrolment dates.
 const updateEducation = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -187,6 +183,7 @@ const updateEducation = asyncHandler(async (req, res) => {
   respond.ok(res, 'Education record updated', s(row));
 });
 
+// DELETE /employee-relations/education/:id — permanently remove an education history record.
 const deleteEducation = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -196,6 +193,7 @@ const deleteEducation = asyncHandler(async (req, res) => {
 
 // ─── LANGUAGES ────────────────────────────────────────────────────────────────
 
+// GET /employee-relations/languages — list all language proficiency records with language labels and employee names.
 const getAllLanguages = asyncHandler(async (req, res) => {
   const rows = await prisma.employeelanguages.findMany({ orderBy: { id: 'desc' } });
   const [cm, em] = await Promise.all([
@@ -209,6 +207,7 @@ const getAllLanguages = asyncHandler(async (req, res) => {
   })));
 });
 
+// POST /employee-relations/languages — add a language with proficiency ratings (reading/speaking/writing/understanding).
 const addLanguage = asyncHandler(async (req, res) => {
   const { employee_id, language_id, reading, speaking, writing, understanding } = req.body;
   const empId = toBigInt(employee_id);
@@ -226,6 +225,7 @@ const addLanguage = asyncHandler(async (req, res) => {
   respond.created(res, 'Language added', s(row));
 });
 
+// PUT /employee-relations/languages/:id — update the language or any proficiency rating on an existing record.
 const updateLanguage = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -243,6 +243,7 @@ const updateLanguage = asyncHandler(async (req, res) => {
   respond.ok(res, 'Language updated', s(row));
 });
 
+// DELETE /employee-relations/languages/:id — permanently remove a language proficiency record.
 const deleteLanguage = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -252,17 +253,24 @@ const deleteLanguage = asyncHandler(async (req, res) => {
 
 // ─── DEPENDENTS ───────────────────────────────────────────────────────────────
 
+// GET /employee-relations/dependents — list all employee dependents with resolved relationship/gender labels and employee names.
 const getAllDependents = asyncHandler(async (req, res) => {
   const rows = await prisma.employeedependents.findMany({ orderBy: { id: 'desc' } });
   const em = await empMap(rows.map(r => r.employee));
-  const cm = await clvMap(rows.map(r => r.relationship).filter(Boolean));
+  const allClvIds = [
+    ...rows.map(r => r.relationship).filter(Boolean),
+    ...rows.map(r => r.gender).filter(Boolean),
+  ];
+  const cm = await clvMap(allClvIds);
   respond.ok(res, 'Dependents retrieved', rows.map(r => ({
     ...s(r),
     employee:          em[r.employee.toString()] ?? null,
     relationshipLabel: r.relationship ? (cm[r.relationship] ?? r.relationship) : null,
+    genderLabel:       r.gender       ? (cm[r.gender]       ?? r.gender)       : null,
   })));
 });
 
+// POST /employee-relations/dependents — add a dependent (child, spouse, etc.) linked to an employee.
 const addDependent = asyncHandler(async (req, res) => {
   const { employee_id, name, gender, place_of_birth, relationship, dob, id_number } = req.body;
   const empId = toBigInt(employee_id);
@@ -282,6 +290,7 @@ const addDependent = asyncHandler(async (req, res) => {
   respond.created(res, 'Dependent added', s(row));
 });
 
+// PUT /employee-relations/dependents/:id — update a dependent's personal details (name, DOB, relationship, ID number).
 const updateDependent = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -300,6 +309,7 @@ const updateDependent = asyncHandler(async (req, res) => {
   respond.ok(res, 'Dependent updated', s(row));
 });
 
+// DELETE /employee-relations/dependents/:id — permanently remove a dependent record.
 const deleteDependent = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -309,6 +319,7 @@ const deleteDependent = asyncHandler(async (req, res) => {
 
 // ─── EMERGENCY CONTACTS ───────────────────────────────────────────────────────
 
+// GET /employee-relations/emergency-contacts — list all emergency contact records with relationship labels and employee names.
 const getAllEmergencyContacts = asyncHandler(async (req, res) => {
   const rows = await prisma.emergencycontacts.findMany({ orderBy: { id: 'desc' } });
   const [cm, em] = await Promise.all([
@@ -322,6 +333,7 @@ const getAllEmergencyContacts = asyncHandler(async (req, res) => {
   })));
 });
 
+// POST /employee-relations/emergency-contacts — add an emergency contact (name, relationship, phone numbers) to an employee.
 const addEmergencyContact = asyncHandler(async (req, res) => {
   const { employee_id, name, relationship, home_phone, work_phone, mobile_phone } = req.body;
   const empId = toBigInt(employee_id);
@@ -340,6 +352,7 @@ const addEmergencyContact = asyncHandler(async (req, res) => {
   respond.created(res, 'Emergency contact added', s(row));
 });
 
+// PUT /employee-relations/emergency-contacts/:id — update name, relationship, or phone numbers for an emergency contact.
 const updateEmergencyContact = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -357,6 +370,7 @@ const updateEmergencyContact = asyncHandler(async (req, res) => {
   respond.ok(res, 'Emergency contact updated', s(row));
 });
 
+// DELETE /employee-relations/emergency-contacts/:id — permanently remove an emergency contact record.
 const deleteEmergencyContact = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');

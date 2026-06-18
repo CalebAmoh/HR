@@ -1,12 +1,16 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
-  Users, FileText, CalendarCheck, Banknote, Building2,
+  Users, CalendarCheck, Banknote, Building2,
   ShieldAlert, PieChart, FolderOpen, Briefcase, GraduationCap,
+  Stethoscope, TrendingUp, Clock,
   ArrowUpRight, Search, LayoutGrid, List
 } from 'lucide-react';
 import { usePermission } from '../../hooks/usePermission';
 import { getCurrentUser } from '../../lib/auth';
+import { useEnabledModules, moduleStore, ALL_MODULE_IDS } from '../../lib/moduleState';
+import api from '../../lib/api';
+import { toast } from 'sonner';
 
 /* ─────────────────────────────────────────────────────────────────────────────
    DESIGN TOKENS
@@ -24,56 +28,20 @@ const RAMP = {
 const modules = [
   { id: 'Employees',       icon: Users,         title: 'Employee Directory',     desc: 'Personnel records, onboarding workflows, and complete employee profile management.',      tag: 'Core',         ramp: 'blue',  stat: '200 employees',    statColor: '#378ADD' },
   { id: 'LeaveManagement', icon: CalendarCheck, title: 'Leave Management',       desc: 'Time-off requests, public holiday calendars, approval chains, and leave balances.',       tag: 'HR',           ramp: 'teal',  stat: '12 pending',       statColor: '#f59e0b' },
-  { id: 'Payroll',         icon: Banknote,      title: 'Payroll Processing',     desc: 'Payroll cycles, payslip generation, and employee benefits administration.',               tag: 'Finance',      ramp: 'amber', stat: 'Last run: Jan',    statColor: '#10b981' },
-  { id: 'Salary',          icon: FileText,      title: 'Salary & Compensation',  desc: 'Salary structures, pay grades, notches, and compensation policy configuration.',          tag: 'Finance',      ramp: 'amber', stat: '8 grades',         statColor: '#BA7517' },
+  { id: 'Payroll',         icon: Banknote,      title: 'Payroll & Salary',       desc: 'Payroll cycles, payslip generation, salary structures, pay grades, and compensation policy.', tag: 'Finance', ramp: 'amber', stat: 'Last run: Jan', statColor: '#10b981' },
   { id: 'Insights',        icon: PieChart,      title: 'Analytics & Reports',    desc: 'Custom report generation, trend visualisation, and organisation-wide insights.',          tag: 'Intelligence', ramp: 'amber', stat: '24 reports',       statColor: '#BA7517' },
   { id: 'Company',         icon: Building2,     title: 'Organisation Structure', desc: 'Departments, branches, reporting lines, and full company hierarchy configuration.',      tag: 'Core',         ramp: 'blue',  stat: '5 branches',       statColor: '#378ADD' },
   { id: 'Recruitment',     icon: Briefcase,     title: 'Recruitment',            desc: 'Job postings, applicant tracking pipeline, and interview panel scheduling.',              tag: 'HR',           ramp: 'teal',  stat: '16 applicants',    statColor: '#1D9E75' },
   { id: 'Training',        icon: GraduationCap, title: 'Training & Development', desc: 'Employee courses, certifications, skills matrices, and learning path design.',            tag: 'Growth',       ramp: 'teal',  stat: '7 active courses', statColor: '#1D9E75' },
   { id: 'Documents',       icon: FolderOpen,    title: 'Document Centre',        desc: 'Secure storage, organisation, and sharing of company files and HR policies.',            tag: 'Operations',   ramp: 'amber', stat: '340 files',        statColor: '#BA7517' },
-  { id: 'Admin',           icon: ShieldAlert,   title: 'System Administration',  desc: 'Roles, permissions, audit logs, and global platform configuration settings.',            tag: 'Core',         ramp: 'blue',  stat: '3 admins',         statColor: '#64748b' },
+  { id: 'Admin',        icon: ShieldAlert,  title: 'System Administration',  desc: 'Roles, permissions, audit logs, and global platform configuration settings.',           tag: 'Core',    ramp: 'blue',  stat: '3 admins',        statColor: '#64748b' },
+  { id: 'Medical',      icon: Stethoscope,  title: 'Medical Claims',         desc: 'Employee medical reimbursements, hospital visits, pharmacy claims, and GL postings.',      tag: 'HR',      ramp: 'teal',  stat: '0 pending',       statColor: '#1D9E75' },
+  { id: 'Performance',  icon: TrendingUp,   title: 'Performance Management', desc: 'Appraisal cycles, KPI tracking, review scores, and performance history.',                  tag: 'Growth',  ramp: 'teal',  stat: '0 reviews',       statColor: '#1D9E75' },
+  { id: 'Attendance',   icon: Clock,        title: 'Time & Attendance',      desc: 'Clock in/out, biometric device sync, kiosk punching, timesheets, and absence tracking.',   tag: 'HR',      ramp: 'teal',  stat: 'Live tracking',   statColor: '#1D9E75' },
 ];
 
 const TAGS = ['All', 'Core', 'HR', 'Finance', 'Intelligence', 'Operations', 'Growth'];
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   GLOBAL STATE FOR MODULES
-───────────────────────────────────────────────────────────────────────────── */
-let enabledModulesArray = [
-  'Employees', 'LeaveManagement', 'Payroll', 'Salary', 'Insights',
-  'Company', 'Recruitment', 'Training', 'Documents', 'Admin'
-];
-const listeners = new Set<() => void>();
-
-function useEnabledModules() {
-  const [enabled, setEnabled] = useState(enabledModulesArray);
-  
-  React.useEffect(() => {
-    const trigger = () => setEnabled([...enabledModulesArray]);
-    listeners.add(trigger);
-    return () => { listeners.delete(trigger); };
-  }, []);
-
-  const toggle = (id: string) => {
-    if (enabledModulesArray.includes(id)) {
-      enabledModulesArray = enabledModulesArray.filter(m => m !== id);
-    } else {
-      enabledModulesArray.push(id);
-    }
-    listeners.forEach(fn => fn());
-  };
-
-  const toggleAll = () => {
-    if (enabledModulesArray.length === modules.length) {
-      enabledModulesArray = [];
-    } else {
-      enabledModulesArray = modules.map(m => m.id);
-    }
-    listeners.forEach(fn => fn());
-  };
-
-  return { enabled, toggle, toggleAll };
-}
 
 /* ─────────────────────────────────────────────────────────────────────────────
    MODULE CARD
@@ -417,7 +385,21 @@ export function Modules({ onNavigate, isSettings = false }: any) {
   const [activeTag, setActiveTag] = useState('All');
   const [query, setQuery]         = useState('');
   const [viewMode, setViewMode]   = useState<'grid' | 'list'>('grid');
-  const { enabled: enabledModules, toggle: toggleModule, toggleAll } = useEnabledModules();
+  const { enabled: enabledModules } = useEnabledModules();
+
+  async function saveDisabled(disabled: string[]) {
+    await api.put('/settings/modules', { disabled }).catch(() => toast.error('Failed to save module settings'));
+  }
+
+  function toggleModule(id: string) {
+    const disabled = moduleStore.toggle(id);
+    saveDisabled(disabled);
+  }
+
+  function toggleAll() {
+    const disabled = moduleStore.toggleAll();
+    saveDisabled(disabled);
+  }
 
   const { canNav } = usePermission(getCurrentUser());
 
@@ -436,11 +418,9 @@ export function Modules({ onNavigate, isSettings = false }: any) {
         if (canNav('AdminMedical'))  return 'AdminMedical';
         return 'PersonalMedical';
       case 'Payroll':
-        if (canNav('Payroll'))       return 'Payroll';
         if (canNav('Salary'))        return 'Salary';
+        if (canNav('Payroll'))       return 'Payroll';
         return 'Dashboard';
-      case 'Salary':
-        return canNav('Salary')      ? 'Salary'      : 'Dashboard';
       case 'Insights':
         if (canNav('AdminReports'))  return 'AdminReports';
         return 'UserReports';
@@ -454,6 +434,12 @@ export function Modules({ onNavigate, isSettings = false }: any) {
         return canNav('Company')     ? 'Company'     : 'Dashboard';
       case 'Recruitment':
         return 'Recruitment';
+      case 'Training':
+        if (canNav('AdminTraining')) return 'AdminTraining';
+        return 'PersonalTraining';
+      case 'Attendance':
+        if (canNav('AdminAttendance')) return 'AdminAttendance';
+        return 'MyAttendance';
       default:
         return modId;
     }
@@ -535,7 +521,7 @@ export function Modules({ onNavigate, isSettings = false }: any) {
               className="secondary-btn"
               style={{ height: '40px' }}
             >
-              {enabledModules.length === modules.length ? 'Disable All' : 'Enable All'}
+              {enabledModules.length === ALL_MODULE_IDS.length ? 'Disable All' : 'Enable All'}
             </button>
           )}
 

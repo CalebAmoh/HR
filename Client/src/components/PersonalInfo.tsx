@@ -3,7 +3,7 @@ import {
   User, Briefcase, Heart, GraduationCap, FileText, Phone, Mail,
   MapPin, IdCard, CreditCard, Building2, Calendar, Award, Globe,
   Brain, Users, Loader2, CheckCircle, Copy, Camera, FileCheck,
-  Baby, HeartPulse, AlertCircle, Hash, Star, Shield, Landmark,
+  Baby, HeartPulse, AlertCircle, Hash, Star, Shield, Landmark, Activity,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
@@ -11,7 +11,7 @@ import api from '../../lib/api';
 import { getCurrentUser } from '../../lib/auth';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-type TabId = 'Personal' | 'Employment' | 'Relationships' | 'Qualifications' | 'Documents';
+type TabId = 'Personal' | 'Employment' | 'Relationships' | 'Qualifications' | 'Documents' | 'Leave' | 'Attendance';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const fmt = (v: any): string | null => (v != null && v !== '' ? String(v) : null);
@@ -307,7 +307,7 @@ const RelationshipsPanel: React.FC<{ emp: any }> = ({ emp }) => {
           <Card title="Dependents" icon={Baby} accent="#0284c7">
             <MiniTable
               cols={['Name', 'Relationship', 'Gender', 'Date of Birth', 'Place of Birth']}
-              rows={dependents.map(r => [r.name, r.relationship, r.gender, fmtDate(r.dob), r.place_of_birth])}
+              rows={dependents.map(r => [r.name, r.relationshipLabel ?? r.relationship, r.genderLabel ?? r.gender, fmtDate(r.dob), r.place_of_birth])}
               empty="No dependents on record"
             />
           </Card>
@@ -432,6 +432,67 @@ const DocumentsPanel: React.FC<{ emp: any }> = ({ emp }) => {
   );
 };
 
+// ── Leave status pill ─────────────────────────────────────────────────────────
+function leaveStatusPill(status: string) {
+  const map: Record<string, string> = {
+    'Approved':            'bg-emerald-50 text-emerald-700 border-emerald-200',
+    'Pending Approval':    'bg-amber-50 text-amber-700 border-amber-200',
+    'Pending HR Approval': 'bg-blue-50 text-blue-700 border-blue-200',
+    'Rejected':            'bg-rose-50 text-rose-700 border-rose-200',
+    'Cancelled':           'bg-slate-100 text-slate-500 border-slate-200',
+    'Draft':               'bg-slate-50 text-slate-500 border-slate-200',
+  };
+  const cls = map[status] ?? 'bg-slate-50 text-slate-500 border-slate-200';
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-semibold border ${cls}`}>{status}</span>;
+}
+
+const LeavePanel: React.FC<{ emp: any }> = ({ emp }) => {
+  const [leaves, setLeaves] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.get(`/leave/leaves/all?employee=${emp.id}`)
+      .then(r => setLeaves(r.data.data ?? []))
+      .catch(() => setLeaves([]))
+      .finally(() => setLoading(false));
+  }, [emp.id]);
+
+  if (loading) return (
+    <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-[var(--text-muted)]" /></div>
+  );
+
+  return (
+    <Card title="Leave Records" icon={Calendar} accent="#7c3aed">
+      <MiniTable
+        cols={['Leave Type', 'Period', 'Start', 'End', 'Days', 'Status']}
+        rows={leaves.map(l => [
+          <span key="t" className="flex items-center gap-1.5">
+            {l.leave_color && <span className="w-2.5 h-2.5 rounded-full shrink-0 inline-block" style={{ background: l.leave_color }} />}
+            {l.leave_type_name ?? '—'}
+          </span>,
+          l.period_name ?? '—',
+          fmtDate(l.date_start),
+          fmtDate(l.date_end),
+          l.day_count ?? '—',
+          leaveStatusPill(l.status ?? 'Draft'),
+        ])}
+        empty="No leave records found"
+      />
+    </Card>
+  );
+};
+
+const AttendancePanel: React.FC = () => (
+  <Card title="Attendance" icon={Activity} accent="#0284c7">
+    <div className="flex flex-col items-center py-10 gap-3">
+      <div className="w-12 h-12 rounded-full bg-[var(--surface-hover)] flex items-center justify-center">
+        <Activity className="w-5 h-5 text-[var(--text-muted)]" />
+      </div>
+      <p className="text-[13px] font-medium text-[var(--text-muted)]">Attendance records coming soon</p>
+    </div>
+  </Card>
+);
+
 // ── Quick stat chip ───────────────────────────────────────────────────────────
 const StatChip: React.FC<{ icon: React.ElementType; label: string; value: string | null | undefined; accent?: string }> = ({
   icon: Icon, label, value, accent = 'var(--accent)',
@@ -520,6 +581,8 @@ export function PersonalInfo() {
     { id: 'Relationships',  label: 'Relationships',  icon: Heart         },
     { id: 'Qualifications', label: 'Qualifications', icon: GraduationCap },
     { id: 'Documents',      label: 'Documents',      icon: FileText      },
+    { id: 'Leave',          label: 'Leave',          icon: Calendar      },
+    { id: 'Attendance',     label: 'Attendance',     icon: Activity      },
   ];
 
   const renderPanel = () => {
@@ -529,6 +592,8 @@ export function PersonalInfo() {
       case 'Relationships':  return <RelationshipsPanel  emp={emp} />;
       case 'Qualifications': return <QualificationsPanel emp={emp} />;
       case 'Documents':      return <DocumentsPanel      emp={emp} />;
+      case 'Leave':          return <LeavePanel          emp={emp} />;
+      case 'Attendance':     return <AttendancePanel />;
     }
   };
 
@@ -623,7 +688,7 @@ export function PersonalInfo() {
         {/* ── Tab bar ── */}
         <motion.div
           initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3, delay: 0.06 }}
-          className="bg-[var(--surface)] rounded-2xl border border-[var(--border)] px-2 py-1.5 flex items-center gap-1 overflow-x-auto hide-scrollbar"
+          className="bg-[var(--surface)] rounded-2xl border border-[var(--border)] px-2 py-1.5 flex flex-wrap items-center gap-1"
           style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}
         >
           {tabs.map(t => (

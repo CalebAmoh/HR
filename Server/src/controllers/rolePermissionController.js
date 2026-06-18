@@ -1,6 +1,29 @@
 const helper = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 
+// Resolve a mixed array of permission names and/or numeric IDs to a deduped list of
+// numeric permission ID strings. The client sends permission NAMES (e.g. 'manage_roles'),
+// so we look those up here — this keeps role saves working regardless of whether the
+// client managed to map names → IDs first.
+async function resolvePermissionIds(perms) {
+  if (!Array.isArray(perms) || perms.length === 0) return [];
+  const ids = [];
+  const names = [];
+  for (const p of perms) {
+    if (p === null || p === undefined || p === '') continue;
+    if (!isNaN(Number(p))) ids.push(String(p));
+    else if (typeof p === 'string') names.push(p);
+  }
+  if (names.length > 0) {
+    const placeholders = names.map(() => '?').join(',');
+    const r = await helper.selectRecordsWithQuery(
+      `SELECT id FROM permissions WHERE name IN (${placeholders})`, names
+    );
+    for (const row of (r.data ?? [])) ids.push(String(row.id));
+  }
+  return [...new Set(ids)];
+}
+
 
 
 // ─────────────────────────────────────────────
@@ -280,15 +303,15 @@ const addRole = asyncHandler(async (req, res) => {
 
   const newRoleId = result.data?.insertId ?? result.data?.id ?? result.insertId;
 
-  // Assign permissions — sanitize every ID before BigInt conversion
+  // Assign permissions — accept names or IDs, resolve to numeric IDs
   if (Array.isArray(permission_ids) && permission_ids.length > 0 && newRoleId) {
-    const validPermIds = helper.sanitizeIds(permission_ids);
-    if (validPermIds.length > 0) {
+    const resolvedIds = await resolvePermissionIds(permission_ids);
+    if (resolvedIds.length > 0) {
       await Promise.all(
-        validPermIds.map((permId) =>
+        resolvedIds.map((permId) =>
           helper.dynamicInsert('role_has_permissions', {
             role_id: helper.safeBigInt(newRoleId),
-            permission_id: permId,
+            permission_id: helper.safeBigInt(permId),
           })
         )
       );
@@ -374,10 +397,8 @@ const updateRole = asyncHandler(async (req, res) => {
     );
 
     const currentIds = (currentPermsResult.data ?? []).map((r) => String(r.permission_id));
-    // Sanitize incoming IDs — filter undefined/null/non-numeric before comparing
-    const incomingIds = permission_ids
-      .filter((pid) => pid !== undefined && pid !== null && pid !== '' && !isNaN(Number(pid)))
-      .map(String);
+    // Accept permission names or IDs from the client and resolve to numeric IDs
+    const incomingIds = await resolvePermissionIds(permission_ids);
 
     const toAssign = incomingIds.filter((pid) => !currentIds.includes(pid));
     const toRevoke = currentIds.filter((pid) => !incomingIds.includes(pid));

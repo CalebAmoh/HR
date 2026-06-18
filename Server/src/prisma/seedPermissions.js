@@ -20,38 +20,42 @@ const prisma = new PrismaClient();
 
 const PERMISSIONS = [
   // Users & Access
-  'view_users', 'create_users', 'edit_users', 'deactivate_users', 'activate_users', 'change_user_password',
-  // Roles
-  'view_roles', 'create_roles', 'edit_roles', 'delete_roles', 'assign_roles', 'revoke_roles',
-  // Permissions
-  'view_permissions', 'assign_permissions', 'revoke_permissions',
+  'view_users', 'create_users', 'edit_users', 'deactivate_users', 'activate_users', 'change_user_password', 'manage_roles',
   // Employees
-  'view_employees', 'create_employees', 'edit_employees', 'approve_employees', 'change_employee_status',
+  'view_employees', 'create_employees', 'edit_employees', 'approve_employees', 'change_employee_status', 'manage_onboarding',
   // Employee Relations
-  'manage_skills', 'manage_certifications', 'manage_languages', 'manage_dependents', 'manage_emergency_contacts',
+  'manage_skills', 'manage_certifications', 'manage_education', 'manage_languages', 'manage_dependents', 'manage_emergency_contacts',
   // Company
   'view_company_structure', 'create_company_structure', 'edit_company_structure', 'delete_company_structure',
   // Documents
-  'view_documents', 'create_documents', 'edit_documents', 'delete_documents', 'download_documents',
+  'view_documents', 'create_documents', 'edit_documents', 'delete_documents',
   // Leave
-  'view_leave', 'apply_leave', 'approve_leave', 'cancel_leave', 'view_subordinate_leave',
   // Leave Setup
   'view_leave_setup', 'manage_leave_types', 'manage_leave_periods', 'manage_holidays',
-  'manage_work_week', 'manage_leave_groups', 'manage_leave_rules',
+  'manage_work_week', 'manage_leave_groups', 'manage_leave_rules', 'manage_leave_approvals',
   // Salary
   'view_salary_setup', 'manage_salary_component_types', 'manage_salary_components',
   'manage_employee_salary_components', 'manage_notch_setup', 'manage_payment_types', 'manage_notch_movements',
   // Payroll
   'view_payroll', 'manage_payroll_employees', 'process_payroll', 'approve_payroll',
-  'view_payroll_reports', 'export_payroll_reports', 'manage_payroll_columns', 'manage_calculation_groups',
+  'export_payroll_reports', 'manage_payroll_columns', 'manage_calculation_groups', 'manage_report_templates',
   // Reports
-  'view_reports', 'generate_reports', 'export_reports',
-  // System
-  'view_system', 'manage_app_setup', 'manage_code_lists', 'create_code_lists', 'edit_code_lists',
-  // Settings
-  'view_settings', 'edit_settings', 'manage_leave_settings', 'manage_notification_settings',
-  // Audit
-  'view_audit_logs',
+  'generate_reports', 'export_reports',
+  // System (App Settings + Settings pages + Audit logs)
+  'view_app_settings', 'manage_app_settings', 'view_settings', 'manage_settings', 'view_audit_logs',
+  // Dashboard (Overview) — gated; assign to let a user see the Overview page
+  'view_dashboard',
+  // Recruitment
+  'view_recruitment', 'manage_jobs', 'manage_candidates', 'manage_applications', 'manage_interviews',
+  // Performance
+  'view_performance', 'create_performance', 'delete_performance', 'review_performance',
+  // Medical (admin)
+  'view_medical', 'create_medical', 'edit_medical', 'delete_medical', 'approve_medical',
+  'manage_medical_limits', 'manage_hospitals',
+  // Attendance (admin)
+  'view_attendance', 'manage_attendance',
+  // Training (admin)
+  'view_training', 'create_training', 'delete_training', 'approve_training',
 ];
 
 // ── Role definitions ──────────────────────────────────────────────────────────
@@ -73,21 +77,23 @@ const ROLES = [
     is_system: true,
     permissions: [
       // Users & Access
-      'view_users', 'create_users', 'edit_users', 'deactivate_users', 'activate_users', 'change_user_password',
-      // Roles
-      'view_roles', 'create_roles', 'edit_roles', 'delete_roles', 'assign_roles', 'revoke_roles',
-      // Permissions
-      'view_permissions', 'assign_permissions', 'revoke_permissions',
-      // Settings
-      'view_settings', 'edit_settings', 'manage_leave_settings', 'manage_notification_settings',
-      // System
-      'view_system', 'manage_app_setup', 'manage_code_lists', 'create_code_lists', 'edit_code_lists',
-      // Audit
-      'view_audit_logs',
-      // Reports (read-only)
-      'view_reports',
-      // Employees (read-only — for user–employee linkage)
-      'view_employees',
+      'view_users', 'create_users', 'edit_users', 'deactivate_users', 'activate_users', 'change_user_password', 'manage_roles',
+      // System (App Settings + Settings pages + Audit logs)
+      'view_app_settings', 'manage_app_settings', 'view_settings', 'manage_settings', 'view_audit_logs',
+      // Employees (view + management)
+      'view_employees', 'create_employees', 'edit_employees', 'approve_employees', 'change_employee_status', 'manage_onboarding',
+      // Company structure (view + management)
+      'view_company_structure', 'create_company_structure', 'edit_company_structure', 'delete_company_structure',
+      // Documents (view + management)
+      'view_documents', 'create_documents', 'edit_documents', 'delete_documents',
+      // Dashboard (Overview)
+      'view_dashboard',
+      // Recruitment, Performance, Medical, Attendance, Training (admin scope)
+      'view_recruitment', 'manage_jobs', 'manage_candidates', 'manage_applications', 'manage_interviews',
+      'view_performance', 'create_performance', 'delete_performance', 'review_performance',
+      'view_medical', 'create_medical', 'edit_medical', 'delete_medical', 'approve_medical', 'manage_medical_limits', 'manage_hospitals',
+      'view_attendance', 'manage_attendance',
+      'view_training', 'create_training', 'delete_training', 'approve_training',
     ],
   },
   {
@@ -97,48 +103,46 @@ const ROLES = [
     is_system: true,
     permissions: [
       // Employees
-      'view_employees', 'create_employees', 'edit_employees', 'approve_employees', 'change_employee_status',
+      'view_employees', 'create_employees', 'edit_employees', 'approve_employees', 'change_employee_status', 'manage_onboarding',
       // Employee Relations
-      'manage_skills', 'manage_certifications', 'manage_languages', 'manage_dependents', 'manage_emergency_contacts',
+      'manage_skills', 'manage_certifications', 'manage_education', 'manage_languages', 'manage_dependents', 'manage_emergency_contacts',
       // Company
       'view_company_structure', 'create_company_structure', 'edit_company_structure', 'delete_company_structure',
       // Documents
-      'view_documents', 'create_documents', 'edit_documents', 'delete_documents', 'download_documents',
-      // Leave
-      'view_leave', 'apply_leave', 'approve_leave', 'cancel_leave', 'view_subordinate_leave',
+      'view_documents', 'create_documents', 'edit_documents', 'delete_documents',
       // Leave Setup
       'view_leave_setup', 'manage_leave_types', 'manage_leave_periods', 'manage_holidays',
-      'manage_work_week', 'manage_leave_groups', 'manage_leave_rules',
+      'manage_work_week', 'manage_leave_groups', 'manage_leave_rules', 'manage_leave_approvals',
       // Salary
       'view_salary_setup', 'manage_salary_component_types', 'manage_salary_components',
       'manage_employee_salary_components', 'manage_notch_setup', 'manage_payment_types', 'manage_notch_movements',
       // Payroll
       'view_payroll', 'manage_payroll_employees', 'process_payroll', 'approve_payroll',
-      'view_payroll_reports', 'export_payroll_reports', 'manage_payroll_columns', 'manage_calculation_groups',
+      'export_payroll_reports', 'manage_payroll_columns', 'manage_calculation_groups', 'manage_report_templates',
       // Reports
-      'view_reports', 'generate_reports', 'export_reports',
-      // Settings (leave + notifications only — not global edit_settings)
-      'view_settings', 'manage_leave_settings', 'manage_notification_settings',
+      'generate_reports', 'export_reports',
+      // Settings page (view + manage) + audit logs
+      'view_settings', 'manage_settings', 'view_audit_logs',
       // Users (read-only)
-      'view_users', 'view_roles',
-      // Permissions (read-only)
-      'view_permissions',
-      // Audit
-      'view_audit_logs',
+      'view_users',
+      // Dashboard (Overview)
+      'view_dashboard',
+      // Recruitment, Performance, Medical, Attendance, Training (HR scope)
+      'view_recruitment', 'manage_jobs', 'manage_candidates', 'manage_applications', 'manage_interviews',
+      'view_performance', 'create_performance', 'delete_performance', 'review_performance',
+      'view_medical', 'create_medical', 'edit_medical', 'delete_medical', 'approve_medical', 'manage_medical_limits', 'manage_hospitals',
+      'view_attendance', 'manage_attendance',
+      'view_training', 'create_training', 'delete_training', 'approve_training',
     ],
   },
   {
     name: 'employee',
     guard_name: 'api',
     description: 'Self-service employee access',
-    is_system: true,
+    is_system: false,
     permissions: [
-      // Leave (approve_leave retained so supervisors can approve subordinates' leaves)
-      'view_leave', 'apply_leave', 'approve_leave', 'cancel_leave', 'view_subordinate_leave',
       // Documents
-      'view_documents', 'download_documents',
-      // Reports
-      'view_reports',
+      'view_documents',
       // Company (org chart)
       'view_company_structure',
     ],

@@ -8,9 +8,10 @@ import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { FormModal } from './ui/FormModal';
-import { DetailSlideOver } from './ui/DetailSlideOver';
+import { DetailSlideOver, DetailGrid, DetailField, DetailSection } from './ui/DetailSlideOver';
 import { ConfirmModal } from './ui/ConfirmModal';
 import { FormField, inputClass } from './ui/FormField';
+import { CountedTextarea } from './ui/CountedTextarea';
 import api from '../../lib/api';
 import { toast } from 'sonner';
 import { getCurrentUser } from '../../lib/auth';
@@ -31,8 +32,13 @@ const DAY_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Satu
 export function LeaveSetup() {
   const currentUser = getCurrentUser();
   const can = (perm: string) => currentUser?.resolvedPermissions.has(perm) ?? false;
-  const MAIN_TABS = ALL_TABS.filter(tab => can(TAB_PERMISSION[tab]));
-  const canViewELL = can(PERMISSIONS.APPROVE_LEAVE) || can(PERMISSIONS.VIEW_LEAVE_SETUP);
+  // "View Manage Leave" (view_leave_setup) reveals every tab read-only; the action buttons
+  // inside each tab stay gated by that tab's manage_* permission. Without view access, the
+  // user only sees the specific tabs they can manage.
+  const MAIN_TABS = can(PERMISSIONS.VIEW_LEAVE_SETUP)
+    ? [...ALL_TABS]
+    : ALL_TABS.filter(tab => can(TAB_PERMISSION[tab]));
+  const canViewELL = can(PERMISSIONS.VIEW_LEAVE_SETUP);
 
   const [activeTab, setActiveTab]     = useState('Leave Types');
   const [searchQuery, setSearchQuery] = useState('');
@@ -360,7 +366,7 @@ export function LeaveSetup() {
     }, { label: 'Delete' });
   };
 
-  // ── Employee Leave List ──────────────────────────────────────────────────────
+  // ── Leave Approval List ──────────────────────────────────────────────────────
   const [ellLeaves, setEllLeaves]       = useState<any[]>([]);
   const [ellLoading, setEllLoading]     = useState(false);
   const [ellStatus, setEllStatus]       = useState('Pending Approval');
@@ -379,7 +385,7 @@ export function LeaveSetup() {
   }, []);
 
   useEffect(() => {
-    if (activeTab !== 'Employee Leave List') return;
+    if (activeTab !== 'Leave Approval List') return;
     fetchEllLeaves(ellStatus);
   }, [activeTab]);
 
@@ -433,7 +439,7 @@ export function LeaveSetup() {
   };
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
-  const isKnownTab = [...MAIN_TABS, 'Employee Leave List'].includes(activeTab);
+  const isKnownTab = [...MAIN_TABS, 'Leave Approval List'].includes(activeTab);
 
   const filtered = (arr: any[]) =>
     arr.filter(r => JSON.stringify(r).toLowerCase().includes(searchQuery.toLowerCase()));
@@ -459,8 +465,8 @@ export function LeaveSetup() {
           </button>
         ))}
         {canViewELL ? (
-          <button onClick={() => setActiveTab('Employee Leave List')} className={`tab-btn ${activeTab === 'Employee Leave List' ? 'active' : ''}`}>
-            Employee Leave List
+          <button onClick={() => setActiveTab('Leave Approval List')} className={`tab-btn ${activeTab === 'Leave Approval List' ? 'active' : ''}`}>
+            Leave Approval List
           </button>
         ) : null}
       </div>
@@ -931,8 +937,8 @@ export function LeaveSetup() {
           );
         })()}
 
-        {/* ── Employee Leave List ── */}
-        {activeTab === 'Employee Leave List' && (() => {
+        {/* ── Leave Approval List ── */}
+        {activeTab === 'Leave Approval List' && (() => {
           const ellFiltered = ellLeaves.filter(r =>
             JSON.stringify(r).toLowerCase().includes(ellSearch.toLowerCase())
           );
@@ -1089,7 +1095,7 @@ export function LeaveSetup() {
           const isPendingHR = ellViewRow.status === 'Pending HR Approval';
           const isApproved  = ellViewRow.status === 'Approved';
           // 'Pending Approval' is supervisor's queue — HR admins do not act on it here
-          if (isPendingHR && can(PERMISSIONS.APPROVE_LEAVE)) return (
+          if (isPendingHR && can(PERMISSIONS.MANAGE_LEAVE_APPROVALS)) return (
             <>
               <button
                 className="secondary-btn shadow-sm text-[var(--danger)] border-[var(--danger)]/40 hover:bg-[var(--danger)]/5"
@@ -1105,7 +1111,7 @@ export function LeaveSetup() {
               </button>
             </>
           );
-          if (isApproved && can(PERMISSIONS.CANCEL_LEAVE)) return (
+          if (isApproved && can(PERMISSIONS.MANAGE_LEAVE_APPROVALS)) return (
             <>
               <button
                 className="secondary-btn shadow-sm text-[var(--warning)] border-[var(--warning)]/40 hover:bg-[var(--warning)]/5"
@@ -1127,27 +1133,43 @@ export function LeaveSetup() {
         })()}
       >
         {ellViewRow && (
-          <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-[13px]">
-            {([
-              ['Employee',         ellViewRow.employee_name || ellViewRow.employee],
-              ['Employee ID',      ellViewRow.employee_code || '—'],
-              ['Leave Type',       ellViewRow.leave_type_name || '—'],
-              ['Period',           ellViewRow.period_name || '—'],
-              ['Start Date',       fmtDate(ellViewRow.date_start)],
-              ['End Date',         fmtDate(ellViewRow.date_end)],
-              ['Days',             ellViewRow.day_count ?? '—'],
-              ['Status',           ellViewRow.status],
-              ['Approval Level',   `Level ${ellViewRow.approval_level ?? 0}`],
-              ['Allowance Status', ellViewRow.allowance_status || '—'],
-              ['Allowance Amount', ellViewRow.amount ? `${ellViewRow.amount}` : '—'],
-              ['Details',          ellViewRow.details || '—'],
-              ['Rejection Reason', ellViewRow.rejection_reason || '—'],
-            ] as [string, string][]).map(([label, val]) => (
-              <div key={label}>
-                <div className="text-[var(--text-muted)] text-[11px] font-semibold uppercase tracking-wide mb-0.5">{label}</div>
-                <div className="text-[var(--text-primary)] font-medium break-words">{val}</div>
+          <div className="space-y-5">
+            {/* Summary header */}
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg)] p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[15px] font-bold text-[var(--text-primary)] syne truncate">{ellViewRow.leave_type_name || 'Leave'}</p>
+                  <p className="text-[12px] text-[var(--text-muted)] mt-0.5 truncate">{ellViewRow.employee_name || ellViewRow.employee}</p>
+                </div>
+                <span className={`pill text-[11px] shrink-0 ${STATUS_PILL[ellViewRow.status] ?? 'bg-[var(--surface-hover)] border border-[var(--border)] text-[var(--text-secondary)]'}`}>
+                  {ellViewRow.status}
+                </span>
               </div>
-            ))}
+              <div className="grid grid-cols-3 gap-2 mt-4">
+                {[
+                  { label: 'Days',  value: ellViewRow.day_count ?? '—' },
+                  { label: 'Start', value: fmtDate(ellViewRow.date_start) },
+                  { label: 'End',   value: fmtDate(ellViewRow.date_end) },
+                ].map(s => (
+                  <div key={s.label} className="text-center rounded-xl bg-[var(--surface)] border border-[var(--border)] py-2.5">
+                    <p className="text-[14px] font-extrabold syne text-[var(--text-primary)] leading-none">{s.value}</p>
+                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mt-1.5">{s.label}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <DetailGrid>
+              <DetailField label="Employee ID"      value={ellViewRow.employee_code} />
+              <DetailField label="Period"           value={ellViewRow.period_name} />
+              <DetailField label="Approval Level"   value={`Level ${ellViewRow.approval_level ?? 0}`} />
+              <DetailField label="Allowance Status" value={ellViewRow.allowance_status} />
+              <DetailField label="Allowance Amount" value={ellViewRow.amount ? `${ellViewRow.amount}` : '—'} full />
+              <DetailField label="Details"          value={ellViewRow.details} full />
+              {ellViewRow.rejection_reason && (
+                <DetailField label="Rejection Reason" value={ellViewRow.rejection_reason} full />
+              )}
+            </DetailGrid>
           </div>
         )}
       </DetailSlideOver>
@@ -1164,7 +1186,7 @@ export function LeaveSetup() {
           scrollable={false}
         >
           <FormField label="Rejection Reason">
-            <textarea className={inputClass} rows={3} value={ellRejectReason} onChange={e => setEllRejectReason(e.target.value)} placeholder="Reason for rejection…" />
+            <CountedTextarea className={inputClass} rows={3} maxChars={500} value={ellRejectReason} onChange={e => setEllRejectReason(e.target.value)} placeholder="Reason for rejection…" />
           </FormField>
         </FormModal>
       )}
@@ -1173,36 +1195,50 @@ export function LeaveSetup() {
       <DetailSlideOver open={!!viewType} title="Leave Type Details" subtitle={viewType?.name} onClose={() => setViewType(null)}>
         {viewType && (
           <div className="space-y-5">
-            <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-[13px]">
-              {([
-                ['Days / Period',       viewType.default_per_year ?? '—'],
-                ['Supervisor Assign',   viewType.supervisor_leave_assign ?? '—'],
-                ['Accrual Frequency',   viewType.leave_accrue === 'Yes' ? (viewType.accrual_frequency ?? 'Monthly') : '—'],
-                ['Accrual Rate',        viewType.leave_accrue === 'Yes' && viewType.accrual_rate ? `${viewType.accrual_rate} days/period` : (viewType.leave_accrue === 'Yes' ? 'Auto' : '—')],
-                ['Carry Forward',       viewType.carried_forward ?? '—'],
-                ['Carry Forward %',     viewType.carried_forward_percentage ?? '—'],
-                ['Max CF Amount',       viewType.max_carried_forward_amount ?? '—'],
-                ['Leave Accrue',        viewType.leave_accrue ?? '—'],
-                ['Proportionate',       viewType.propotionate_on_joined_date ?? '—'],
-                ['GL Account',          viewType.leave_gl || '—'],
-                ['Leave Group',         viewType.group_name || '—'],
-                ['Gender Restriction',  viewType.gender === 'M' ? 'Male Only' : viewType.gender === 'F' ? 'Female Only' : 'All'],
-                ['Leave Allowance',     viewType.leave_allowance ?? 'No'],
-                ['Allowance Frequency', viewType.leave_allowance === 'Yes' ? (viewType.leave_allowance_once === 'Yes' ? 'Once Per Period' : 'Every Application') : '—'],
-              ] as [string, string][]).map(([label, val]) => (
-                <div key={label}>
-                  <div className="text-[var(--text-muted)] text-[11px] font-semibold uppercase tracking-wide mb-0.5">{label}</div>
-                  <div className="text-[var(--text-primary)] font-medium">{val}</div>
-                </div>
-              ))}
-              <div>
-                <div className="text-[var(--text-muted)] text-[11px] font-semibold uppercase tracking-wide mb-0.5">Colour</div>
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded-full border border-[var(--border)]" style={{ backgroundColor: viewType.leave_color || '#94a3b8' }} />
-                  <span className="text-[var(--text-primary)] font-medium">{viewType.leave_color || '—'}</span>
-                </div>
+            {/* Header */}
+            <div className="flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--bg)] p-4">
+              <div className="w-10 h-10 rounded-xl border border-[var(--border)] shrink-0" style={{ backgroundColor: viewType.leave_color || '#94a3b8' }} />
+              <div className="min-w-0">
+                <p className="text-[15px] font-bold text-[var(--text-primary)] syne truncate">{viewType.name}</p>
+                <p className="text-[12px] text-[var(--text-muted)] mt-0.5 truncate">
+                  {viewType.default_per_year ?? '—'} days / period · {viewType.group_name || 'No group'}
+                </p>
               </div>
             </div>
+
+            <DetailSection title="General">
+              <DetailGrid>
+                <DetailField label="Days / Period"      value={viewType.default_per_year} />
+                <DetailField label="Supervisor Assign"  value={viewType.supervisor_leave_assign} />
+                <DetailField label="GL Account"         value={viewType.leave_gl} />
+                <DetailField label="Leave Group"        value={viewType.group_name} />
+                <DetailField label="Gender Restriction" value={!viewType.gender || viewType.gender === 'All' ? 'All' : viewType.gender === 'M' ? 'Male Only' : viewType.gender === 'F' ? 'Female Only' : `${viewType.gender} Only`} />
+                <DetailField label="Proportionate"      value={viewType.propotionate_on_joined_date} />
+              </DetailGrid>
+            </DetailSection>
+
+            <DetailSection title="Accrual">
+              <DetailGrid>
+                <DetailField label="Leave Accrue"     value={viewType.leave_accrue} />
+                <DetailField label="Accrual Frequency" value={viewType.leave_accrue === 'Yes' ? (viewType.accrual_frequency ?? 'Monthly') : '—'} />
+                <DetailField label="Accrual Rate"      value={viewType.leave_accrue === 'Yes' && viewType.accrual_rate ? `${viewType.accrual_rate} days/period` : (viewType.leave_accrue === 'Yes' ? 'Auto' : '—')} full />
+              </DetailGrid>
+            </DetailSection>
+
+            <DetailSection title="Carry Forward">
+              <DetailGrid>
+                <DetailField label="Carry Forward"   value={viewType.carried_forward} />
+                <DetailField label="Carry Forward %" value={viewType.carried_forward_percentage} />
+                <DetailField label="Max CF Amount"   value={viewType.max_carried_forward_amount} full />
+              </DetailGrid>
+            </DetailSection>
+
+            <DetailSection title="Allowance">
+              <DetailGrid>
+                <DetailField label="Leave Allowance"     value={viewType.leave_allowance ?? 'No'} />
+                <DetailField label="Allowance Frequency" value={viewType.leave_allowance === 'Yes' ? (viewType.leave_allowance_once === 'Yes' ? 'Once Per Period' : 'Every Application') : '—'} />
+              </DetailGrid>
+            </DetailSection>
           </div>
         )}
       </DetailSlideOver>
@@ -1210,18 +1246,20 @@ export function LeaveSetup() {
       {/* ── View: Leave Period ── */}
       <DetailSlideOver open={!!viewPeriod} title="Leave Period Details" subtitle={viewPeriod?.name} onClose={() => setViewPeriod(null)}>
         {viewPeriod && (
-          <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-[13px]">
-            {([
-              ['Name',       viewPeriod.name || '—'],
-              ['Status',     viewPeriod.status || 'Inactive'],
-              ['Start Date', fmtDate(viewPeriod.date_start)],
-              ['End Date',   fmtDate(viewPeriod.date_end)],
-            ] as [string, string][]).map(([label, val]) => (
-              <div key={label}>
-                <div className="text-[var(--text-muted)] text-[11px] font-semibold uppercase tracking-wide mb-0.5">{label}</div>
-                <div className="text-[var(--text-primary)] font-medium">{val}</div>
+          <div className="space-y-5">
+            <div className="flex items-center justify-between gap-3 rounded-2xl border border-[var(--border)] bg-[var(--bg)] p-4">
+              <div className="min-w-0">
+                <p className="text-[15px] font-bold text-[var(--text-primary)] syne truncate">{viewPeriod.name || '—'}</p>
+                <p className="text-[12px] text-[var(--text-muted)] mt-0.5">{fmtDate(viewPeriod.date_start)} → {fmtDate(viewPeriod.date_end)}</p>
               </div>
-            ))}
+              <span className={`pill text-[11px] shrink-0 ${viewPeriod.status === 'Active' ? 'pill-success' : 'bg-[var(--surface-hover)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
+                {viewPeriod.status || 'Inactive'}
+              </span>
+            </div>
+            <DetailGrid>
+              <DetailField label="Start Date" value={fmtDate(viewPeriod.date_start)} />
+              <DetailField label="End Date"   value={fmtDate(viewPeriod.date_end)} />
+            </DetailGrid>
           </div>
         )}
       </DetailSlideOver>
@@ -1229,17 +1267,15 @@ export function LeaveSetup() {
       {/* ── View: Holiday ── */}
       <DetailSlideOver open={!!viewHoliday} title="Holiday Details" subtitle={viewHoliday?.name} onClose={() => setViewHoliday(null)}>
         {viewHoliday && (
-          <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-[13px]">
-            {([
-              ['Name', viewHoliday.name],
-              ['Date', fmtDate(viewHoliday.dateh)],
-              ['Type', (viewHoliday.status ?? 'Full_Day').replace(/_/g, ' ')],
-            ] as [string, string][]).map(([label, val]) => (
-              <div key={label}>
-                <div className="text-[var(--text-muted)] text-[11px] font-semibold uppercase tracking-wide mb-0.5">{label}</div>
-                <div className="text-[var(--text-primary)] font-medium">{val}</div>
-              </div>
-            ))}
+          <div className="space-y-5">
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg)] p-4">
+              <p className="text-[15px] font-bold text-[var(--text-primary)] syne truncate">{viewHoliday.name}</p>
+              <p className="text-[12px] text-[var(--text-muted)] mt-0.5">{fmtDate(viewHoliday.dateh)}</p>
+            </div>
+            <DetailGrid>
+              <DetailField label="Date" value={fmtDate(viewHoliday.dateh)} />
+              <DetailField label="Type" value={(viewHoliday.status ?? 'Full_Day').replace(/_/g, ' ')} />
+            </DetailGrid>
           </div>
         )}
       </DetailSlideOver>
@@ -1247,31 +1283,49 @@ export function LeaveSetup() {
       {/* ── View: Leave Rule ── */}
       <DetailSlideOver open={!!viewRule} title="Leave Rule Details" subtitle={viewRule?.leave_type_name ?? viewRule?.leave_type} onClose={() => setViewRule(null)}>
         {viewRule && (
-          <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-[13px]">
-            {([
-              ['Leave Type',          viewRule.leave_type_name ?? viewRule.leave_type ?? '—'],
-              ['Job Title',           viewRule.job_title_name ?? '—'],
-              ['Department',          viewRule.department_name ?? '—'],
-              ['Employment Status',   viewRule.employment_status_name ?? (viewRule.employment_status || '—')],
-              ['Leave Group',         viewRule.leave_group_name ?? '—'],
-              ['Exp. Days Required',  viewRule.exp_days || '—'],
-              ['Days / Year',         viewRule.default_per_year ?? '—'],
-              ['Apply Beyond Bal.',   viewRule.apply_beyond_current ?? '—'],
-              ['Leave Accrue',        viewRule.leave_accrue ?? '—'],
-              ['Accrual Frequency',   viewRule.leave_accrue === 'Yes' ? (viewRule.accrual_frequency ?? 'Monthly') : '—'],
-              ['Accrual Rate',        viewRule.leave_accrue === 'Yes' && viewRule.accrual_rate ? `${viewRule.accrual_rate} days/period` : (viewRule.leave_accrue === 'Yes' ? 'Auto' : '—')],
-              ['Carry Forward',       viewRule.carried_forward ?? '—'],
-              ['CF %',                viewRule.carried_forward_percentage ?? '—'],
-              ['Max CF Days',         viewRule.max_carried_forward_amount ?? '—'],
-              ['Proportionate',       viewRule.propotionate_on_joined_date ?? '—'],
-              ['Leave Allowance',     viewRule.leave_allowance ?? 'No'],
-              ['Allowance Frequency', viewRule.leave_allowance === 'Yes' ? (viewRule.leave_allowance_once === 'Yes' ? 'Once Per Period' : 'Every Application') : '—'],
-            ] as [string, string][]).map(([label, val]) => (
-              <div key={label}>
-                <div className="text-[var(--text-muted)] text-[11px] font-semibold uppercase tracking-wide mb-0.5">{label}</div>
-                <div className="text-[var(--text-primary)] font-medium">{val}</div>
-              </div>
-            ))}
+          <div className="space-y-5">
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg)] p-4">
+              <p className="text-[15px] font-bold text-[var(--text-primary)] syne truncate">{viewRule.leave_type_name ?? viewRule.leave_type ?? '—'}</p>
+              <p className="text-[12px] text-[var(--text-muted)] mt-0.5 truncate">
+                {[viewRule.job_title_name, viewRule.department_name].filter(Boolean).join(' · ') || 'Applies to all'}
+              </p>
+            </div>
+
+            <DetailSection title="Scope">
+              <DetailGrid>
+                <DetailField label="Job Title"         value={viewRule.job_title_name} />
+                <DetailField label="Department"        value={viewRule.department_name} />
+                <DetailField label="Employment Status" value={viewRule.employment_status_name ?? viewRule.employment_status} />
+                <DetailField label="Leave Group"       value={viewRule.leave_group_name} />
+              </DetailGrid>
+            </DetailSection>
+
+            <DetailSection title="Entitlement">
+              <DetailGrid>
+                <DetailField label="Days / Year"        value={viewRule.default_per_year} />
+                <DetailField label="Exp. Days Required" value={viewRule.exp_days} />
+                <DetailField label="Apply Beyond Bal."  value={viewRule.apply_beyond_current} />
+                <DetailField label="Proportionate"      value={viewRule.propotionate_on_joined_date} />
+              </DetailGrid>
+            </DetailSection>
+
+            <DetailSection title="Accrual & Carry Forward">
+              <DetailGrid>
+                <DetailField label="Leave Accrue"      value={viewRule.leave_accrue} />
+                <DetailField label="Accrual Frequency" value={viewRule.leave_accrue === 'Yes' ? (viewRule.accrual_frequency ?? 'Monthly') : '—'} />
+                <DetailField label="Accrual Rate"      value={viewRule.leave_accrue === 'Yes' && viewRule.accrual_rate ? `${viewRule.accrual_rate} days/period` : (viewRule.leave_accrue === 'Yes' ? 'Auto' : '—')} />
+                <DetailField label="Carry Forward"     value={viewRule.carried_forward} />
+                <DetailField label="CF %"              value={viewRule.carried_forward_percentage} />
+                <DetailField label="Max CF Days"       value={viewRule.max_carried_forward_amount} />
+              </DetailGrid>
+            </DetailSection>
+
+            <DetailSection title="Allowance">
+              <DetailGrid>
+                <DetailField label="Leave Allowance"     value={viewRule.leave_allowance ?? 'No'} />
+                <DetailField label="Allowance Frequency" value={viewRule.leave_allowance === 'Yes' ? (viewRule.leave_allowance_once === 'Yes' ? 'Once Per Period' : 'Every Application') : '—'} />
+              </DetailGrid>
+            </DetailSection>
           </div>
         )}
       </DetailSlideOver>

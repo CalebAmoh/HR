@@ -2,7 +2,15 @@ import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import { Toaster } from 'sonner';
 import App from './App.tsx';
+import { initAuth } from '../lib/auth';
+import api from '../lib/api';
+import { moduleStore } from '../lib/moduleState';
+import { initControlSettings } from '../lib/settings';
+import { applyTheme } from '../lib/theme';
 import './index.css';
+
+// Apply the saved per-user theme before first render to avoid a flash of the wrong mode.
+applyTheme();
 import '@fontsource/syne/400.css';
 import '@fontsource/syne/500.css';
 import '@fontsource/syne/600.css';
@@ -12,7 +20,20 @@ import '@fontsource/dm-sans/400.css';
 import '@fontsource/dm-sans/500.css';
 import '@fontsource/dm-sans/600.css';
 
-createRoot(document.getElementById('root')!).render(
+initAuth()
+  .then(user => {
+    // User is authenticated — fetch module settings NOW, before the first render,
+    // so the sidebar and Modules page never flash incorrect state.
+    if (user) {
+      return Promise.all([
+        api.get('/settings/modules')
+          .then(r => moduleStore.init(r.data?.data?.disabled ?? []))
+          .catch(() => {/* keep default (all enabled) on network failure */}),
+        initControlSettings(),
+      ]);
+    }
+  })
+  .finally(() => createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <Toaster
       position="top-right"
@@ -37,4 +58,4 @@ createRoot(document.getElementById('root')!).render(
     />
     <App />
   </StrictMode>,
-);
+));

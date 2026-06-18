@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+import api from '../../lib/api';
 import { useFormState } from '../hooks/useFormState';
 import { FormModal } from './ui/FormModal';
 import { FormField, inputClass } from './ui/FormField';
@@ -11,6 +13,13 @@ const YES_NO = (
 );
 
 export function LeaveTypeForm({ onClose, initialData, onSave, leaveGroups = [] }: any) {
+  const [genders, setGenders] = useState<any[]>([]);
+  useEffect(() => {
+    api.get('/system/code-lists/GEN/values')
+      .then(r => setGenders(r.data?.data ?? []))
+      .catch(() => setGenders([]));
+  }, []);
+
   const { formData, handleChange, setFormData } = useFormState(
     {
       name: '',
@@ -138,11 +147,14 @@ export function LeaveTypeForm({ onClose, initialData, onSave, leaveGroups = [] }
           <select name="sendNotificationEmails" value={formData.sendNotificationEmails} onChange={handleChange} className={inputClass}>{YES_NO}</select>
         </FormField>
 
-        <FormField label="Gender Restriction" required hint="Restrict this leave type to a specific gender. Select 'All' to make it available to everyone, 'Male Only' for male employees (e.g. Paternity Leave), or 'Female Only' for female employees (e.g. Maternity Leave).">
+        <FormField label="Gender Restriction" required hint="Restrict this leave type to a specific gender, e.g. Paternity Leave for males or Maternity Leave for females. Select 'All' to make it available to everyone. Genders are managed in the GEN code value list.">
           <select name="gender" value={formData.gender} onChange={handleChange} className={inputClass}>
             <option value="All">All (No Restriction)</option>
-            <option value="M">Male Only</option>
-            <option value="F">Female Only</option>
+            {genders.map((g: any) => (
+              <option key={g.id} value={String(g.label ?? '').charAt(0).toUpperCase()}>
+                {g.label} Only
+              </option>
+            ))}
           </select>
         </FormField>
 

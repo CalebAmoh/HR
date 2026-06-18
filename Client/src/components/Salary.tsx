@@ -9,6 +9,18 @@ import { FormModal } from './ui/FormModal';
 import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
+import { CountedTextarea } from './ui/CountedTextarea';
+import { useCan } from '@/hooks/useCan';
+
+// Action permission required to manage each salary tab
+const SALARY_TAB_PERM: Record<string, string> = {
+  'Component Types':     'manage_salary_component_types',
+  'Components':          'manage_salary_components',
+  'Employee Components': 'manage_employee_salary_components',
+  'Paygrades & Notches': 'manage_notch_setup',
+  'Payment Types':       'manage_payment_types',
+  'Increment/Decrement': 'manage_notch_movements',
+};
 
 const SALARY_TABS = [
   { label: 'Component Types',     icon: Tag        },
@@ -203,7 +215,9 @@ function TabBar({ activeTab, setActiveTab }: { activeTab: string; setActiveTab: 
 }
 
 export function Salary() {
+  const { can } = useCan();
   const [activeTab, setActiveTab] = useState(SALARY_TABS[0].label);
+  const canManageTab = () => can(SALARY_TAB_PERM[activeTab] ?? '');
 
   // ── Standard tabs state ──────────────────────────────────
   const [rows, setRows] = useState<any[]>([]);
@@ -517,7 +531,7 @@ export function Salary() {
           <>
             <div className="mb-4"><label className="label">Code <span className="text-[var(--danger)]">*</span></label><input value={form.code} onChange={(e) => set('code', e.target.value.toUpperCase())} placeholder="e.g. EARN" /></div>
             <div className="mb-4"><label className="label">Name <span className="text-[var(--danger)]">*</span></label><input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Earning" /></div>
-            <div className="mb-4"><label className="label">Description</label><textarea rows={3} value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="Optional description" /></div>
+            <div className="mb-4"><label className="label">Description</label><CountedTextarea rows={3} maxChars={500} value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="Optional description" /></div>
           </>
         );
       case 'Components': {
@@ -527,7 +541,7 @@ export function Salary() {
         return (
           <>
             <div className="mb-4"><label className="label">Name <span className="text-[var(--danger)]">*</span></label><input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Enter component name" /></div>
-            <div className="mb-4"><label className="label">Details</label><textarea rows={3} value={form.details} onChange={(e) => set('details', e.target.value)} placeholder="Enter details" /></div>
+            <div className="mb-4"><label className="label">Details</label><CountedTextarea rows={3} maxChars={500} value={form.details} onChange={(e) => set('details', e.target.value)} placeholder="Enter details" /></div>
             <div className="mb-4">
               <label className="label">Grade Scale</label>
               <label className={`flex items-center gap-2 ${otherIsLinked ? 'opacity-60' : 'cursor-pointer'}`}>
@@ -562,7 +576,7 @@ export function Salary() {
         return (
           <>
             <div className="mb-4"><label className="label">Payment Type <span className="text-[var(--danger)]">*</span></label><input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Enter payment type" /></div>
-            <div className="mb-4"><label className="label">Description</label><textarea rows={3} value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="Enter description" /></div>
+            <div className="mb-4"><label className="label">Description</label><CountedTextarea rows={3} maxChars={500} value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="Enter description" /></div>
             <div className="mb-4">
               <label className="label">Payslip Generation</label>
               <label className="flex items-center gap-2 cursor-pointer">
@@ -654,7 +668,7 @@ export function Salary() {
                   <span className="text-sm font-semibold text-[var(--text-primary)]">Paygrades</span>
                   <span className="text-xs text-[var(--text-muted)]">({filteredPgs.length})</span>
                 </div>
-                <button onClick={openAddPg} className="primary-btn !px-3 !py-1 !text-xs flex items-center gap-1"><Plus size={11} />Add</button>
+                {canManageTab() && <button onClick={openAddPg} className="primary-btn !px-3 !py-1 !text-xs flex items-center gap-1"><Plus size={11} />Add</button>}
               </div>
               {/* Search */}
               <div className="px-3 py-2 border-b border-[var(--border)] shrink-0">
@@ -681,8 +695,8 @@ export function Salary() {
                         </p>
                       </div>
                       <div className="flex gap-0.5 shrink-0 ml-2" onClick={(e) => e.stopPropagation()}>
-                        <button onClick={() => openEditPg(pg)} className="action-btn text-[var(--warning)]" title="Edit"><Edit size={13} /></button>
-                        <button onClick={() => setPgDeleting(pg)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>
+                        {canManageTab() && <button onClick={() => openEditPg(pg)} className="action-btn text-[var(--warning)]" title="Edit"><Edit size={13} /></button>}
+                        {canManageTab() && <button onClick={() => setPgDeleting(pg)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>}
                       </div>
                     </div>
                   );
@@ -711,7 +725,7 @@ export function Salary() {
                   </span>
                   {selectedPg && <span className="text-xs text-[var(--text-muted)]">({filteredNotches.length})</span>}
                 </div>
-                {selectedPg && (
+                {selectedPg && canManageTab() && (
                   <button onClick={openAddNotch} className="primary-btn !px-3 !py-1 !text-xs flex items-center gap-1"><Plus size={11} />Add Notch</button>
                 )}
               </div>
@@ -749,8 +763,8 @@ export function Salary() {
                             <td className="td">{fmtMoney(n.amount, n.currency)}</td>
                             <td className="td">
                               <div className="flex items-center justify-end gap-1">
-                                <button onClick={() => openEditNotch(n)} className="action-btn text-[var(--warning)]" title="Edit"><Edit size={13} /></button>
-                                <button onClick={() => setNotchDeleting(n)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>
+                                {canManageTab() && <button onClick={() => openEditNotch(n)} className="action-btn text-[var(--warning)]" title="Edit"><Edit size={13} /></button>}
+                                {canManageTab() && <button onClick={() => setNotchDeleting(n)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>}
                               </div>
                             </td>
                           </motion.tr>
@@ -832,11 +846,13 @@ export function Salary() {
           showFilters={activeTab === 'Employee Components'}
           filterBar={renderFilterBar()}
           actions={
+            canManageTab() ? (
             <button onClick={openAdd} className="primary-btn shrink-0">
               <span className="hidden sm:inline">{activeTab === 'Increment/Decrement' ? 'Apply Change' : 'Add New'}</span>
               <span className="sm:hidden">Add</span>
               <Plus className="w-[14px] h-[14px]" />
             </button>
+            ) : undefined
           }
         />
 
@@ -861,8 +877,8 @@ export function Salary() {
                           {activeTab === 'Employee Components' && (
                             <button onClick={() => openHistory(row)} className="action-btn text-[var(--accent)]" title="View salary history"><Clock size={14} /></button>
                           )}
-                          <button onClick={() => openEdit(row)} className="action-btn text-[var(--warning)]" title="Edit"><Edit size={14} /></button>
-                          <button onClick={() => handleDelete(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={14} /></button>
+                          {canManageTab() && <button onClick={() => openEdit(row)} className="action-btn text-[var(--warning)]" title="Edit"><Edit size={14} /></button>}
+                          {canManageTab() && <button onClick={() => handleDelete(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={14} /></button>}
                         </div>
                       </td>
                     )}

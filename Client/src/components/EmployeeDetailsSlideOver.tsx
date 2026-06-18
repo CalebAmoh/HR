@@ -5,7 +5,7 @@ import {
   User, MapPin, Briefcase, Building, CreditCard, GraduationCap,
   Award, Brain, Heart, Users, FileText, IdCard, ChevronRight,
   Eye, MoreHorizontal, Activity, Calendar, FileCheck, Loader2,
-  Camera, Hash,
+  Camera, Hash, Search, UserPlus, RefreshCw, Filter, ShieldAlert, TrendingUp,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
@@ -13,6 +13,10 @@ import api from '../../lib/api';
 import { getCurrentUser } from '../../lib/auth';
 import { getSettings } from '../../lib/settings';
 import { DocumentViewer } from './DocumentViewer';
+import { severityPill, statusPillD, INCIDENT_TYPES, SEVERITIES, STATUSES } from './DisciplinaryTab';
+import { MultiSearchSelect } from './ui/SearchSelect';
+import { ReviewDetailSlideOver } from './ReviewDetailSlideOver';
+import { CountedTextarea } from './ui/CountedTextarea';
 
 interface EmployeeDetailsProps {
   isOpen: boolean;
@@ -21,7 +25,7 @@ interface EmployeeDetailsProps {
   onRefresh?: () => void;
 }
 
-type TabId = 'Personal' | 'Employment' | 'Qualifications' | 'Relationships' | 'Documents' | 'Attendance' | 'Leave';
+type TabId = 'Personal' | 'Employment' | 'Qualifications' | 'Relationships' | 'Documents' | 'Attendance' | 'Leave' | 'Activity' | 'Disciplinary' | 'Performance';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -317,7 +321,7 @@ const RelationshipsTab: React.FC<{ employee: any }> = ({ employee }) => {
         ) : (
           <MiniTable
             cols={['Name', 'Relationship', 'Gender', 'Date of Birth', 'Place of Birth']}
-            rows={dependents.map(r => [r.name, r.relationship, r.gender, fmtDateLocal(r.dob), r.place_of_birth])}
+            rows={dependents.map(r => [r.name, r.relationshipLabel ?? r.relationship, r.genderLabel ?? r.gender, fmtDateLocal(r.dob), r.place_of_birth])}
             empty="No dependents on record"
           />
         )}
@@ -415,6 +419,9 @@ const DocumentsTab: React.FC<{ employee: any; onViewDocument: (document: any) =>
         <ClearanceDoc label="Fit & Proper Form"   value={employee.fit_and_proper}  onView={onViewDocument} />
         <ClearanceDoc label="Police Clearance"    value={employee.policeClearance} onView={onViewDocument} />
         <ClearanceDoc label="Medical Clearance"   value={employee.medicalClearance} onView={onViewDocument} />
+        {employee.resignation_letter && (
+          <ClearanceDoc label="Resignation Letter" value={employee.resignation_letter} onView={onViewDocument} />
+        )}
       </div>
     </SectionCard>
   </div>
@@ -478,6 +485,564 @@ const LeaveTab: React.FC<{ employee: any }> = ({ employee }) => {
   );
 };
 
+// ─── Activity tab ─────────────────────────────────────────────────────────────
+
+const ACTION_META: Record<string, { label: string; dot: string; Icon: React.ElementType; iconColor: string }> = {
+  create:            { label: 'Employee Created',        dot: 'bg-blue-500',    Icon: UserPlus,      iconColor: 'text-blue-500'    },
+  update:            { label: 'Profile Updated',         dot: 'bg-blue-400',    Icon: Edit,          iconColor: 'text-blue-400'    },
+  approve:           { label: 'Employee Approved',       dot: 'bg-emerald-500', Icon: CheckCircle,   iconColor: 'text-emerald-500' },
+  reinstate:         { label: 'Employee Reinstated',     dot: 'bg-emerald-400', Icon: RefreshCw,     iconColor: 'text-emerald-400' },
+  suspended:         { label: 'Suspension Approved',     dot: 'bg-amber-500',   Icon: AlertTriangle, iconColor: 'text-amber-500'   },
+  suspended_pending: { label: 'Suspension Requested',    dot: 'bg-amber-400',   Icon: AlertTriangle, iconColor: 'text-amber-400'   },
+  terminated:        { label: 'Termination Approved',    dot: 'bg-red-600',     Icon: XCircle,       iconColor: 'text-red-600'     },
+  terminated_pending:{ label: 'Termination Requested',   dot: 'bg-red-400',     Icon: XCircle,       iconColor: 'text-red-400'     },
+  resigned:          { label: 'Resignation Approved',    dot: 'bg-slate-500',   Icon: LogOut,        iconColor: 'text-slate-500'   },
+  resign_pending:    { label: 'Resignation Submitted',   dot: 'bg-rose-400',    Icon: LogOut,        iconColor: 'text-rose-400'    },
+  reject:            { label: 'Application Rejected',    dot: 'bg-rose-600',    Icon: XCircle,       iconColor: 'text-rose-600'    },
+  reject_lifecycle:  { label: 'Action Rejected',         dot: 'bg-rose-500',    Icon: XCircle,       iconColor: 'text-rose-500'    },
+};
+
+const fmtDateTime = (ts: string) => {
+  try {
+    return new Date(ts).toLocaleString('en-GB', {
+      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+  } catch { return ts; }
+};
+
+const ActivityTab: React.FC<{ employeeId: string }> = ({ employeeId }) => {
+  const [entries,  setEntries]  = useState<any[]>([]);
+  const [total,    setTotal]    = useState(0);
+  const [loading,  setLoading]  = useState(true);
+  const [search,   setSearch]   = useState('');
+  const [debSearch, setDebSearch] = useState('');
+  const [actionFilter, setActionFilter] = useState('');
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 25;
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebSearch(search), 380);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  useEffect(() => { setPage(1); }, [debSearch, actionFilter]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const q = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
+      if (debSearch)    q.set('search', debSearch);
+      if (actionFilter) q.set('action', actionFilter);
+      const res = await api.get(`/employees/${employeeId}/activity?${q}`);
+      const d = res.data.data ?? {};
+      setEntries(d.logs ?? []);
+      setTotal(Number(d.total ?? 0));
+    } catch { /* silent */ }
+    finally { setLoading(false); }
+  }, [employeeId, page, debSearch, actionFilter]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+
+  const getMeta = (action: string) =>
+    ACTION_META[action] ?? { label: action.replace(/_/g, ' '), dot: 'bg-slate-400', Icon: Activity, iconColor: 'text-slate-400' };
+
+  const parseDetails = (raw: string | null | undefined) => {
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch { return null; }
+  };
+
+  return (
+    <SectionCard title="Activity Log" icon={Activity} accent="#0066b3">
+      {/* Query bar */}
+      <div className="flex gap-2 mb-5">
+        <div className="relative flex-1">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+          <input
+            type="search"
+            autoComplete="off"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search by action, user, or details…"
+            className="w-full pl-8 pr-3 py-2 text-[12.5px] border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all"
+          />
+        </div>
+        <div className="relative">
+          <Filter className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400 pointer-events-none" />
+          <select
+            value={actionFilter}
+            onChange={e => setActionFilter(e.target.value)}
+            className="pl-7 pr-8 py-2 text-[12px] border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all appearance-none cursor-pointer"
+          >
+            <option value="">All actions</option>
+            {Object.entries(ACTION_META).map(([k, v]) => (
+              <option key={k} value={k}>{v.label}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Timeline */}
+      {loading ? (
+        <div className="flex justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-slate-400" /></div>
+      ) : entries.length === 0 ? (
+        <EmptyState icon={Activity} label={search || actionFilter ? 'No matching activity' : 'No activity recorded yet'} />
+      ) : (
+        <div className="relative pl-6">
+          <div className="absolute left-[9px] top-2 bottom-2 w-px bg-slate-100" />
+          <div className="space-y-3">
+            {entries.map((e: any) => {
+              const meta = getMeta(e.action);
+              const details = parseDetails(e.details);
+              return (
+                <div key={e.id} className="relative">
+                  <div className={`absolute -left-[15px] top-[14px] w-2.5 h-2.5 rounded-full border-2 border-white shadow-sm ${meta.dot}`} />
+                  <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 hover:border-slate-200 transition-colors">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <meta.Icon className={`w-3.5 h-3.5 shrink-0 ${meta.iconColor}`} />
+                        <p className="text-[12.5px] font-semibold text-slate-800 leading-snug">{meta.label}</p>
+                      </div>
+                      <p className="text-[10.5px] text-slate-400 whitespace-nowrap shrink-0 mt-0.5">{fmtDateTime(e.created_at)}</p>
+                    </div>
+                    {e.user_name && (
+                      <p className="text-[11.5px] text-slate-500 mt-1 ml-5">
+                        By <span className="font-medium text-slate-700">{e.user_name}</span>
+                      </p>
+                    )}
+                    {details && (details.reason || details.effectiveDate || details.action) && (
+                      <div className="mt-2 ml-5 space-y-0.5 text-[11.5px] text-slate-600 border-l-2 border-slate-200 pl-2.5">
+                        {details.reason && (
+                          <p><span className="font-medium">Reason:</span> {details.reason}</p>
+                        )}
+                        {details.effectiveDate && (
+                          <p><span className="font-medium">Effective date:</span> {details.effectiveDate}</p>
+                        )}
+                        {details.action && (
+                          <p><span className="font-medium">Action type:</span> {details.action}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between mt-5 pt-3 border-t border-slate-100">
+          <p className="text-[11.5px] text-slate-400">
+            {total} event{total !== 1 ? 's' : ''} · page {page} of {totalPages}
+          </p>
+          <div className="flex gap-1.5">
+            <button
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="px-3 py-1.5 text-[11.5px] font-semibold bg-slate-100 hover:bg-slate-200 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Prev
+            </button>
+            <button
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+              className="px-3 py-1.5 text-[11.5px] font-semibold bg-slate-100 hover:bg-slate-200 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
+    </SectionCard>
+  );
+};
+
+// ─── Employee Disciplinary Tab ────────────────────────────────────────────────
+
+const BLANK_FORM = {
+  incident_date: '', incident_type: '', severity: 'Medium',
+  description: '', action_taken: '',
+  status: 'Open', resolution: '', resolved_date: '',
+};
+
+const EmployeeDisciplinaryTab: React.FC<{ employeeId: string }> = ({ employeeId }) => {
+  const [records,  setRecords]  = useState<any[]>([]);
+  const [total,    setTotal]    = useState(0);
+  const [loading,  setLoading]  = useState(true);
+  const [page,     setPage]     = useState(1);
+  const PAGE_SIZE = 25;
+
+  const [showModal,  setShowModal]  = useState(false);
+  const [editRecord, setEditRecord] = useState<any | null>(null);
+  const [form, setForm] = useState({ ...BLANK_FORM });
+  const [witnessIds, setWitnessIds] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [employeeOptions, setEmployeeOptions] = useState<{ id: string; label: string }[]>([]);
+
+  useEffect(() => {
+    api.get('/employees').then(res => {
+      const list: any[] = res.data.data ?? [];
+      setEmployeeOptions(
+        list
+          .filter(e => String(e.id) !== employeeId)
+          .map(e => ({ id: String(e.id), label: `${e.firstName ?? ''} ${e.lastName ?? ''}`.trim() }))
+      );
+    }).catch(() => {});
+  }, [employeeId]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const q = new URLSearchParams({ employee_id: employeeId, page: String(page), limit: String(PAGE_SIZE) });
+      const res = await api.get(`/disciplinary?${q}`);
+      const d = res.data.data ?? {};
+      setRecords(d.records ?? []);
+      setTotal(Number(d.total ?? 0));
+    } catch { /* silent */ }
+    finally { setLoading(false); }
+  }, [employeeId, page]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const parseWitnessIds = (raw: string | null | undefined): string[] => {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.map(String);
+    } catch { /* not JSON — legacy free text, ignore */ }
+    return [];
+  };
+
+  const openAdd = () => { setEditRecord(null); setForm({ ...BLANK_FORM }); setWitnessIds([]); setShowModal(true); };
+  const openEdit = (r: any) => {
+    setEditRecord(r);
+    setForm({
+      incident_date:  r.incident_date?.slice(0, 10) ?? '',
+      incident_type:  r.incident_type ?? '',
+      severity:       r.severity ?? 'Medium',
+      description:    r.description ?? '',
+      action_taken:   r.action_taken ?? '',
+      status:         r.status ?? 'Open',
+      resolution:     r.resolution ?? '',
+      resolved_date:  r.resolved_date?.slice(0, 10) ?? '',
+    });
+    setWitnessIds(parseWitnessIds(r.witnesses));
+    setShowModal(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.incident_date) { toast.error('Incident date is required'); return; }
+    if (!form.incident_type) { toast.error('Incident type is required'); return; }
+    if (!form.description.trim()) { toast.error('Description is required'); return; }
+    setSaving(true);
+    try {
+      const body = {
+        ...form,
+        employee_id: employeeId,
+        description: form.description.trim(),
+        action_taken:  form.action_taken.trim()  || null,
+        witnesses:     witnessIds.length > 0 ? JSON.stringify(witnessIds) : null,
+        resolution:    form.resolution.trim()    || null,
+        resolved_date: form.resolved_date        || null,
+      };
+      if (editRecord) {
+        await api.put(`/disciplinary/${editRecord.id}`, body);
+        toast.success('Record updated');
+      } else {
+        await api.post('/disciplinary', body);
+        toast.success('Disciplinary record created — employee notified by email');
+      }
+      setShowModal(false);
+      setPage(1);
+      load();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    setDeleteId(id);
+    try {
+      await api.delete(`/disciplinary/${id}`);
+      toast.success('Record deleted');
+      load();
+    } catch {
+      toast.error('Failed to delete record');
+    } finally {
+      setDeleteId(null);
+    }
+  };
+
+  const fmtD = (v: string | null | undefined) => {
+    if (!v) return '—';
+    try { return new Date(v).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); }
+    catch { return v; }
+  };
+
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  const setF = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }));
+
+  return (
+    <SectionCard title="Disciplinary Records" icon={ShieldAlert} accent="#dc2626">
+      <div className="flex justify-end mb-4">
+        <button onClick={openAdd} className="primary-btn text-[12px]">
+          <ShieldAlert className="w-3.5 h-3.5" /> Add Record
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="flex justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-slate-400" /></div>
+      ) : records.length === 0 ? (
+        <EmptyState icon={ShieldAlert} label="No disciplinary records" />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-[12.5px]">
+            <thead>
+              <tr className="border-b border-slate-100">
+                {['Date', 'Type', 'Severity', 'Action Taken', 'Status', ''].map(h => (
+                  <th key={h} className="text-left py-2 px-3 text-[10.5px] font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {records.map(r => (
+                <tr key={r.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                  <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">{fmtD(r.incident_date)}</td>
+                  <td className="py-2.5 px-3 font-medium text-slate-800">{r.incident_type}</td>
+                  <td className="py-2.5 px-3">{severityPill(r.severity)}</td>
+                  <td className="py-2.5 px-3 text-slate-500 max-w-[180px]">
+                    <span className="truncate block">{r.action_taken || <span className="italic text-slate-300">—</span>}</span>
+                  </td>
+                  <td className="py-2.5 px-3">{statusPillD(r.status)}</td>
+                  <td className="py-2.5 px-3">
+                    <div className="flex items-center gap-1 justify-end">
+                      <button onClick={() => openEdit(r)} className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors" title="Edit">
+                        <Edit className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(String(r.id))}
+                        disabled={deleteId === String(r.id)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-100">
+          <p className="text-[11.5px] text-slate-400">{total} record{total !== 1 ? 's' : ''} · page {page} of {totalPages}</p>
+          <div className="flex gap-1.5">
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+              className="px-3 py-1.5 text-[11.5px] font-semibold bg-slate-100 hover:bg-slate-200 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+              Prev
+            </button>
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+              className="px-3 py-1.5 text-[11.5px] font-semibold bg-slate-100 hover:bg-slate-200 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+              Next
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Add / Edit modal */}
+      <AnimatePresence>
+        {showModal && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+            onClick={e => { if (e.target === e.currentTarget) setShowModal(false); }}
+          >
+            <motion.div
+              initial={{ scale: 0.94, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.94, opacity: 0 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col"
+            >
+              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+                <h3 className="text-[14px] font-bold text-slate-800">{editRecord ? 'Edit Disciplinary Record' : 'Add Disciplinary Record'}</h3>
+                <button onClick={() => setShowModal(false)} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="overflow-y-auto p-5 space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Incident Date *</label>
+                    <input type="date" value={form.incident_date} onChange={e => setF('incident_date', e.target.value)}
+                      className="h-9 px-3 text-[12.5px] border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Incident Type *</label>
+                    <select value={form.incident_type} onChange={e => setF('incident_type', e.target.value)}
+                      className="h-9 px-3 text-[12.5px] border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 bg-white cursor-pointer">
+                      <option value="">Select type…</option>
+                      {INCIDENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Severity</label>
+                    <select value={form.severity} onChange={e => setF('severity', e.target.value)}
+                      className="h-9 px-3 text-[12.5px] border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 bg-white cursor-pointer">
+                      {SEVERITIES.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Status</label>
+                    <select value={form.status} onChange={e => setF('status', e.target.value)}
+                      className="h-9 px-3 text-[12.5px] border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 bg-white cursor-pointer">
+                      {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Description *</label>
+                  <CountedTextarea rows={3} maxChars={2000} value={form.description} onChange={e => setF('description', e.target.value)}
+                    placeholder="Describe the incident…"
+                    className="px-3 py-2 text-[12.5px] border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 resize-none" />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Action Taken</label>
+                  <CountedTextarea rows={2} maxChars={1000} value={form.action_taken} onChange={e => setF('action_taken', e.target.value)}
+                    placeholder="What action was taken…"
+                    className="px-3 py-2 text-[12.5px] border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 resize-none" />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Witnesses</label>
+                  <MultiSearchSelect
+                    value={witnessIds}
+                    onChange={setWitnessIds}
+                    options={employeeOptions}
+                    placeholder="Select witnesses…"
+                  />
+                </div>
+                {form.status !== 'Open' && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Resolution</label>
+                    <CountedTextarea rows={2} maxChars={1000} value={form.resolution} onChange={e => setF('resolution', e.target.value)}
+                      placeholder="Outcome / resolution notes…"
+                      className="px-3 py-2 text-[12.5px] border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 resize-none" />
+                  </div>
+                )}
+                {form.status === 'Resolved' && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Resolved Date</label>
+                    <input type="date" value={form.resolved_date} onChange={e => setF('resolved_date', e.target.value)}
+                      className="h-9 px-3 text-[12.5px] border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end gap-2 px-5 py-4 border-t border-slate-100">
+                <button onClick={() => setShowModal(false)} className="secondary-btn text-[12.5px]">Cancel</button>
+                <button onClick={handleSave} disabled={saving} className="primary-btn text-[12.5px]">
+                  {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : (editRecord ? 'Save Changes' : 'Create Record')}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </SectionCard>
+  );
+};
+
+// ─── Employee Performance Tab ─────────────────────────────────────────────────
+
+function EmployeePerformanceTab({ employeeId }: { employeeId: string }) {
+  const [reviews, setReviews] = useState<any[]>([]);
+  const [goals,   setGoals]   = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [openReviewId, setOpenReviewId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      api.get('/performance/reviews', { params: { employee_id: employeeId } }),
+      api.get('/performance/goals',   { params: { employee_id: employeeId } }),
+    ]).then(([rr, rg]) => {
+      const rd = rr.data.data ?? rr.data;
+      setReviews(rd.records ?? rd);
+      setGoals(rg.data.data ?? rg.data);
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, [employeeId]);
+
+  if (loading) return <div className="py-10 flex justify-center"><Loader2 className="animate-spin text-[var(--accent)]" /></div>;
+
+  const STATUS_COLOR: Record<string, string> = {
+    'Not Started':       'bg-slate-100 text-slate-500',
+    'Self Assessment':   'bg-amber-50 text-amber-700',
+    'Supervisor Review': 'bg-blue-50 text-blue-700',
+    'HR Review':         'bg-violet-50 text-violet-700',
+    Completed:           'bg-emerald-50 text-emerald-700',
+  };
+
+  return (
+    <div className="flex flex-col gap-5 p-1">
+      {/* Reviews */}
+      <div>
+        <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">Performance Reviews</h4>
+        {reviews.length ? (
+          <div className="flex flex-col gap-2">
+            {reviews.map((r: any) => (
+              <div key={r.id}
+                className="flex items-center justify-between gap-3 border border-slate-100 rounded-[10px] px-4 py-2.5 hover:bg-slate-50 cursor-pointer"
+                onClick={() => setOpenReviewId(String(r.id))}>
+                <div>
+                  <p className="text-[13px] font-semibold text-slate-700">{r.cycle_name ?? '—'}</p>
+                  <p className="text-[11.5px] text-slate-400">
+                    {r.self_score != null ? `Self: ${Number(r.self_score).toFixed(1)}` : 'Self: —'}
+                    {r.overall_score != null ? `  ·  Overall: ${Number(r.overall_score).toFixed(1)} / 5` : ''}
+                  </p>
+                </div>
+                <span className={`pill text-[11px] ${STATUS_COLOR[r.status] ?? 'bg-slate-100 text-slate-500'}`}>{r.status}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[13px] text-slate-400 italic">No reviews found.</p>
+        )}
+      </div>
+
+      {/* Goals */}
+      <div>
+        <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">Goals</h4>
+        {goals.length ? (
+          <div className="flex flex-col gap-1.5">
+            {goals.map((g: any) => (
+              <div key={g.id} className="flex items-center justify-between gap-2 border border-slate-100 rounded-[8px] px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-[12.5px] font-medium text-slate-700 truncate">{g.title}</p>
+                  {g.due_date && <p className="text-[11px] text-slate-400">Due: {fmtDate(g.due_date)}</p>}
+                </div>
+                <span className="pill text-[10.5px] bg-slate-100 text-slate-500 shrink-0">{g.status}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[13px] text-slate-400 italic">No goals found.</p>
+        )}
+      </div>
+
+      {openReviewId && (
+        <ReviewDetailSlideOver reviewId={openReviewId} mode="hr"
+          onClose={() => setOpenReviewId(null)} />
+      )}
+    </div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh }: EmployeeDetailsProps) {
@@ -490,6 +1055,17 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
   const [photoUploading, setPhotoUploading] = useState(false);
   const [localPhoto, setLocalPhoto]   = useState<string | null>(employee?.profile_imagebase64 || null);
   const [documentToView, setDocumentToView] = useState<any | null>(null);
+
+  const [showSuspendModal,   setShowSuspendModal]   = useState(false);
+  const [showResignModal,    setShowResignModal]    = useState(false);
+  const [showTerminateModal, setShowTerminateModal] = useState(false);
+  const [actionReason,       setActionReason]       = useState('');
+  const [resignDate,         setResignDate]         = useState('');
+  const [resignLetterFile,   setResignLetterFile]   = useState<File | null>(null);
+  const [actionLoading,      setActionLoading]      = useState(false);
+  const [positionImpact,     setPositionImpact]     = useState<{ reportees: any[]; isThresholdApprover: boolean } | null>(null);
+
+  const resignLetterInputRef = useRef<HTMLInputElement>(null);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -513,11 +1089,18 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
   const isPending  = employee.approvalStatus === 'PENDING';
   const isRejected = employee.approvalStatus === 'REJECTED';
 
-  // Self-approval guard
+  // Self-approval guard + action permissions
   const currentUser = getCurrentUser();
+  const can = (perm: string) => currentUser?.resolvedPermissions.has(perm) ?? false;
+  const canChangeStatus = can('change_employee_status');
+  const canEditEmp      = can('edit_employees');
   const selfApprovalAllowed = getSettings().approvals.employeeSelfApproval;
   const isOwnRecord = String(currentUser?.id) === String(employee.posted_by);
-  const canApprove  = selfApprovalAllowed || !isOwnRecord;
+  const canApprove  = can('approve_employees') && (selfApprovalAllowed || !isOwnRecord);
+
+  const isApproved  = employee.approvalStatus === 'APPROVED';
+  const isActive    = employee.lifecycleStatus === 'ACTIVE';
+  const isSuspended = employee.lifecycleStatus === 'SUSPENDED';
 
   // ── Photo upload ────────────────────────────────────────────────────────────
   const resizeImage = (file: File, maxPx = 800, quality = 0.85): Promise<string> =>
@@ -627,14 +1210,100 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
     }
   };
 
+  const handleSuspend = async () => {
+    setActionLoading(true);
+    try {
+      await api.put(`/employees/${employee.id}/status`, { status: 'SUSPENDED', reason: actionReason });
+      toast.success(`Suspension request submitted for approval — ${fullName}`);
+      setShowSuspendModal(false);
+      setActionReason('');
+      onRefresh?.();
+      onClose();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to submit suspension');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleResign = async () => {
+    setActionLoading(true);
+    try {
+      let resignationLetter: string | undefined;
+      if (resignLetterFile) {
+        const fd = new FormData();
+        fd.append('file', resignLetterFile);
+        const uploadRes = await api.post('/employees/documents/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+        resignationLetter = uploadRes.data?.data?.filename;
+      }
+      await api.post(`/employees/${employee.id}/resign`, { reason: actionReason, effectiveDate: resignDate, resignationLetter });
+      toast.success(`Resignation submitted for approval — ${fullName}`);
+      setShowResignModal(false);
+      setActionReason('');
+      setResignDate('');
+      setResignLetterFile(null);
+      onRefresh?.();
+      onClose();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to initiate resignation');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const openLifecycleModal = async (modal: 'suspend' | 'terminate') => {
+    setIsMoreOpen(false);
+    setActionReason('');
+    setPositionImpact(null);
+    try {
+      const res = await api.get(`/employees/${employee.id}/position-impact`);
+      setPositionImpact(res.data?.data ?? null);
+    } catch { /* non-fatal — show modal anyway */ }
+    if (modal === 'suspend')   setShowSuspendModal(true);
+    if (modal === 'terminate') setShowTerminateModal(true);
+  };
+
+  const handleReinstate = async () => {
+    setActionLoading(true);
+    try {
+      await api.put(`/employees/${employee.id}/status`, { status: 'ACTIVE' });
+      toast.success(`${fullName} reinstated successfully`);
+      onRefresh?.();
+      onClose();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to reinstate employee');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleTerminate = async () => {
+    setActionLoading(true);
+    try {
+      await api.put(`/employees/${employee.id}/status`, { status: 'TERMINATED', reason: actionReason });
+      toast.success(`Termination request submitted for approval — ${fullName}`);
+      setShowTerminateModal(false);
+      setActionReason('');
+      onRefresh?.();
+      onClose();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to submit termination');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const tabs = [
     { id: 'Personal'       as TabId, label: 'Personal',       icon: User          },
     { id: 'Employment'     as TabId, label: 'Employment',     icon: Briefcase     },
     { id: 'Relationships'  as TabId, label: 'Relationships',  icon: Heart         },
-    { id: 'Documents'      as TabId, label: 'Documents',       icon: FileText      },
+    { id: 'Documents'      as TabId, label: 'Documents',      icon: FileText      },
     { id: 'Qualifications' as TabId, label: 'Qualifications', icon: GraduationCap },
     { id: 'Attendance'     as TabId, label: 'Attendance',     icon: Activity      },
     { id: 'Leave'          as TabId, label: 'Leave',          icon: Calendar      },
+    { id: 'Activity'       as TabId, label: 'Activity',       icon: Filter        },
+    { id: 'Disciplinary'   as TabId, label: 'Disciplinary',   icon: ShieldAlert   },
+    { id: 'Performance'    as TabId, label: 'Performance',    icon: TrendingUp    },
   ];
 
   const renderContent = () => {
@@ -644,8 +1313,11 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
       case 'Relationships':  return <RelationshipsTab  employee={employee} />;
       case 'Documents':      return <DocumentsTab      employee={employee} onViewDocument={setDocumentToView} />;
       case 'Qualifications': return <QualificationsTab employee={employee} />;
-      case 'Attendance':     return <EmptyState icon={Activity}      label="Attendance data not available yet" />;
+      case 'Attendance':     return <EmptyState icon={Activity} label="Attendance data not available yet" />;
       case 'Leave':          return <LeaveTab employee={employee} />;
+      case 'Activity':       return <ActivityTab employeeId={String(employee.id)} />;
+      case 'Disciplinary':   return <EmployeeDisciplinaryTab employeeId={String(employee.id)} />;
+      case 'Performance':    return <EmployeePerformanceTab  employeeId={String(employee.id)} />;
       default:               return null;
     }
   };
@@ -657,9 +1329,11 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
           initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.18 }}
           className="w-full h-full bg-[var(--bg)] overflow-y-auto"
         >
-          <div className="max-w-[1100px] mx-auto px-4 sm:px-6 md:px-8 py-6 space-y-4">
-            {/* Hidden file input for photo */}
+          <div className="max-w-[1440px] mx-auto px-4 sm:px-6 md:px-8 py-6 space-y-4">
+            {/* Hidden file inputs */}
             <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handlePhotoFile} />
+            <input ref={resignLetterInputRef} type="file" accept=".pdf,.doc,.docx,image/*" className="hidden"
+              onChange={e => setResignLetterFile(e.target.files?.[0] ?? null)} />
 
             {/* ── Top bar: breadcrumb + actions ── */}
             <div className="flex items-center justify-between gap-3">
@@ -690,7 +1364,7 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
                     </button>
                   </>
                 )}
-                {isPending && !canApprove && (
+                {isPending && can('approve_employees') && !canApprove && (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-[var(--warning)] bg-[var(--warning-dim)] border border-[var(--warning)]/20">
                     <AlertTriangle className="w-3 h-3" />
                     Self-approval not permitted
@@ -698,6 +1372,7 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
                 )}
 
                 {/* More dropdown */}
+                {(canChangeStatus || canEditEmp) && (
                 <div className="relative" ref={dropdownRef}>
                   <button
                     onClick={() => setIsMoreOpen(v => !v)}
@@ -712,14 +1387,45 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
                         exit={{ opacity: 0, scale: 0.95, y: 6 }} transition={{ duration: 0.12 }}
                         className="absolute right-0 top-[calc(100%+6px)] w-52 bg-[var(--surface)] rounded-xl shadow-lg border border-[var(--border)] py-1.5 z-[100]"
                       >
-                        {[
-                          { icon: AlertTriangle, label: 'Suspend Employee',     color: 'text-amber-500' },
-                          { icon: LogOut,        label: 'Initiate Resignation', color: 'text-rose-500'  },
-                        ].map(({ icon: Icon, label, color }) => (
-                          <button key={label} className="w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors text-left">
-                            <Icon className={`w-4 h-4 ${color}`} /> {label}
-                          </button>
-                        ))}
+                        {canChangeStatus && (<>
+                        {/* Suspend */}
+                        <button
+                          disabled={!isApproved || !isActive}
+                          title={!isApproved ? 'Employee must be approved first' : !isActive ? 'Employee is not currently active' : ''}
+                          onClick={() => openLifecycleModal('suspend')}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors text-left disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <AlertTriangle className="w-4 h-4 text-amber-500" /> Suspend Employee
+                        </button>
+                        {/* Initiate Resignation */}
+                        <button
+                          disabled={!isApproved || !isActive}
+                          title={!isApproved ? 'Employee must be approved first' : !isActive ? 'Employee is not currently active' : ''}
+                          onClick={() => { setIsMoreOpen(false); setActionReason(''); setResignDate(''); setShowResignModal(true); }}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors text-left disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <LogOut className="w-4 h-4 text-rose-500" /> Initiate Resignation
+                        </button>
+                        {/* Terminate */}
+                        <button
+                          disabled={!isApproved || (!isActive && !isSuspended)}
+                          title={!isApproved ? 'Employee must be approved first' : ''}
+                          onClick={() => openLifecycleModal('terminate')}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors text-left disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <XCircle className="w-4 h-4 text-red-600" /> Terminate Employee
+                        </button>
+                        {/* Reinstate */}
+                        <button
+                          disabled={!isApproved || !isSuspended}
+                          title={!isSuspended ? 'Only suspended employees can be reinstated' : ''}
+                          onClick={() => { setIsMoreOpen(false); handleReinstate(); }}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors text-left disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <CheckCircle className="w-4 h-4 text-emerald-500" /> Reinstate Employee
+                        </button>
+                        </>)}
+                        {canEditEmp && (<>
                         <div className="my-1 border-t border-[var(--border)]" />
                         <button
                           onClick={() => { setIsMoreOpen(false); fileInputRef.current?.click(); }}
@@ -738,10 +1444,12 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
                             <Trash2 className="w-4 h-4 text-[var(--danger)]" /> Remove Photo
                           </button>
                         )}
+                        </>)}
                       </motion.div>
                     )}
                   </AnimatePresence>
                 </div>
+                )}
 
                 {/* Close */}
                 <button
@@ -872,7 +1580,7 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
             {/* ── Tab bar ── */}
             <motion.div
               initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3, delay: 0.06 }}
-              className="bg-[var(--surface)] rounded-2xl border border-[var(--border)] px-2 py-1.5 flex items-center gap-1 overflow-x-auto hide-scrollbar"
+              className="bg-[var(--surface)] rounded-2xl border border-[var(--border)] px-2 py-1.5 flex flex-wrap items-center gap-1"
               style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}
             >
               {tabs.map(t => (
@@ -908,6 +1616,190 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
         </motion.div>
       )}
 
+      {/* ── Suspend modal ── */}
+      <AnimatePresence>
+        {showSuspendModal && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowSuspendModal(false)} />
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }} transition={{ duration: 0.15 }}
+              className="relative bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md p-6 z-10">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center mb-4">
+                <AlertTriangle className="w-5 h-5 text-amber-500" />
+              </div>
+              <h3 className="text-[15px] font-bold text-slate-900 mb-1">Suspend Employee?</h3>
+              <p className="text-[13px] text-slate-500 mb-4">
+                Submit a suspension request for <span className="font-semibold text-slate-700">{fullName}</span>. The request will go to the approval queue before taking effect.
+              </p>
+              {positionImpact && (positionImpact.reportees.length > 0 || positionImpact.isThresholdApprover) && (
+                <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 space-y-1.5">
+                  <p className="text-[12px] font-bold text-amber-800 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> Position Impact
+                  </p>
+                  {positionImpact.reportees.length > 0 && (
+                    <p className="text-[12px] text-amber-700 leading-snug">
+                      <span className="font-semibold">{positionImpact.reportees.length} employee{positionImpact.reportees.length > 1 ? 's' : ''}</span> currently report{positionImpact.reportees.length === 1 ? 's' : ''} to this person as supervisor:{' '}
+                      {positionImpact.reportees.slice(0, 3).map((r: any) => r.name).join(', ')}
+                      {positionImpact.reportees.length > 3 ? ` and ${positionImpact.reportees.length - 3} more` : ''}.
+                      Consider reassigning their supervisor.
+                    </p>
+                  )}
+                  {positionImpact.isThresholdApprover && (
+                    <p className="text-[12px] text-amber-700 leading-snug">
+                      This employee is a <span className="font-semibold">designated financial approver</span> for leave allowance threshold sign-offs. Review the approver list in Settings → Controls → Leave.
+                    </p>
+                  )}
+                </div>
+              )}
+              <div className="mb-5">
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+                  Reason <span className="font-normal normal-case text-red-500">*</span>
+                </label>
+                <CountedTextarea rows={3} maxChars={1000} value={actionReason} onChange={e => setActionReason(e.target.value)}
+                  placeholder="Enter reason for suspension…"
+                  className="w-full px-3 py-2 text-[13px] bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-300 transition-all resize-none" />
+              </div>
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setShowSuspendModal(false)} disabled={actionLoading}
+                  className="px-4 py-2 text-[13px] font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors disabled:opacity-50">
+                  Cancel
+                </button>
+                <button onClick={handleSuspend} disabled={actionLoading || !actionReason.trim()}
+                  className="px-4 py-2 text-[13px] font-semibold text-white bg-amber-500 hover:bg-amber-600 rounded-xl transition-colors disabled:opacity-50 flex items-center gap-1.5">
+                  {actionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                  {actionLoading ? 'Submitting…' : 'Submit for Approval'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Initiate Resignation modal ── */}
+      <AnimatePresence>
+        {showResignModal && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowResignModal(false)} />
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }} transition={{ duration: 0.15 }}
+              className="relative bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md p-6 z-10">
+              <div className="w-10 h-10 rounded-xl bg-rose-50 flex items-center justify-center mb-4">
+                <LogOut className="w-5 h-5 text-rose-500" />
+              </div>
+              <h3 className="text-[15px] font-bold text-slate-900 mb-1">Initiate Resignation</h3>
+              <p className="text-[13px] text-slate-500 mb-4">
+                Submit a resignation request for <span className="font-semibold text-slate-700">{fullName}</span>. The request will go to the approval queue before taking effect.
+              </p>
+              <div className="mb-4">
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+                  Effective Date
+                </label>
+                <input type="date" value={resignDate} onChange={e => setResignDate(e.target.value)}
+                  className="w-full px-3 py-2 text-[13px] bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-200 focus:border-rose-300 transition-all" />
+              </div>
+              <div className="mb-4">
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+                  Reason
+                </label>
+                <CountedTextarea rows={3} maxChars={1000} value={actionReason} onChange={e => setActionReason(e.target.value)}
+                  placeholder="Enter reason for resignation…"
+                  className="w-full px-3 py-2 text-[13px] bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-200 focus:border-rose-300 transition-all resize-none" />
+              </div>
+              <div className="mb-5">
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+                  Resignation Letter <span className="font-normal normal-case text-slate-400">(optional)</span>
+                </label>
+                <button type="button"
+                  onClick={() => resignLetterInputRef.current?.click()}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-[13px] bg-slate-50 border border-dashed border-slate-300 hover:border-rose-400 hover:bg-rose-50 rounded-xl transition-all text-slate-500 hover:text-rose-600">
+                  <UploadCloud className="w-4 h-4 shrink-0" />
+                  <span className="truncate">{resignLetterFile ? resignLetterFile.name : 'Click to upload resignation letter'}</span>
+                </button>
+                {resignLetterFile && (
+                  <button type="button" onClick={() => setResignLetterFile(null)}
+                    className="mt-1 text-[11px] text-rose-500 hover:underline">
+                    Remove
+                  </button>
+                )}
+              </div>
+              <div className="flex justify-end gap-3">
+                <button onClick={() => { setShowResignModal(false); setResignLetterFile(null); }} disabled={actionLoading}
+                  className="px-4 py-2 text-[13px] font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors disabled:opacity-50">
+                  Cancel
+                </button>
+                <button onClick={handleResign} disabled={actionLoading}
+                  className="px-4 py-2 text-[13px] font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-colors disabled:opacity-50 flex items-center gap-1.5">
+                  {actionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                  {actionLoading ? 'Submitting…' : 'Submit for Approval'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Terminate modal ── */}
+      <AnimatePresence>
+        {showTerminateModal && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowTerminateModal(false)} />
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }} transition={{ duration: 0.15 }}
+              className="relative bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md p-6 z-10">
+              <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center mb-4">
+                <XCircle className="w-5 h-5 text-red-600" />
+              </div>
+              <h3 className="text-[15px] font-bold text-slate-900 mb-1">Terminate Employee?</h3>
+              <p className="text-[13px] text-slate-500 mb-4">
+                Submit a termination request for <span className="font-semibold text-slate-700">{fullName}</span>. The request will go to the approval queue before taking effect.
+              </p>
+              {positionImpact && (positionImpact.reportees.length > 0 || positionImpact.isThresholdApprover) && (
+                <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 space-y-1.5">
+                  <p className="text-[12px] font-bold text-red-800 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> Position Impact
+                  </p>
+                  {positionImpact.reportees.length > 0 && (
+                    <p className="text-[12px] text-red-700 leading-snug">
+                      <span className="font-semibold">{positionImpact.reportees.length} employee{positionImpact.reportees.length > 1 ? 's' : ''}</span> currently report{positionImpact.reportees.length === 1 ? 's' : ''} to this person as supervisor:{' '}
+                      {positionImpact.reportees.slice(0, 3).map((r: any) => r.name).join(', ')}
+                      {positionImpact.reportees.length > 3 ? ` and ${positionImpact.reportees.length - 3} more` : ''}.
+                      Consider reassigning their supervisor.
+                    </p>
+                  )}
+                  {positionImpact.isThresholdApprover && (
+                    <p className="text-[12px] text-red-700 leading-snug">
+                      This employee is a <span className="font-semibold">designated financial approver</span> for leave allowance threshold sign-offs. Review the approver list in Settings → Controls → Leave.
+                    </p>
+                  )}
+                </div>
+              )}
+              <div className="mb-5">
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+                  Reason <span className="font-normal normal-case text-red-500">*</span>
+                </label>
+                <CountedTextarea rows={3} maxChars={1000} value={actionReason} onChange={e => setActionReason(e.target.value)}
+                  placeholder="Enter reason for termination…"
+                  className="w-full px-3 py-2 text-[13px] bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-300 transition-all resize-none" />
+              </div>
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setShowTerminateModal(false)} disabled={actionLoading}
+                  className="px-4 py-2 text-[13px] font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors disabled:opacity-50">
+                  Cancel
+                </button>
+                <button onClick={handleTerminate} disabled={actionLoading || !actionReason.trim()}
+                  className="px-4 py-2 text-[13px] font-semibold text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors disabled:opacity-50 flex items-center gap-1.5">
+                  {actionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                  {actionLoading ? 'Submitting…' : 'Submit for Approval'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Reject reason modal */}
       <AnimatePresence>
         {showRejectModal && (
@@ -932,8 +1824,9 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
                 <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
                   Reason <span className="font-normal normal-case">(optional)</span>
                 </label>
-                <textarea
+                <CountedTextarea
                   rows={3}
+                  maxChars={500}
                   value={rejectReason}
                   onChange={e => setRejectReason(e.target.value)}
                   placeholder="Enter reason for rejection…"

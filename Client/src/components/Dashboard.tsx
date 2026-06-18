@@ -1,90 +1,18 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Users, UserPlus, ClipboardList, CalendarCheck,
-  Calendar, ChevronDown, Upload, Download,
-  MoreHorizontal, Filter, TrendingUp, TrendingDown,
-  Clock, ArrowUpRight,
+  Calendar, MoreHorizontal, TrendingUp, Clock,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
+import api from '../../lib/api';
 
 /* ─────────────────────────────────────────────
-   TYPES
+   HELPERS
 ───────────────────────────────────────────── */
-interface AttendanceRow {
-  name: string;
-  email: string;
-  clockIn: string;
-  clockOut: string;
-  status: 'on-time' | 'late';
-  initials: string;
-}
-
-interface Employee {
-  name: string;
-  email: string;
-  position: string;
-  level: string;
-  status: 'permanent' | 'contract' | 'probation';
-  initials: string;
-}
-
-interface GrowthDataPoint {
-  month: string;
-  employees: number;
-  newHires: number;
-}
-
-interface ServiceDataPoint {
-  label: string;
-  value: number;
-}
-
-interface EmpStatus {
-  label: string;
-  count: number;
-  pct: number;
-  color: string;
-}
-
-/* ─────────────────────────────────────────────
-   STATIC DATA
-───────────────────────────────────────────── */
-const ATTENDANCE: AttendanceRow[] = [
-  { name: 'Raib Moon',     email: 'raibmoon@gmail.com', clockIn: '09:00 AM', clockOut: '17:00 PM', status: 'on-time', initials: 'RM' },
-  { name: 'Lail Turner',   email: 'lailturn@gmail.com', clockIn: '09:00 AM', clockOut: '17:15 PM', status: 'on-time', initials: 'LT' },
-  { name: 'Tamus Jhonson', email: 'tamusjh@gmail.com',  clockIn: '10:30 AM', clockOut: '18:30 PM', status: 'late',    initials: 'TJ' },
-  { name: 'Bahtera Soke',  email: 'csok@gmail.com',     clockIn: '10:00 AM', clockOut: '18:00 PM', status: 'late',    initials: 'BS' },
-  { name: 'Priya Mensah',  email: 'pmensah@gmail.com',  clockIn: '08:55 AM', clockOut: '17:00 PM', status: 'on-time', initials: 'PM' },
-];
-
-const GROWTH_DATA: GrowthDataPoint[] = [
-  { month: 'Jul', employees: 130, newHires: 40 },
-  { month: 'Aug', employees: 145, newHires: 50 },
-  { month: 'Sep', employees: 155, newHires: 55 },
-];
-
-const SERVICE_DATA: ServiceDataPoint[] = [
-  { label: '< 1yr',  value: 13 },
-  { label: '1–2yr',  value: 20 },
-  { label: '2–3yr',  value: 26 },
-  { label: '3–5yr',  value: 25 },
-  { label: '5–10yr', value: 20 },
-  { label: '10yr+',  value: 12 },
-];
-
-const EMPLOYEES: Employee[] = [
-  { name: 'Tamus Jhonson', email: 'tamusjh@gmail.com',  position: 'UI/UX Consultant',    level: 'Analyst',    status: 'permanent', initials: 'TJ' },
-  { name: 'Raib Moon',     email: 'raibmoon@gmail.com', position: 'Software Engineer',   level: 'Consultant', status: 'contract',  initials: 'RM' },
-  { name: 'Sophia Muller', email: 'sophia@gmail.com',   position: 'Strategy Consultant', level: 'Manager',    status: 'permanent', initials: 'SM' },
-  { name: 'Lail Turner',   email: 'lailturn@gmail.com', position: 'Data Analyst',        level: 'Analyst',    status: 'probation', initials: 'LT' },
-  { name: 'Priya Mensah',  email: 'pmensah@gmail.com',  position: 'HR Specialist',       level: 'Senior',     status: 'permanent', initials: 'PM' },
-  { name: 'Kwame Asante',  email: 'kasante@gmail.com',  position: 'Finance Officer',     level: 'Consultant', status: 'contract',  initials: 'KA' },
-];
-
 const AVATAR_COLORS = [
   { bg: 'rgba(99,102,241,0.14)',  color: '#6366f1' },
   { bg: 'rgba(16,185,129,0.14)',  color: '#10b981' },
@@ -94,7 +22,10 @@ const AVATAR_COLORS = [
   { bg: 'rgba(168,85,247,0.14)',  color: '#a855f7' },
 ];
 
-const avatarColor = (name: string) => AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length];
+const initialsOf = (name: string) =>
+  String(name ?? '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]?.toUpperCase() ?? '').join('') || '—';
+
+const STATUS_COLORS = ['var(--accent)', 'var(--warning)', 'var(--danger)', '#10b981', '#a855f7', '#0ea5e9'];
 
 /* ─────────────────────────────────────────────
    CUSTOM TOOLTIP
@@ -160,72 +91,61 @@ function StatCard({ icon: Icon, label, value, delta, deltaPositive, iconColor, i
         }}>
           <Icon size={18} strokeWidth={1.8} />
         </div>
-        <MoreHorizontal size={16} style={{ color: 'var(--text-muted)', cursor: 'pointer' }} />
       </div>
 
       <div>
-        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: '4px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: '4px' }}>
           {label}
         </div>
-        <div className="syne" style={{ fontSize: '30px', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1 }}>
+        <div style={{ fontSize: '28px', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.15, letterSpacing: '-.01em' }}>
           {value}
         </div>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-        {deltaPositive
-          ? <TrendingUp size={13} style={{ color: 'var(--success)' }} />
-          : <TrendingDown size={13} style={{ color: 'var(--danger)' }} />
-        }
-        <span style={{ fontSize: '12px', fontWeight: 600, color: deltaPositive ? 'var(--success)' : 'var(--danger)' }}>
+        <TrendingUp size={13} style={{ color: deltaPositive ? 'var(--success)' : 'var(--text-muted)', transform: deltaPositive ? 'none' : 'scaleY(-1)' }} />
+        <span style={{ fontSize: '12px', fontWeight: 500, color: deltaPositive ? 'var(--success)' : 'var(--text-muted)' }}>
           {delta}
         </span>
-        <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>vs last month</span>
       </div>
     </motion.div>
   );
 }
 
 /* ─────────────────────────────────────────────
-   AVATAR
+   AVATAR + PILLS
 ───────────────────────────────────────────── */
-interface AvatarProps {
-  initials: string;
-  size?: number;
-}
-
-function Avatar({ initials, size = 34 }: AvatarProps) {
-  const c = avatarColor(initials);
+function Avatar({ name, size = 34 }: { name: string; size?: number }) {
+  const c = AVATAR_COLORS[(String(name ?? '').charCodeAt(0) || 0) % AVATAR_COLORS.length];
   return (
     <div style={{
       width: size, height: size, borderRadius: '50%',
       background: c.bg, color: c.color,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontSize: size < 32 ? '11px' : '12px', fontWeight: 700, flexShrink: 0,
+      fontSize: size < 32 ? '11px' : '12px', fontWeight: 600, flexShrink: 0,
     }}>
-      {initials}
+      {initialsOf(name)}
     </div>
   );
 }
 
-/* ─────────────────────────────────────────────
-   STATUS PILL
-───────────────────────────────────────────── */
-type StatusType = AttendanceRow['status'] | Employee['status'];
-
-interface StatusPillProps {
-  status: StatusType;
+function AttendancePill({ status }: { status: string }) {
+  const map: Record<string, string> = {
+    Present:    'pill pill-success',
+    Late:       'pill pill-danger',
+    Half_Day:   'pill pill-warning',
+    Incomplete: 'pill pill-warning',
+    On_Leave:   'pill',
+  };
+  return <span className={map[status] ?? 'pill'}>{String(status ?? '').replace(/_/g, ' ')}</span>;
 }
 
-function StatusPill({ status }: StatusPillProps) {
-  const map: Record<StatusType, { cls: string; label: string }> = {
-    'on-time':   { cls: 'pill pill-success', label: 'On time' },
-    'late':      { cls: 'pill pill-danger',  label: 'Late' },
-    'permanent': { cls: 'pill pill-success', label: 'Permanent' },
-    'contract':  { cls: 'pill pill-warning', label: 'Contract' },
-    'probation': { cls: 'pill pill-danger',  label: 'Probation' },
-  };
-  const { cls, label } = map[status];
+function EmploymentPill({ label }: { label?: string | null }) {
+  if (!label) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+  const cls = /permanent/i.test(label) ? 'pill pill-success'
+            : /contract/i.test(label)  ? 'pill pill-warning'
+            : /probation|temp/i.test(label) ? 'pill pill-danger'
+            : 'pill';
   return <span className={cls}>{label}</span>;
 }
 
@@ -233,14 +153,33 @@ function StatusPill({ status }: StatusPillProps) {
    MAIN DASHBOARD
 ───────────────────────────────────────────── */
 export function Dashboard() {
-  const [attendanceView, setAttendanceView] = useState<'Day' | 'Week' | 'Months'>('Day');
-  const [, setSortField] = useState<string | null>(null);
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-  const empStatus: EmpStatus[] = [
-    { label: 'Permanent', count: 150, pct: 75, color: 'var(--accent)' },
-    { label: 'Contract',  count: 34,  pct: 25, color: 'var(--warning)' },
-    { label: 'Probation', count: 16,  pct: 10, color: 'var(--danger)' },
-  ];
+  useEffect(() => {
+    api.get('/dashboard/summary')
+      .then(r => setData(r.data?.data ?? null))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const stats = data?.stats ?? {};
+  const hiresDelta = (stats.new_hires_month ?? 0) - (stats.new_hires_last_month ?? 0);
+  const appsDelta  = (stats.applicants_month ?? 0) - (stats.applicants_last_month ?? 0);
+  const presDelta  = (stats.present_today ?? 0) - (stats.present_yesterday ?? 0);
+
+  const empStatus = (data?.employment_status ?? []).map((s: any, i: number) => ({
+    ...s,
+    color: STATUS_COLORS[i % STATUS_COLORS.length],
+    pct: stats.total_employees ? Math.round((s.count / stats.total_employees) * 100) : 0,
+  }));
+
+  const growth: any[]     = data?.growth ?? [];
+  const service: any[]    = data?.service ?? [];
+  const attendance: any[] = data?.attendance_today ?? [];
+  const employees: any[]  = data?.recent_employees ?? [];
+  const lastGrowth = growth[growth.length - 1];
+  const maxService = Math.max(0, ...service.map((x: any) => x.value));
 
   return (
     <div style={{ flex: 1, width: '100%' }}>
@@ -262,18 +201,13 @@ export function Dashboard() {
               Dashboard
             </h1>
             <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '4px 0 0', fontWeight: 500 }}>
-              Welcome to the SISL HR portal. Have a productive day.
+              Welcome to the HR portal. Have a productive day.
             </p>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <button className="secondary-btn" style={{ gap: 7 }}>
-              <Calendar size={14} />
-              01 Sept – 29 Sept 2025
-              <ChevronDown size={13} />
-            </button>
-            <button className="secondary-btn"><Upload size={14} /> Import</button>
-            <button className="primary-btn"><Download size={14} /> Export</button>
-          </div>
+          <span className="secondary-btn" style={{ gap: 7, cursor: 'default' }}>
+            <Calendar size={14} />
+            {new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+          </span>
         </motion.div>
 
         {/* STAT STRIP */}
@@ -282,10 +216,18 @@ export function Dashboard() {
           gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
           gap: 14, marginBottom: 22,
         }}>
-          <StatCard delay={0.05} icon={Users}         label="Total Employees" value="200" delta="+16 vs last year"   deltaPositive iconColor="var(--accent)"  iconBg="var(--accent-dim)" />
-          <StatCard delay={0.10} icon={UserPlus}      label="New Hires"       value="152" delta="-50% vs last month" deltaPositive={false} iconColor="var(--danger)"  iconBg="rgba(239,68,68,0.10)" />
-          <StatCard delay={0.15} icon={ClipboardList} label="Applicants"      value="16"  delta="+90 vs last month"  deltaPositive iconColor="var(--success)" iconBg="rgba(16,185,129,0.10)" />
-          <StatCard delay={0.20} icon={CalendarCheck} label="Active Today"    value="138" delta="+4 vs yesterday"    deltaPositive iconColor="var(--warning)" iconBg="rgba(245,158,11,0.10)" />
+          <StatCard delay={0.05} icon={Users}         label="Total Employees" value={loading ? '…' : String(stats.total_employees ?? 0)}
+            delta={`+${stats.new_hires_month ?? 0} hired this month`} deltaPositive={(stats.new_hires_month ?? 0) > 0}
+            iconColor="var(--accent)" iconBg="var(--accent-dim)" />
+          <StatCard delay={0.10} icon={UserPlus}      label="New Hires" value={loading ? '…' : String(stats.new_hires_month ?? 0)}
+            delta={`${hiresDelta >= 0 ? '+' : ''}${hiresDelta} vs last month`} deltaPositive={hiresDelta >= 0}
+            iconColor="var(--danger)" iconBg="rgba(239,68,68,0.10)" />
+          <StatCard delay={0.15} icon={ClipboardList} label="Applicants" value={loading ? '…' : String(stats.applicants ?? 0)}
+            delta={`${appsDelta >= 0 ? '+' : ''}${appsDelta} vs last month`} deltaPositive={appsDelta >= 0}
+            iconColor="var(--success)" iconBg="rgba(16,185,129,0.10)" />
+          <StatCard delay={0.20} icon={CalendarCheck} label="Present Today" value={loading ? '…' : String(stats.present_today ?? 0)}
+            delta={`${presDelta >= 0 ? '+' : ''}${presDelta} vs yesterday`} deltaPositive={presDelta >= 0}
+            iconColor="var(--warning)" iconBg="rgba(245,158,11,0.10)" />
         </div>
 
         {/* MAIN GRID */}
@@ -294,7 +236,7 @@ export function Dashboard() {
           {/* LEFT COLUMN */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
-            {/* ATTENDANCE LOG */}
+            {/* TODAY'S ATTENDANCE */}
             <motion.div
               initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.25, duration: 0.4, ease: [0.23, 1, 0.32, 1] }}
@@ -304,25 +246,10 @@ export function Dashboard() {
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                 padding: '14px 20px', borderBottom: '1px solid var(--border)', gap: 12, flexWrap: 'wrap',
               }}>
-                <h3 className="syne" style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>
-                  Attendance Log
+                <h3 className="syne" style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+                  Today's Attendance
                 </h3>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  {(['Day', 'Week', 'Months'] as const).map((v) => (
-                    <button
-                      key={v}
-                      onClick={() => setAttendanceView(v)}
-                      style={{
-                        height: 30, padding: '0 12px', borderRadius: 100,
-                        border: attendanceView === v ? '1px solid var(--accent)' : '1px solid var(--border)',
-                        background: attendanceView === v ? 'var(--accent-dim)' : 'transparent',
-                        color: attendanceView === v ? 'var(--accent)' : 'var(--text-muted)',
-                        fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
-                        transition: 'all .15s ease',
-                      }}
-                    >{v}</button>
-                  ))}
-                </div>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{data?.date ?? ''}</span>
               </div>
 
               <div style={{ overflowX: 'auto' }}>
@@ -330,40 +257,44 @@ export function Dashboard() {
                   <thead>
                     <tr>
                       {['Employee', 'Clock In', 'Clock Out', 'Status'].map((h, i) => (
-                        <th key={h} className="th" style={{ textAlign: i === 0 ? 'left' : i === 3 ? 'center' : 'left' }}>{h}</th>
+                        <th key={h} className="th" style={{ textAlign: i === 3 ? 'center' : 'left' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {ATTENDANCE.map((row, i) => (
+                    {attendance.length === 0 ? (
+                      <tr><td colSpan={4} className="td" style={{ textAlign: 'center', padding: '32px 0', color: 'var(--text-muted)' }}>
+                        {loading ? 'Loading…' : 'No punches recorded yet today'}
+                      </td></tr>
+                    ) : attendance.map((row, i) => (
                       <motion.tr
-                        key={row.name} className="tr"
+                        key={`${row.name}-${i}`} className="tr"
                         initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }}
                         transition={{ delay: 0.3 + i * 0.05 }}
                       >
                         <td className="td">
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <Avatar initials={row.initials} />
+                            <Avatar name={row.name} />
                             <div>
                               <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{row.name}</div>
-                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.email}</div>
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.email ?? ''}</div>
                             </div>
                           </div>
                         </td>
                         <td className="td">
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                             <Clock size={13} style={{ color: 'var(--text-muted)' }} />
-                            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{row.clockIn}</span>
+                            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{row.in_time ?? '—'}</span>
                           </div>
                         </td>
                         <td className="td">
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                             <Clock size={13} style={{ color: 'var(--text-muted)' }} />
-                            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{row.clockOut}</span>
+                            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{row.out_time ?? '—'}</span>
                           </div>
                         </td>
                         <td className="td" style={{ textAlign: 'center' }}>
-                          <StatusPill status={row.status} />
+                          <AttendancePill status={row.day_status} />
                         </td>
                       </motion.tr>
                     ))}
@@ -372,7 +303,7 @@ export function Dashboard() {
               </div>
             </motion.div>
 
-            {/* EMPLOYEE LIST */}
+            {/* NEWEST EMPLOYEES */}
             <motion.div
               initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.35, duration: 0.4, ease: [0.23, 1, 0.32, 1] }}
@@ -382,54 +313,41 @@ export function Dashboard() {
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                 padding: '14px 20px', borderBottom: '1px solid var(--border)', gap: 12,
               }}>
-                <h3 className="syne" style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>
-                  Employee List
+                <h3 className="syne" style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+                  Newest Employees
                 </h3>
-                <button className="secondary-btn"><Filter size={13} /> Filter Table</button>
               </div>
 
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr>
-                      {['Name', 'Email', 'Position', 'Level', 'Status', ''].map((h, i) => (
-                        <th
-                          key={i} className="th"
-                          style={{ textAlign: i === 5 ? 'right' : 'left', cursor: i < 5 ? 'pointer' : 'default' }}
-                          onClick={() => i < 5 && setSortField(h.toLowerCase())}
-                        >
-                          {h && (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                              {h}
-                              {i < 5 && <ArrowUpRight size={10} style={{ opacity: 0.4 }} />}
-                            </span>
-                          )}
-                        </th>
+                      {['Name', 'Email', 'Position', 'Level', 'Status'].map((h) => (
+                        <th key={h} className="th" style={{ textAlign: 'left' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {EMPLOYEES.map((emp, i) => (
+                    {employees.length === 0 ? (
+                      <tr><td colSpan={5} className="td" style={{ textAlign: 'center', padding: '32px 0', color: 'var(--text-muted)' }}>
+                        {loading ? 'Loading…' : 'No employees found.'}
+                      </td></tr>
+                    ) : employees.map((emp, i) => (
                       <motion.tr
-                        key={emp.name} className="tr"
+                        key={emp.id} className="tr"
                         initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }}
                         transition={{ delay: 0.4 + i * 0.05 }}
                       >
                         <td className="td">
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <Avatar initials={emp.initials} />
+                            <Avatar name={emp.name} />
                             <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{emp.name}</span>
                           </div>
                         </td>
-                        <td className="td" style={{ fontSize: 13, color: 'var(--text-muted)' }}>{emp.email}</td>
-                        <td className="td" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{emp.position}</td>
-                        <td className="td" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{emp.level}</td>
-                        <td className="td"><StatusPill status={emp.status} /></td>
-                        <td className="td" style={{ textAlign: 'right' }}>
-                          <button className="action-btn" style={{ color: 'var(--text-muted)' }}>
-                            <MoreHorizontal size={15} />
-                          </button>
-                        </td>
+                        <td className="td" style={{ fontSize: 13, color: 'var(--text-muted)' }}>{emp.email ?? '—'}</td>
+                        <td className="td" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{emp.position ?? '—'}</td>
+                        <td className="td" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{emp.level ?? '—'}</td>
+                        <td className="td"><EmploymentPill label={emp.emp_status} /></td>
                       </motion.tr>
                     ))}
                   </tbody>
@@ -441,23 +359,9 @@ export function Dashboard() {
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8,
               }}>
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  Showing <strong style={{ color: 'var(--text-secondary)' }}>1–6</strong> of <strong style={{ color: 'var(--text-secondary)' }}>200</strong> employees
+                  Showing the <strong style={{ color: 'var(--text-secondary)' }}>{employees.length}</strong> most recent of{' '}
+                  <strong style={{ color: 'var(--text-secondary)' }}>{stats.total_employees ?? 0}</strong> employees
                 </span>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  {(['←', '1', '2', '3', '→'] as const).map((p, i) => (
-                    <button
-                      key={p}
-                      style={{
-                        width: 30, height: 30, borderRadius: 8, border: '1px solid var(--border)',
-                        background: i === 1 ? 'var(--accent-dim)' : 'transparent',
-                        color: i === 1 ? 'var(--accent)' : 'var(--text-muted)',
-                        borderColor: i === 1 ? 'var(--accent)' : 'var(--border)',
-                        fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      }}
-                    >{p}</button>
-                  ))}
-                </div>
               </div>
             </motion.div>
           </div>
@@ -472,59 +376,57 @@ export function Dashboard() {
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16, padding: '18px 20px' }}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-                <h3 className="syne" style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>
+                <h3 className="syne" style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
                   Employment Status
                 </h3>
-                <MoreHorizontal size={16} style={{ color: 'var(--text-muted)', cursor: 'pointer' }} />
+                <MoreHorizontal size={16} style={{ color: 'var(--text-muted)' }} />
               </div>
 
-              <div style={{ display: 'flex', borderRadius: 8, overflow: 'hidden', height: 14, marginBottom: 6, gap: 2 }}>
-                {empStatus.map((s) => (
-                  <div
-                    key={s.label}
-                    style={{ flex: s.count, background: s.color, borderRadius: 4, transition: 'flex .4s ease' }}
-                    title={`${s.label}: ${s.count}`}
-                  />
-                ))}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20 }}>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>0%</span>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>100%</span>
-              </div>
-
-              <div style={{ display: 'flex', gap: 8 }}>
-                {empStatus.map((s) => (
-                  <div
-                    key={s.label}
-                    style={{
-                      flex: 1, borderRadius: 12, padding: '12px 14px',
-                      background: s.color === 'var(--accent)'
-                        ? 'var(--accent-dim)'
-                        : s.color === 'var(--warning)'
-                          ? 'rgba(245,158,11,0.08)'
-                          : 'rgba(239,68,68,0.08)',
-                      border: `1px solid ${
-                        s.color === 'var(--accent)'
-                          ? 'rgba(59,130,246,0.2)'
-                          : s.color === 'var(--warning)'
-                            ? 'rgba(245,158,11,0.2)'
-                            : 'rgba(239,68,68,0.2)'
-                      }`,
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6 }}>
-                      <span style={{ width: 8, height: 8, borderRadius: 2, background: s.color, display: 'inline-block' }} />
-                      <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>
-                        {s.label}
-                      </span>
-                    </div>
-                    <div className="syne" style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1 }}>
-                      {s.count}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{s.pct}%</div>
+              {empStatus.length === 0 ? (
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0', margin: 0 }}>
+                  {loading ? 'Loading…' : 'No employment status data'}
+                </p>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', borderRadius: 8, overflow: 'hidden', height: 14, marginBottom: 6, gap: 2 }}>
+                    {empStatus.map((st: any) => (
+                      <div
+                        key={st.label}
+                        style={{ flex: st.count, background: st.color, borderRadius: 4, transition: 'flex .4s ease' }}
+                        title={`${st.label}: ${st.count}`}
+                      />
+                    ))}
                   </div>
-                ))}
-              </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20 }}>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>0%</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>100%</span>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {empStatus.map((st: any) => (
+                      <div
+                        key={st.label}
+                        style={{
+                          flex: 1, minWidth: 96, borderRadius: 12, padding: '12px 14px',
+                          background: `color-mix(in srgb, ${st.color} 8%, transparent)`,
+                          border: `1px solid color-mix(in srgb, ${st.color} 20%, transparent)`,
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6 }}>
+                          <span style={{ width: 8, height: 8, borderRadius: 2, background: st.color, display: 'inline-block' }} />
+                          <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>
+                            {st.label}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 20, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.15, letterSpacing: '-.01em' }}>
+                          {st.count}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{st.pct}%</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </motion.div>
 
             {/* EMPLOYEE GROWTH */}
@@ -534,40 +436,42 @@ export function Dashboard() {
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16, padding: '18px 20px' }}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-                <h3 className="syne" style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>
+                <h3 className="syne" style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
                   Employee Growth
                 </h3>
-                <MoreHorizontal size={16} style={{ color: 'var(--text-muted)', cursor: 'pointer' }} />
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Last 6 months</span>
               </div>
 
               <ResponsiveContainer width="100%" height={160}>
-                <BarChart data={GROWTH_DATA} barCategoryGap="28%" barGap={3}>
+                <BarChart data={growth} barCategoryGap="28%" barGap={3}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                   <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'var(--text-muted)', fontFamily: 'inherit' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)', fontFamily: 'inherit' }} axisLine={false} tickLine={false} width={30} />
+                  <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)', fontFamily: 'inherit' }} axisLine={false} tickLine={false} width={30} allowDecimals={false} />
                   <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(0,0,0,0.03)' }} />
                   <Bar dataKey="employees" name="Employees" fill="var(--accent)" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="newHires"  name="New Hires"  fill="rgba(59,130,246,0.35)" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="new_hires" name="New Hires" fill="rgba(59,130,246,0.35)" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
 
-              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 4, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>
-                  Total (Sep)
-                </div>
-                {[
-                  { label: 'Employees', value: 155, color: 'var(--accent)' },
-                  { label: 'New Hires',  value: 55,  color: 'rgba(59,130,246,0.5)' },
-                ].map((l) => (
-                  <div key={l.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ width: 10, height: 10, borderRadius: 3, background: l.color, display: 'inline-block' }} />
-                      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{l.label}</span>
-                    </div>
-                    <span className="syne" style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-primary)' }}>{l.value}</span>
+              {lastGrowth && (
+                <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 4, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>
+                    Total ({lastGrowth.month})
                   </div>
-                ))}
-              </div>
+                  {[
+                    { label: 'Employees', value: lastGrowth.employees, color: 'var(--accent)' },
+                    { label: 'New Hires', value: lastGrowth.new_hires, color: 'rgba(59,130,246,0.5)' },
+                  ].map((l) => (
+                    <div key={l.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ width: 10, height: 10, borderRadius: 3, background: l.color, display: 'inline-block' }} />
+                        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{l.label}</span>
+                      </div>
+                      <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-.01em' }}>{l.value}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </motion.div>
 
             {/* LENGTH OF SERVICE */}
@@ -577,23 +481,23 @@ export function Dashboard() {
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16, padding: '18px 20px' }}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-                <h3 className="syne" style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>
+                <h3 className="syne" style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
                   Length of Service
                 </h3>
-                <MoreHorizontal size={16} style={{ color: 'var(--text-muted)', cursor: 'pointer' }} />
+                <MoreHorizontal size={16} style={{ color: 'var(--text-muted)' }} />
               </div>
 
               <ResponsiveContainer width="100%" height={150}>
-                <BarChart data={SERVICE_DATA} barCategoryGap="30%">
+                <BarChart data={service} barCategoryGap="30%">
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                   <XAxis dataKey="label" tick={{ fontSize: 10, fill: 'var(--text-muted)', fontFamily: 'inherit' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 10, fill: 'var(--text-muted)', fontFamily: 'inherit' }} axisLine={false} tickLine={false} width={24} />
+                  <YAxis tick={{ fontSize: 10, fill: 'var(--text-muted)', fontFamily: 'inherit' }} axisLine={false} tickLine={false} width={24} allowDecimals={false} />
                   <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(0,0,0,0.03)' }} />
                   <Bar dataKey="value" name="Employees" radius={[4, 4, 0, 0]}>
-                    {SERVICE_DATA.map((_, i) => (
+                    {service.map((row: any, i: number) => (
                       <Cell
                         key={i}
-                        fill={i === SERVICE_DATA.length - 1 ? 'var(--accent)' : 'rgba(59,130,246,0.25)'}
+                        fill={maxService > 0 && row.value === maxService ? 'var(--accent)' : 'rgba(59,130,246,0.25)'}
                       />
                     ))}
                   </Bar>

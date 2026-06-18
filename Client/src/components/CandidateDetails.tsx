@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   UserCheck, Loader2, CalendarClock, Send, CheckCircle2,
-  Mail, Phone, MapPin, Briefcase, Star,
+  Mail, Phone, MapPin, Briefcase, Star, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { DetailSlideOver } from './ui/DetailSlideOver';
 import api from '../../lib/api';
+import { useCan } from '@/hooks/useCan';
 
 // ── Stage helpers ─────────────────────────────────────────────────────────────
 
@@ -14,7 +15,6 @@ const STAGE_COLORS: Record<string, string> = {
   Phone_Screen: 'bg-indigo-50 text-indigo-700 border border-indigo-200',
   Assessment:   'bg-amber-50 text-amber-700 border border-amber-200',
   Interview:    'bg-purple-50 text-purple-700 border border-purple-200',
-  Offer:        'bg-orange-50 text-orange-700 border border-orange-200',
   Hired:        'pill-success',
   Rejected:     'pill-danger',
   Archived:     'bg-slate-100 text-slate-500 border border-slate-200',
@@ -25,7 +25,6 @@ const STAGE_LABEL: Record<string, string> = {
   Phone_Screen: 'Phone Screen',
   Assessment:   'Assessment',
   Interview:    'Interview',
-  Offer:        'Offer',
   Hired:        'Hired',
   Rejected:     'Rejected',
   Archived:     'Archived',
@@ -82,12 +81,16 @@ interface Props {
 }
 
 export function CandidateDetails({ candidateId, onClose, onHired, onRefresh }: Props) {
+  const { can } = useCan();
+  const canManage = can('manage_candidates');
   const [data, setData]           = useState<any>(null);
   const [loading, setLoading]     = useState(true);
   const [activeTab, setActiveTab] = useState('Profile');
-  const [movingStage,  setMovingStage]  = useState<string | null>(null);
-  const [hiring,       setHiring]       = useState(false);
-  const [sendingLink,  setSendingLink]  = useState<string | null>(null);
+  const [movingStage,   setMovingStage]   = useState<string | null>(null);
+  const [hiring,        setHiring]        = useState(false);
+  const [sendingLink,   setSendingLink]   = useState<string | null>(null);
+  const [sendingInvite, setSendingInvite] = useState<string | null>(null);
+  const [cvUrl,         setCvUrl]         = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -144,10 +147,34 @@ export function CandidateDetails({ candidateId, onClose, onHired, onRefresh }: P
     }
   };
 
+  const handleSendInvite = async (interviewId: any) => {
+    setSendingInvite(String(interviewId));
+    try {
+      await api.post(`/recruitment/interviews/${interviewId}/send-invite`);
+      toast.success('Interview invite sent to all parties');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to send invite');
+    } finally {
+      setSendingInvite(null);
+    }
+  };
+
   const currentStage = data?.pipeline?.find((p: any) => String(p.id) === String(data?.hiringStage));
   const name = data ? `${data.first_name ?? ''} ${data.last_name ?? ''}`.trim() : 'Loading…';
 
   return (
+    <>
+    {cvUrl && (
+      <div className="fixed inset-0 z-[60] flex flex-col bg-black/80 backdrop-blur-sm">
+        <div className="flex items-center justify-between px-5 py-3 bg-[var(--surface)] border-b border-[var(--border)] shrink-0">
+          <p className="text-[13px] font-semibold text-[var(--text-primary)]">CV Preview</p>
+          <button onClick={() => setCvUrl(null)} className="p-1.5 rounded-lg hover:bg-[var(--surface-hover)] transition-colors">
+            <X size={16} className="text-[var(--text-muted)]" />
+          </button>
+        </div>
+        <iframe src={cvUrl} className="flex-1 w-full" title="CV Preview" />
+      </div>
+    )}
     <DetailSlideOver
       open
       title=""
@@ -155,10 +182,16 @@ export function CandidateDetails({ candidateId, onClose, onHired, onRefresh }: P
       maxWidth="2xl"
       footerActions={
         currentStage?.type === 'Hired' ? (
-          <button onClick={handleHire} disabled={hiring} className="primary-btn">
-            {hiring ? <Loader2 size={14} className="animate-spin" /> : <UserCheck size={14} />}
-            Convert to Employee
-          </button>
+          data?.hired_employee_id ? (
+            <span className="text-[13px] text-emerald-600 font-semibold flex items-center gap-1.5">
+              <UserCheck size={14} /> Employee record created
+            </span>
+          ) : canManage ? (
+            <button onClick={handleHire} disabled={hiring} className="primary-btn">
+              {hiring ? <Loader2 size={14} className="animate-spin" /> : <UserCheck size={14} />}
+              Convert to Employee
+            </button>
+          ) : undefined
         ) : undefined
       }
     >
@@ -183,14 +216,12 @@ export function CandidateDetails({ candidateId, onClose, onHired, onRefresh }: P
                 {data?.city && <InfoChip icon={MapPin} value={[data.city, data.country].filter(Boolean).join(', ')} />}
               </div>
               {data?.cv_file && (
-                <a
-                  href={`/v1/api/hr/documents/${data.cv_file}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  onClick={() => setCvUrl(`/v1/api/hr/documents/${data.cv_file}`)}
                   className="inline-flex items-center gap-1.5 mt-2 text-[12px] font-semibold text-[var(--accent)] hover:underline"
                 >
                   <Briefcase size={12} /> View CV
-                </a>
+                </button>
               )}
             </div>
             {currentStage && (
@@ -203,31 +234,52 @@ export function CandidateDetails({ candidateId, onClose, onHired, onRefresh }: P
           {/* ── Pipeline track ───────────────────────────────────────────── */}
           <div className="rounded-[12px] border border-[var(--border)] p-4 bg-[var(--surface-hover)]">
             <SectionLabel>Pipeline Stage</SectionLabel>
-            <div className="flex flex-wrap gap-1.5">
-              {(data?.pipeline ?? []).map((stage: any) => {
-                const isActive  = String(stage.id) === String(data?.hiringStage);
-                const isMoving  = movingStage === String(stage.id);
-                return (
-                  <button
-                    key={stage.id}
-                    onClick={() => moveToStage(String(stage.id))}
-                    disabled={!!movingStage || hiring}
-                    className={[
-                      'text-[11px] font-semibold px-3 py-1.5 rounded-full border transition-all',
-                      isActive
-                        ? `${STAGE_COLORS[stage.type ?? ''] ?? 'bg-blue-50 text-blue-700 border-blue-200'} ring-2 ring-[var(--accent)] ring-offset-1`
-                        : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]',
-                      'disabled:opacity-50 disabled:cursor-not-allowed',
-                    ].join(' ')}
-                  >
-                    {isMoving
-                      ? <Loader2 size={11} className="animate-spin inline" />
-                      : (STAGE_LABEL[stage.type ?? ''] ?? stage.name)
-                    }
-                  </button>
-                );
-              })}
-            </div>
+            {(currentStage?.type === 'Hired' || !canManage) ? (
+              <div className="flex flex-wrap gap-1.5">
+                {(data?.pipeline ?? []).map((stage: any) => {
+                  const isActive = String(stage.id) === String(data?.hiringStage);
+                  return (
+                    <span
+                      key={stage.id}
+                      className={[
+                        'text-[11px] font-semibold px-3 py-1.5 rounded-full border',
+                        isActive
+                          ? `${STAGE_COLORS[stage.type ?? ''] ?? 'bg-blue-50 text-blue-700 border-blue-200'} ring-2 ring-[var(--accent)] ring-offset-1`
+                          : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-muted)] opacity-40',
+                      ].join(' ')}
+                    >
+                      {STAGE_LABEL[stage.type ?? ''] ?? stage.name}
+                    </span>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {(data?.pipeline ?? []).map((stage: any) => {
+                  const isActive  = String(stage.id) === String(data?.hiringStage);
+                  const isMoving  = movingStage === String(stage.id);
+                  return (
+                    <button
+                      key={stage.id}
+                      onClick={() => moveToStage(String(stage.id))}
+                      disabled={!!movingStage || hiring}
+                      className={[
+                        'text-[11px] font-semibold px-3 py-1.5 rounded-full border transition-all',
+                        isActive
+                          ? `${STAGE_COLORS[stage.type ?? ''] ?? 'bg-blue-50 text-blue-700 border-blue-200'} ring-2 ring-[var(--accent)] ring-offset-1`
+                          : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]',
+                        'disabled:opacity-50 disabled:cursor-not-allowed',
+                      ].join(' ')}
+                    >
+                      {isMoving
+                        ? <Loader2 size={11} className="animate-spin inline" />
+                        : (STAGE_LABEL[stage.type ?? ''] ?? stage.name)
+                      }
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* ── Tabs ────────────────────────────────────────────────────── */}
@@ -336,13 +388,19 @@ export function CandidateDetails({ candidateId, onClose, onHired, onRefresh }: P
                           )}
                         </div>
                         <div className="flex flex-col items-end gap-1.5 shrink-0">
-                          <span className={`pill text-[11px] ${iv.status === 'Completed' ? 'pill-success' : iv.status === 'Cancelled' ? 'pill-danger' : 'pill-warning'}`}>
-                            {iv.status ?? 'Scheduled'}
-                          </span>
-                          {iv.outcome && (
-                            <span className={`pill text-[11px] ${iv.outcome === 'Passed' ? 'pill-success' : iv.outcome === 'Failed' ? 'pill-danger' : 'pill-warning'}`}>
-                              {iv.outcome}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide font-semibold">Status</span>
+                            <span className={`pill text-[11px] ${iv.status === 'Completed' ? 'pill-success' : iv.status === 'Cancelled' ? 'pill-danger' : 'pill-warning'}`}>
+                              {iv.status ?? 'Scheduled'}
                             </span>
+                          </div>
+                          {iv.outcome && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide font-semibold">Outcome</span>
+                              <span className={`pill text-[11px] ${iv.outcome === 'Passed' ? 'pill-success' : iv.outcome === 'Failed' ? 'pill-danger' : 'pill-warning'}`}>
+                                {iv.outcome}
+                              </span>
+                            </div>
                           )}
                         </div>
                       </div>
@@ -360,28 +418,57 @@ export function CandidateDetails({ candidateId, onClose, onHired, onRefresh }: P
                         </p>
                       )}
 
-                      {/* Self-scheduling */}
-                      {iv.schedule_options && (
-                        <div className="mt-3 pt-2.5 border-t border-[var(--border)]">
-                          {iv.scheduled ? (
-                            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-600">
-                              <CheckCircle2 size={12} /> Slot confirmed by candidate
-                            </span>
-                          ) : (
-                            <button
-                              onClick={() => handleSendScheduleLink(iv.id)}
-                              disabled={sendingLink === String(iv.id)}
-                              className="flex items-center gap-1.5 text-[12px] font-semibold text-[var(--accent)] hover:underline disabled:opacity-50"
-                            >
-                              {sendingLink === String(iv.id)
-                                ? <Loader2 size={12} className="animate-spin" />
-                                : <Send size={12} />
-                              }
-                              Send Scheduling Link
-                            </button>
-                          )}
-                        </div>
-                      )}
+                      {/* Scheduling / invite actions — hidden once candidate is hired */}
+                      {(() => {
+                        if (currentStage?.type === 'Hired') return null;
+                        const hasSlots = (() => { try { return JSON.parse(iv.schedule_options || '[]').length > 0; } catch { return false; } })();
+                        const isConfirmed = iv.scheduleUpdated === 1 || iv.scheduleUpdated === '1';
+
+                        if (hasSlots && !iv.scheduled) {
+                          // Slots defined but candidate hasn't picked yet
+                          return (
+                            <div className="mt-3 pt-2.5 border-t border-[var(--border)] flex flex-col gap-1.5">
+                              <button
+                                onClick={() => handleSendScheduleLink(iv.id)}
+                                disabled={sendingLink === String(iv.id)}
+                                className="flex items-center gap-1.5 text-[12px] font-semibold text-[var(--accent)] hover:underline disabled:opacity-50"
+                              >
+                                {sendingLink === String(iv.id) ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                                Send Scheduling Link
+                              </button>
+                              <span className="flex items-center gap-1 text-[11px] text-amber-600">
+                                <Mail size={11} /> Emails the candidate
+                              </span>
+                            </div>
+                          );
+                        }
+
+                        if (iv.scheduled) {
+                          // Date is confirmed — show invite button (+ badge if self-scheduled)
+                          return (
+                            <div className="mt-3 pt-2.5 border-t border-[var(--border)] flex flex-col gap-1.5">
+                              {isConfirmed && (
+                                <span className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-600 mb-1">
+                                  <CheckCircle2 size={12} /> Slot confirmed by candidate
+                                </span>
+                              )}
+                              <button
+                                onClick={() => handleSendInvite(iv.id)}
+                                disabled={sendingInvite === String(iv.id)}
+                                className="flex items-center gap-1.5 text-[12px] font-semibold text-[var(--accent)] hover:underline disabled:opacity-50"
+                              >
+                                {sendingInvite === String(iv.id) ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                                Send Interview Invite
+                              </button>
+                              <span className="flex items-center gap-1 text-[11px] text-amber-600">
+                                <Mail size={11} /> Candidate, hiring manager & interviewers
+                              </span>
+                            </div>
+                          );
+                        }
+
+                        return null;
+                      })()}
                     </div>
                   </div>
                 );
@@ -402,5 +489,6 @@ export function CandidateDetails({ candidateId, onClose, onHired, onRefresh }: P
         </div>
       )}
     </DetailSlideOver>
+    </>
   );
 }

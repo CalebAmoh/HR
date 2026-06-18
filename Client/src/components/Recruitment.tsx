@@ -1,12 +1,12 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { Plus, Eye, Trash2, FileEdit, Copy, Send, Loader2, Save } from 'lucide-react';
+import { Plus, Eye, Trash2, FileEdit, Copy, Send, Loader2, Save, Mail, ChevronDown, X, Briefcase, Users, FileText, Calendar } from 'lucide-react';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
 import { PageHeader } from './ui/PageHeader';
-import { TabBar } from './ui/TabBar';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { FormField, inputClass } from './ui/FormField';
+import { CountedTextarea } from './ui/CountedTextarea';
 import { DetailSlideOver } from './ui/DetailSlideOver';
 import { JobForm } from './JobForm';
 import { JobDetails } from './JobDetails';
@@ -14,6 +14,7 @@ import { CandidateForm } from './CandidateForm';
 import { CandidateDetails } from './CandidateDetails';
 import { InterviewForm } from './InterviewForm';
 import api from '../../lib/api';
+import { useCan } from '@/hooks/useCan';
 
 // ── Pipeline stage helpers ────────────────────────────────────────────────────
 
@@ -22,7 +23,6 @@ const STAGE_COLORS: Record<string, string> = {
   Phone_Screen: 'bg-indigo-50 text-indigo-700 border border-indigo-200',
   Assessment:   'bg-amber-50 text-amber-700 border border-amber-200',
   Interview:    'bg-purple-50 text-purple-700 border border-purple-200',
-  Offer:        'bg-orange-50 text-orange-700 border border-orange-200',
   Hired:        'pill-success',
   Rejected:     'pill-danger',
   Archived:     'bg-slate-100 text-slate-500 border border-slate-200',
@@ -33,7 +33,6 @@ const STAGE_LABEL: Record<string, string> = {
   Phone_Screen: 'Phone Screen',
   Assessment:   'Assessment',
   Interview:    'Interview',
-  Offer:        'Offer',
   Hired:        'Hired',
   Rejected:     'Rejected',
   Archived:     'Archived',
@@ -73,19 +72,23 @@ function InfoRow({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
-function InterviewDetails({ interview, candidate, job, pipeline, onClose, onSaveOutcome, onMoveStage, onSendLink, onViewCandidate, onScheduleNextRound }: any) {
+function InterviewDetails({ interview, candidate, job, pipeline, canManage = true, onClose, onSaveOutcome, onMoveStage, onSendLink, onSendInvite, onViewCandidate, onScheduleNextRound, onRefresh }: any) {
   const [status,        setStatus]        = useState<string>(interview.status   ?? 'Scheduled');
   const [outcome,       setOutcome]       = useState<string>(interview.outcome  ?? '');
   const [feedback,      setFeedback]      = useState<string>(interview.feedback ?? '');
   const [savingOutcome, setSavingOutcome] = useState(false);
   const [movingStage,   setMovingStage]   = useState<string | null>(null);
+  const [sendingLink,   setSendingLink]   = useState(false);
+  const [sendingInvite, setSendingInvite] = useState(false);
   const [outcomeSaved,  setOutcomeSaved]  = useState<{ status: string; outcome: string } | null>(
     interview.status === 'Completed' || interview.status === 'Cancelled' || interview.status === 'No Show'
       ? { status: interview.status, outcome: interview.outcome ?? '' }
       : null
   );
 
-  const currentStage   = String(candidate?.hiringStage ?? '');
+  const currentStage    = String(candidate?.hiringStage ?? '');
+  const currentStageObj = pipeline.find((s: any) => String(s.id) === currentStage);
+  const isHired         = currentStageObj?.type === 'Hired';
   const currentStageIdx = pipeline.findIndex((s: any) => String(s.id) === currentStage);
   const nextStage       = pipeline.find((s: any, idx: number) =>
     idx > currentStageIdx && !['Hired', 'Rejected', 'Archived'].includes(s.type ?? '')
@@ -107,8 +110,7 @@ function InterviewDetails({ interview, candidate, job, pipeline, onClose, onSave
 
   const handleMoveStage = async (stageId: string) => {
     setMovingStage(stageId);
-    await onMoveStage(interview.candidate, stageId);
-    setMovingStage(null);
+    try { await onMoveStage(interview.candidate, stageId); } finally { setMovingStage(null); }
   };
 
   return (
@@ -118,15 +120,63 @@ function InterviewDetails({ interview, candidate, job, pipeline, onClose, onSave
       subtitle={job?.title ?? ''}
       onClose={onClose}
       maxWidth="xl"
-      footerActions={
-        interview.schedule_options && !interview.scheduled ? (
-          <div className="flex items-center gap-2 w-full">
-            <button className="secondary-btn flex items-center gap-1.5" onClick={onSendLink}>
-              <Send size={13} /> Send Scheduling Link
-            </button>
-          </div>
-        ) : undefined
-      }
+      footerActions={(() => {
+        if (isHired || !canManage) return undefined;
+        const hasSlots = (() => { try { return JSON.parse(interview.schedule_options || '[]').length > 0; } catch { return false; } })();
+        if (hasSlots && !interview.scheduled) {
+          const sentAt = interview.schedule_link_sent_at ? new Date(interview.schedule_link_sent_at) : null;
+          return (
+            <div className="flex flex-col gap-1.5 w-full">
+              <div className="flex items-center gap-2">
+                <button
+                  className="secondary-btn flex items-center gap-1.5"
+                  onClick={async () => { setSendingLink(true); try { await onSendLink(); await onRefresh?.(); } finally { setSendingLink(false); } }}
+                  disabled={sendingLink}
+                  title="Emails the candidate a link to pick their interview slot"
+                >
+                  {sendingLink ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+                  {sendingLink ? 'Sending…' : 'Send Scheduling Link'}
+                </button>
+                <span className="text-[11px] text-amber-600 flex items-center gap-1">
+                  <Mail size={11} /> Emails the candidate
+                </span>
+              </div>
+              {sentAt && (
+                <p className="text-[11px] text-emerald-600 flex items-center gap-1">
+                  ✓ Last sent {sentAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at {sentAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                </p>
+              )}
+            </div>
+          );
+        }
+        if (interview.scheduled) {
+          const sentAt = interview.invite_sent_at ? new Date(interview.invite_sent_at) : null;
+          return (
+            <div className="flex flex-col gap-1.5 w-full">
+              <div className="flex items-center gap-2">
+                <button
+                  className="secondary-btn flex items-center gap-1.5"
+                  onClick={async () => { setSendingInvite(true); try { await onSendInvite(); await onRefresh?.(); } finally { setSendingInvite(false); } }}
+                  disabled={sendingInvite}
+                  title="Sends interview details and calendar invite to all parties"
+                >
+                  {sendingInvite ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+                  {sendingInvite ? 'Sending…' : 'Send Interview Invite'}
+                </button>
+                <span className="text-[11px] text-amber-600 flex items-center gap-1">
+                  <Mail size={11} /> Candidate, hiring manager & interviewers
+                </span>
+              </div>
+              {sentAt && (
+                <p className="text-[11px] text-emerald-600 flex items-center gap-1">
+                  ✓ Last sent {sentAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at {sentAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                </p>
+              )}
+            </div>
+          );
+        }
+        return undefined;
+      })()}
     >
       <div className="flex flex-col gap-6">
 
@@ -134,7 +184,14 @@ function InterviewDetails({ interview, candidate, job, pipeline, onClose, onSave
         <div className="rounded-xl border border-[var(--border)] divide-y divide-[var(--border)] overflow-hidden">
           <InfoRow label="Round"        value={interview.level} />
           <InfoRow label="Status"       value={statusLabel} />
-          <InfoRow label="Scheduled"    value={interview.scheduled ? new Date(interview.scheduled).toLocaleString() : null} />
+          <InfoRow label="Date"         value={interview.scheduled ? new Date(interview.scheduled).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : null} />
+          <InfoRow label="Time"         value={
+            interview.scheduled
+              ? interview.scheduled_end
+                ? `${new Date(interview.scheduled).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })} – ${new Date(interview.scheduled_end).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
+                : new Date(interview.scheduled).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+              : null
+          } />
           <InfoRow label="Location"     value={interview.location} />
           <InfoRow label="Interviewers" value={interview.interviewers} />
           {interview.notes && <InfoRow label="Notes" value={interview.notes} />}
@@ -143,6 +200,15 @@ function InterviewDetails({ interview, candidate, job, pipeline, onClose, onSave
         {/* Pipeline stage */}
         <div>
           <SectionLabel>Pipeline Stage</SectionLabel>
+          {isHired ? (
+            <p className="text-[11px] text-emerald-600 flex items-center gap-1 mb-3 -mt-1 font-semibold">
+              Candidate is hired — stage is locked.
+            </p>
+          ) : canManage ? (
+            <p className="text-[11px] text-amber-600 flex items-center gap-1 mb-3 -mt-1">
+              <Mail size={11} /> Changing the stage sends an email notification to the candidate.
+            </p>
+          ) : null}
           {pipeline.length === 0 ? (
             <p className="text-[12px] text-[var(--text-muted)] italic">No pipeline stages configured.</p>
           ) : (
@@ -150,7 +216,18 @@ function InterviewDetails({ interview, candidate, job, pipeline, onClose, onSave
               {pipeline.map((stage: any) => {
                 const isActive = String(stage.id) === currentStage;
                 const isMoving = movingStage === String(stage.id);
-                return (
+                return (isHired || !canManage) ? (
+                  <span key={stage.id}
+                    className={[
+                      'text-[11px] font-semibold px-3 py-1.5 rounded-full border',
+                      isActive
+                        ? `${STAGE_COLORS[stage.type ?? ''] ?? 'bg-blue-50 text-blue-700 border-blue-200'} ring-2 ring-[var(--accent)] ring-offset-1`
+                        : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-muted)] opacity-40',
+                    ].join(' ')}
+                  >
+                    {STAGE_LABEL[stage.type ?? ''] ?? stage.name}
+                  </span>
+                ) : (
                   <button key={stage.id} type="button"
                     onClick={() => !isActive && handleMoveStage(String(stage.id))}
                     disabled={!!movingStage}
@@ -170,36 +247,58 @@ function InterviewDetails({ interview, candidate, job, pipeline, onClose, onSave
           )}
         </div>
 
-        {/* Record Outcome */}
-        <div className="rounded-xl border border-[var(--border)] p-4 flex flex-col gap-4">
-          <SectionLabel>Record Outcome</SectionLabel>
-          <FormField label="Interview Status">
-            <select value={status} onChange={e => { setStatus(e.target.value); setOutcomeSaved(null); }} className={inputClass}>
-              <option value="Scheduled">Scheduled</option>
-              <option value="Completed">Completed</option>
-              <option value="Cancelled">Cancelled</option>
-              <option value="No Show">No Show</option>
-            </select>
-          </FormField>
-          {status === 'Completed' && (
-            <FormField label="Outcome">
-              <select value={outcome} onChange={e => { setOutcome(e.target.value); setOutcomeSaved(null); }} className={inputClass}>
-                <option value="">— Select —</option>
-                <option value="Passed">Passed</option>
-                <option value="Failed">Failed</option>
-                <option value="Pending">Pending Decision</option>
+        {/* Record Outcome — locked once candidate is hired, or read-only without manage permission */}
+        {(isHired || !canManage) ? (
+          <div className="rounded-xl border border-[var(--border)] p-4 bg-[var(--surface-hover)]">
+            <SectionLabel>Record Outcome</SectionLabel>
+            <div className="flex flex-col gap-2 mt-1">
+              {interview.status && (
+                <p className="text-[13px] text-[var(--text-primary)]">
+                  <span className="font-semibold">Status:</span> {interview.status}
+                </p>
+              )}
+              {interview.outcome && (
+                <p className="text-[13px] text-[var(--text-primary)]">
+                  <span className="font-semibold">Outcome:</span> {interview.outcome}
+                </p>
+              )}
+              {interview.feedback && (
+                <p className="text-[13px] text-[var(--text-secondary)] italic mt-1">{interview.feedback}</p>
+              )}
+              {isHired && <p className="text-[11px] text-[var(--text-muted)] mt-1">Locked — candidate has been hired.</p>}
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-[var(--border)] p-4 flex flex-col gap-4">
+            <SectionLabel>Record Outcome</SectionLabel>
+            <FormField label="Interview Status">
+              <select value={status} onChange={e => { setStatus(e.target.value); setOutcomeSaved(null); }} className={inputClass}>
+                <option value="Scheduled">Scheduled</option>
+                <option value="Completed">Completed</option>
+                <option value="Cancelled">Cancelled</option>
+                <option value="No Show">No Show</option>
               </select>
             </FormField>
-          )}
-          <FormField label="Feedback / Notes">
-            <textarea value={feedback} onChange={e => setFeedback(e.target.value)} rows={4} className={inputClass} placeholder="Optional notes…" />
-          </FormField>
-          <button type="button" className="primary-btn self-end flex items-center gap-1.5"
-            onClick={handleSaveOutcome} disabled={savingOutcome}>
-            {savingOutcome ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-            Save Outcome
-          </button>
-        </div>
+            {status === 'Completed' && (
+              <FormField label="Outcome">
+                <select value={outcome} onChange={e => { setOutcome(e.target.value); setOutcomeSaved(null); }} className={inputClass}>
+                  <option value="">— Select —</option>
+                  <option value="Passed">Passed</option>
+                  <option value="Failed">Failed</option>
+                  <option value="Pending">Pending Decision</option>
+                </select>
+              </FormField>
+            )}
+            <FormField label="Feedback / Notes">
+              <CountedTextarea value={feedback} onChange={e => setFeedback(e.target.value)} rows={4} maxChars={1000} className={inputClass} placeholder="Optional notes…" />
+            </FormField>
+            <button type="button" className="primary-btn self-end flex items-center gap-1.5"
+              onClick={handleSaveOutcome} disabled={savingOutcome}>
+              {savingOutcome ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+              Save Outcome
+            </button>
+          </div>
+        )}
 
         {/* What's next — shown after outcome is saved */}
         {outcomeSaved && outcomeSaved.status !== 'Scheduled' && (
@@ -208,23 +307,43 @@ function InterviewDetails({ interview, candidate, job, pipeline, onClose, onSave
 
             {outcomeSaved.status === 'Completed' && outcomeSaved.outcome === 'Passed' && (
               <div className="flex flex-col gap-2">
-                <p className="text-[13px] text-[var(--text-primary)]">Candidate passed. Advance their application:</p>
-                <div className="flex flex-wrap gap-2">
-                  {nextStage && (
-                    <button type="button"
-                      className="primary-btn flex items-center gap-1.5"
-                      onClick={() => handleMoveStage(String(nextStage.id))}
-                      disabled={!!movingStage}
-                    >
-                      {movingStage === String(nextStage.id) ? <Loader2 size={13} className="animate-spin" /> : null}
-                      Move to {STAGE_LABEL[nextStage.type ?? ''] ?? nextStage.name}
-                    </button>
-                  )}
-                  <button type="button" className="secondary-btn flex items-center gap-1.5"
-                    onClick={onScheduleNextRound}>
-                    Schedule Next Round
-                  </button>
-                </div>
+                {isHired ? (
+                  candidate?.hired_employee_id ? (
+                    <p className="text-[13px] text-emerald-600 font-semibold">
+                      Employee record has been created. View them in the Employees section.
+                    </p>
+                  ) : (
+                    <>
+                      <p className="text-[13px] text-[var(--text-primary)]">
+                        Candidate is hired! Open their profile to convert them to an employee record.
+                      </p>
+                      <button type="button" className="secondary-btn self-start" onClick={onViewCandidate}>
+                        Open Candidate Profile
+                      </button>
+                    </>
+                  )
+                ) : (
+                  <>
+                    <p className="text-[13px] text-[var(--text-primary)]">Candidate passed. Advance their application:</p>
+                    <div className="flex flex-wrap gap-2">
+                      {nextStage && (
+                        <button type="button"
+                          className="primary-btn flex items-center gap-1.5"
+                          onClick={() => handleMoveStage(String(nextStage.id))}
+                          disabled={!!movingStage}
+                          title="Sends an email notification to the candidate"
+                        >
+                          {movingStage === String(nextStage.id) ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
+                          Move to {STAGE_LABEL[nextStage.type ?? ''] ?? nextStage.name}
+                        </button>
+                      )}
+                      <button type="button" className="secondary-btn flex items-center gap-1.5"
+                        onClick={onScheduleNextRound}>
+                        Schedule Next Round
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
@@ -239,8 +358,9 @@ function InterviewDetails({ interview, candidate, job, pipeline, onClose, onSave
                     className="danger-btn flex items-center gap-1.5 self-start"
                     onClick={() => handleMoveStage(String(rejectedStage.id))}
                     disabled={!!movingStage}
+                    title="Sends an email notification to the candidate"
                   >
-                    {movingStage === String(rejectedStage.id) ? <Loader2 size={13} className="animate-spin" /> : null}
+                    {movingStage === String(rejectedStage.id) ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
                     Mark as Rejected
                   </button>
                 )}
@@ -264,7 +384,12 @@ function InterviewDetails({ interview, candidate, job, pipeline, onClose, onSave
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 
-const TABS = ['Jobs', 'Candidates', 'Applications', 'Interviews'];
+const TABS = [
+  { label: 'Jobs',         icon: Briefcase },
+  { label: 'Candidates',   icon: Users     },
+  { label: 'Applications', icon: FileText  },
+  { label: 'Interviews',   icon: Calendar  },
+];
 
 // ── Empty state ───────────────────────────────────────────────────────────────
 
@@ -279,6 +404,12 @@ function EmptyRow({ cols, label }: { cols: number; label: string }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => void }) {
+  const { can } = useCan();
+  // Per-tab action permissions — view_recruitment only reveals the page + tabs (read-only).
+  const canJobs         = can('manage_jobs');
+  const canCandidates   = can('manage_candidates');
+  const canApplications = can('manage_applications');
+  const canInterviews   = can('manage_interviews');
   const [activeTab, setActiveTab] = useState('Jobs');
   const [search, setSearch]       = useState('');
   const [page, setPage]           = useState(1);
@@ -291,6 +422,17 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
   const [pipeline, setPipeline]       = useState<any[]>([]);
   const [employees, setEmployees]     = useState<any[]>([]);
   const [loading, setLoading]         = useState(true);
+
+  const [collapsedGroups, setCollapsedGroups]       = useState<Set<string>>(new Set());
+  const [viewingApplication, setViewingApplication] = useState<any | null>(null);
+  const [cvUrl, setCvUrl]                           = useState<string | null>(null);
+
+  const toggleGroup = (key: string) =>
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
 
   const [showJobForm, setShowJobForm]             = useState(false);
   const [showCandidateForm, setShowCandidateForm] = useState(false);
@@ -471,6 +613,15 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
     }
   };
 
+  const sendInvite = async (id: any) => {
+    try {
+      await api.post(`/recruitment/interviews/${id}/send-invite`);
+      toast.success('Interview invite sent to all parties');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to send invite');
+    }
+  };
+
   const saveOutcome = async (data: any) => {
     try {
       await api.put(`/recruitment/interviews/${interviewDetailTarget.id}`, data);
@@ -482,9 +633,14 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
   const moveStageFromInterview = async (candidateId: any, stageId: string) => {
     try {
       await api.put(`/recruitment/candidates/${candidateId}/stage`, { stageId });
-      toast.success('Stage updated');
+      toast.success('Stage updated — candidate notified by email.');
       fetchAll();
-    } catch { toast.error('Failed to update stage'); }
+    } catch (err: any) {
+      const msg = err?.response?.data?.message ?? 'Failed to update stage';
+      toast.error(msg, { duration: 6000 });
+      fetchAll();
+      throw err;
+    }
   };
 
   const deleteInterview = async (id: any) => {
@@ -500,7 +656,14 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
     <div className="p-4 sm:p-6 md:p-6 w-full max-w-[1400px] mx-auto overflow-x-hidden flex flex-col h-full relative">
       <PageHeader title="Recruitment" subtitle="Manage job postings, candidates, and interviews." />
 
-      <TabBar tabs={TABS} activeTab={activeTab} onChange={setActiveTab} />
+      <div className="flex flex-wrap items-center gap-2 mt-2 mb-4">
+        {TABS.map(({ label, icon: Icon }) => (
+          <button key={label} onClick={() => setActiveTab(label)}
+            className={`tab-btn flex items-center gap-1.5 ${activeTab === label ? 'active' : ''}`}>
+            <Icon size={13} /> {label}
+          </button>
+        ))}
+      </div>
 
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden flex flex-col min-h-0 flex-1">
 
@@ -512,9 +675,9 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
               onSearchChange={setSearch}
               searchPlaceholder="Search jobs..."
               actions={
-                <button className="primary-btn" onClick={() => { setEditTarget(null); setShowJobForm(true); }}>
+                canJobs ? (<button className="primary-btn" onClick={() => { setEditTarget(null); setShowJobForm(true); }}>
                   <Plus size={14} /> Add Job
-                </button>
+                </button>) : undefined
               }
             />
             <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
@@ -544,6 +707,7 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                           <button className="action-btn text-[var(--accent)]" title="View" onClick={() => setSelectedJobId(job.id)}>
                             <Eye size={14} />
                           </button>
+                          {canJobs && (<>
                           <button className="action-btn text-[var(--warning)]" title="Edit" onClick={() => { setEditTarget(job); setShowJobForm(true); }}>
                             <FileEdit size={14} />
                           </button>
@@ -553,6 +717,7 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                           <button className="action-btn text-[var(--danger)]" title="Delete" onClick={() => deleteJob(job.id)}>
                             <Trash2 size={14} />
                           </button>
+                          </>)}
                         </div>
                       </td>
                     </motion.tr>
@@ -579,9 +744,9 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                     </svg>
                     Refresh
                   </button>
-                  <button className="primary-btn" onClick={() => { setEditTarget(null); setShowCandidateForm(true); }}>
+                  {canCandidates && <button className="primary-btn" onClick={() => { setEditTarget(null); setShowCandidateForm(true); }}>
                     <Plus size={14} /> Add Candidate
-                  </button>
+                  </button>}
                 </div>
               }
             />
@@ -624,12 +789,14 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                           <button className="action-btn text-[var(--accent)]" title="View profile" onClick={() => setSelectedCandidateId(c.id)}>
                             <Eye size={14} />
                           </button>
+                          {canCandidates && (<>
                           <button className="action-btn text-[var(--warning)]" title="Edit" onClick={() => { setEditTarget(c); setShowCandidateForm(true); }}>
                             <FileEdit size={14} />
                           </button>
                           <button className="action-btn text-[var(--danger)]" title="Delete" onClick={() => deleteCandidate(c.id)}>
                             <Trash2 size={14} />
                           </button>
+                          </>)}
                         </div>
                       </td>
                     </motion.tr>
@@ -652,7 +819,7 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                     <th className="th">Candidate</th>
                     <th className="th">Job</th>
                     <th className="th">Date Applied</th>
-                    <th className="th">Notes</th>
+                    <th className="th">Cover Letter</th>
                     <th className="th text-right"><span className="sr-only">Actions</span></th>
                   </tr>
                 </thead>
@@ -671,9 +838,14 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                         </td>
                         <td className="td">{job?.title ?? `#${a.job}`}</td>
                         <td className="td">{a.created ? new Date(a.created).toLocaleDateString() : '—'}</td>
-                        <td className="td text-[var(--text-muted)] max-w-[200px] truncate text-xs">{a.notes ?? '—'}</td>
+                        <td className="td text-[var(--text-muted)] max-w-[200px] truncate text-xs">{a.notes ? a.notes.slice(0, 80) + (a.notes.length > 80 ? '…' : '') : '—'}</td>
                         <td className="td">
                           <div className="flex items-center justify-end gap-1">
+                            <button className="action-btn text-[var(--accent)]" title="View details"
+                              onClick={() => setViewingApplication(a)}>
+                              <Eye size={14} />
+                            </button>
+                            {canApplications && (
                             <button className="action-btn text-[var(--danger)]" title="Remove application"
                               onClick={async () => {
                                 try { await api.delete(`/recruitment/applications/${a.id}`); toast.success('Application removed'); fetchAll(); }
@@ -681,6 +853,7 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                               }}>
                               <Trash2 size={14} />
                             </button>
+                            )}
                           </div>
                         </td>
                       </motion.tr>
@@ -701,9 +874,9 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
               onSearchChange={setSearch}
               searchPlaceholder="Search interviews..."
               actions={
-                <button className="primary-btn" onClick={() => { setEditTarget(null); setShowInterviewForm(true); }}>
+                canInterviews ? (<button className="primary-btn" onClick={() => { setEditTarget(null); setShowInterviewForm(true); }}>
                   <Plus size={14} /> Schedule Interview
-                </button>
+                </button>) : undefined
               }
             />
             <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
@@ -723,23 +896,39 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                     <tr><td colSpan={6} className="td text-center py-12 text-[var(--text-muted)]">Loading…</td></tr>
                   ) : filteredInterviews.length === 0 ? (
                     <EmptyRow cols={6} label="No interviews scheduled." />
-                  ) : groupedInterviews.map(({ cand, rows }) => (
-                    <React.Fragment key={cand?.id ?? rows[0]?.candidate}>
-                      {/* Candidate group header */}
-                      <tr className="bg-[var(--surface-hover)]">
-                        <td colSpan={6} className="px-4 py-2 border-b border-[var(--border)]">
+                  ) : groupedInterviews.map(({ cand, rows }) => {
+                    const groupKey = String(cand?.id ?? rows[0]?.candidate);
+                    const isCollapsed = collapsedGroups.has(groupKey);
+                    return (
+                    <React.Fragment key={groupKey}>
+                      {/* Candidate group header — click to collapse/expand */}
+                      <tr
+                        className="bg-[var(--surface-hover)] cursor-pointer select-none hover:bg-[color-mix(in_srgb,var(--accent)_4%,var(--surface-hover))]"
+                        onClick={() => toggleGroup(groupKey)}
+                      >
+                        <td colSpan={6} className="px-4 py-2.5 border-b border-[var(--border)]">
                           <div className="flex items-center gap-2">
+                            <ChevronDown
+                              size={14}
+                              className="text-[var(--text-muted)] shrink-0 transition-transform duration-150"
+                              style={{ transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}
+                            />
                             <span className="font-semibold text-[13px] text-[var(--text-primary)]">
                               {cand ? `${cand.first_name} ${cand.last_name}` : '—'}
                             </span>
                             <StagePill type={stageMap[String(cand?.hiringStage)]?.type} />
+                            <span className="ml-auto text-[11px] text-[var(--text-muted)]">
+                              {rows.length} {rows.length === 1 ? 'interview' : 'interviews'}
+                            </span>
                           </div>
                         </td>
                       </tr>
-                      {/* Interview rows for this candidate */}
-                      {rows.map((iv, i) => {
+                      {/* Interview rows — hidden when collapsed */}
+                      {!isCollapsed && rows.map((iv, i) => {
                         const job = jobMap[String(iv.job)];
                         const isConfirmed = iv.scheduleUpdated === 1 || iv.scheduleUpdated === '1';
+                        const isTerminal  = ['Completed', 'Cancelled', 'No Show'].includes(iv.status ?? '');
+                        const isOverdue   = !!iv.scheduled && !isTerminal && new Date(iv.scheduled) < new Date();
                         const statusLabel =
                           iv.status === 'Completed' ? 'Completed' :
                           iv.status === 'Cancelled' ? 'Cancelled' :
@@ -751,31 +940,61 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                           iv.status === 'No Show'   ? 'bg-orange-50 text-orange-700 border border-orange-200' :
                           isConfirmed               ? 'bg-teal-50 text-teal-700 border border-teal-200' :
                           'pill-warning';
+                        const accentColor =
+                          iv.status === 'Completed' ? '#10b981' :
+                          iv.status === 'Cancelled' ? '#ef4444' :
+                          iv.status === 'No Show'   ? '#f97316' :
+                          isConfirmed               ? '#14b8a6' : '#f59e0b';
                         return (
-                          <motion.tr key={iv.id} className="tr" {...ROW_ANIM} transition={{ delay: i * 0.02 }}>
+                          <motion.tr key={iv.id} className="tr" style={{ boxShadow: `inset 3px 0 0 ${accentColor}` }} {...ROW_ANIM} transition={{ delay: i * 0.02 }}>
                             <td className="td text-[var(--text-secondary)]">{job?.title ?? '—'}</td>
-                            <td className="td">{iv.level ?? '—'}</td>
-                            <td className="td">{iv.scheduled ? new Date(iv.scheduled).toLocaleString() : '—'}</td>
+                            <td className="td">
+                              <span className="block text-[13px]">{iv.level ?? '—'}</span>
+                              {iv.interviewers && (
+                                <span className="block text-[11px] text-[var(--text-muted)] mt-0.5 truncate max-w-[160px]">{iv.interviewers}</span>
+                              )}
+                            </td>
+                            <td className="td">
+                              {iv.scheduled ? (
+                                <span>
+                                  <span className={`block text-[13px]${isOverdue ? ' text-red-600 font-semibold' : ''}`}>
+                                    {new Date(iv.scheduled).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                  </span>
+                                  <span className="block text-[11px] text-[var(--text-muted)]">
+                                    {new Date(iv.scheduled).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                                    {iv.scheduled_end ? ` – ${new Date(iv.scheduled_end).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}` : ''}
+                                  </span>
+                                  {isOverdue && <span className="pill bg-red-50 text-red-600 border border-red-200 text-[10px] mt-0.5 inline-flex">Overdue</span>}
+                                </span>
+                              ) : (
+                                <span className="pill bg-slate-100 text-slate-400 border border-slate-200 text-[11px]">Not scheduled</span>
+                              )}
+                            </td>
                             <td className="td"><span className={`pill ${statusCls}`}>{statusLabel}</span></td>
-                            <td className="td"><OutcomePill outcome={iv.outcome} /></td>
+                            <td className="td">
+                              {iv.status === 'Completed' ? <OutcomePill outcome={iv.outcome} /> : <span className="text-[var(--text-muted)]">—</span>}
+                            </td>
                             <td className="td">
                               <div className="flex items-center justify-end gap-1">
                                 <button className="action-btn text-[var(--accent)]" title="View Details" onClick={() => setInterviewDetailTarget(iv)}>
                                   <Eye size={14} />
                                 </button>
+                                {canInterviews && (<>
                                 <button className="action-btn text-[var(--accent)]" title="Edit Interview" onClick={() => { setEditTarget(iv); setShowInterviewForm(true); }}>
                                   <FileEdit size={14} />
                                 </button>
                                 <button className="action-btn text-[var(--danger)]" title="Delete" onClick={() => deleteInterview(iv.id)}>
                                   <Trash2 size={14} />
                                 </button>
+                                </>)}
                               </div>
                             </td>
                           </motion.tr>
                         );
                       })}
                     </React.Fragment>
-                  ))}
+                  );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -831,20 +1050,26 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
         />
       )}
 
-      {interviewDetailTarget && (
-        <InterviewDetails
-          interview={interviewDetailTarget}
-          candidate={candidateMap[String(interviewDetailTarget.candidate)]}
-          job={jobMap[String(interviewDetailTarget.job)]}
-          pipeline={pipeline}
-          onClose={() => setInterviewDetailTarget(null)}
-          onSaveOutcome={saveOutcome}
-          onMoveStage={moveStageFromInterview}
-          onSendLink={() => sendScheduleLink(interviewDetailTarget.id)}
-          onViewCandidate={() => { setInterviewDetailTarget(null); setSelectedCandidateId(interviewDetailTarget.candidate); }}
-          onScheduleNextRound={() => scheduleNextRound(interviewDetailTarget)}
-        />
-      )}
+      {interviewDetailTarget && (() => {
+        const liveInterview = interviews.find(iv => String(iv.id) === String(interviewDetailTarget.id)) ?? interviewDetailTarget;
+        return (
+          <InterviewDetails
+            interview={liveInterview}
+            candidate={candidateMap[String(liveInterview.candidate)]}
+            job={jobMap[String(liveInterview.job)]}
+            pipeline={pipeline}
+            canManage={canInterviews}
+            onClose={() => setInterviewDetailTarget(null)}
+            onSaveOutcome={saveOutcome}
+            onMoveStage={moveStageFromInterview}
+            onSendLink={() => sendScheduleLink(liveInterview.id)}
+            onSendInvite={() => sendInvite(liveInterview.id)}
+            onRefresh={fetchAll}
+            onViewCandidate={() => { setInterviewDetailTarget(null); setSelectedCandidateId(liveInterview.candidate); }}
+            onScheduleNextRound={() => scheduleNextRound(liveInterview)}
+          />
+        );
+      })()}
 
       {selectedJobId != null && (() => {
         const job = jobMap[String(selectedJobId)];
@@ -859,6 +1084,81 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
           />
         );
       })()}
+
+      {/* ── Application Details Modal ──────────────────────────────────── */}
+      {viewingApplication && (() => {
+        const cand = candidateMap[String(viewingApplication.candidate)];
+        const job  = jobMap[String(viewingApplication.job)];
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+            <div className="bg-[var(--surface)] rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[90vh]">
+              {/* Header */}
+              <div className="flex items-start justify-between px-6 py-4 border-b border-[var(--border)] shrink-0">
+                <div>
+                  <h2 className="text-[16px] font-bold text-[var(--text-primary)]">
+                    {cand ? `${cand.first_name} ${cand.last_name}` : '—'}
+                  </h2>
+                  <p className="text-[13px] text-[var(--text-muted)] mt-0.5">{job?.title ?? '—'} · Applied {viewingApplication.created ? new Date(viewingApplication.created).toLocaleDateString() : '—'}</p>
+                </div>
+                <button onClick={() => setViewingApplication(null)} className="p-1.5 rounded-lg hover:bg-[var(--surface-hover)] transition-colors">
+                  <X size={16} className="text-[var(--text-muted)]" />
+                </button>
+              </div>
+              {/* Body */}
+              <div className="overflow-y-auto flex-1 p-6 space-y-6">
+                {/* Cover letter */}
+                <div>
+                  <p className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-widest mb-2">Cover Letter</p>
+                  {viewingApplication.notes ? (
+                    <p className="text-[14px] text-[var(--text-primary)] leading-relaxed whitespace-pre-wrap">{viewingApplication.notes}</p>
+                  ) : (
+                    <p className="text-[13px] text-[var(--text-muted)] italic">No cover letter provided.</p>
+                  )}
+                </div>
+                {/* CV */}
+                {cand?.cv_file && (
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-widest">CV / Resume</p>
+                      <button
+                        onClick={() => setCvUrl(`/v1/api/hr/documents/${cand.cv_file}`)}
+                        className="flex items-center gap-1 text-[12px] font-semibold text-[var(--accent)] hover:underline"
+                      >
+                        <Briefcase size={12} /> Open Full Screen
+                      </button>
+                    </div>
+                    <iframe
+                      src={`/v1/api/hr/documents/${cand.cv_file}`}
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-hover)]"
+                      style={{ height: 420 }}
+                      title="Candidate CV"
+                    />
+                  </div>
+                )}
+                {!cand?.cv_file && (
+                  <div>
+                    <p className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-widest mb-2">CV / Resume</p>
+                    <p className="text-[13px] text-[var(--text-muted)] italic">No CV on file.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── CV Full-Screen Modal ───────────────────────────────────────── */}
+      {cvUrl && (
+        <div className="fixed inset-0 z-[60] flex flex-col bg-black/80 backdrop-blur-sm">
+          <div className="flex items-center justify-between px-5 py-3 bg-[var(--surface)] border-b border-[var(--border)] shrink-0">
+            <p className="text-[13px] font-semibold text-[var(--text-primary)]">CV Preview</p>
+            <button onClick={() => setCvUrl(null)} className="p-1.5 rounded-lg hover:bg-[var(--surface-hover)] transition-colors">
+              <X size={16} className="text-[var(--text-muted)]" />
+            </button>
+          </div>
+          <iframe src={cvUrl} className="flex-1 w-full" title="CV Full Screen" />
+        </div>
+      )}
     </div>
   );
 }

@@ -37,7 +37,9 @@ function Field({ label, required, className, children }: {
 }
 
 export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
-  const isEdit = !!initialData;
+  // Edit vs create is keyed on a real id, so a prefilled-but-new record (e.g. an
+  // onboarding submission being converted) is still created via POST.
+  const isEdit = !!initialData?.id;
 
   const [step, setStep] = useState(0);
   const autoGenEmpNum = getSettings().employees.autoGenerateNumber;
@@ -96,6 +98,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
     driverLicenseNum: '',
     driverLicenseExp: '',
     ...(initialData ? {
+      employee_id:      initialData.employee_id        ?? '',
       titleId:          initialData.title?.id         ?? '',
       firstName:        initialData.firstName          ?? '',
       middleName:       initialData.middleName         ?? '',
@@ -260,6 +263,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
       case 0:
         if (!form.firstName?.trim())    return 'First name is required';
         if (!form.lastName?.trim())     return 'Last name is required';
+        if (!form.genderId)             return 'Gender is required';
         if (!form.dateOfBirth)          return 'Date of birth is required';
         if (!form.marital_status)       return 'Marital status is required';
         if (!form.work_email?.trim())   return 'Work email is required';
@@ -352,7 +356,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
               <Field label="Last Name" required>
                 <input name="lastName" value={form.lastName} onChange={handleChange} placeholder="Last name" />
               </Field>
-              {clSelect('genderId', cl.genders, 'Select Gender', false, 'Gender')}
+              {clSelect('genderId', cl.genders, 'Select Gender', true, 'Gender')}
               <Field label="Date of Birth" required>
                 <input type="date" name="dateOfBirth" value={form.dateOfBirth} onChange={handleChange} />
               </Field>
@@ -414,22 +418,19 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
         <div>
           <SectionHeader title="Employment Details" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-            {/* Employee ID — always the first field */}
-            {isEdit ? (
-              <Field label="Employee ID">
-                <input value={initialData?.employee_id ?? '—'} disabled />
-              </Field>
-            ) : autoGenEmpNum ? (
+            {/* Employee ID — editable when auto-gen is off, read-only when on */}
+            {autoGenEmpNum && !isEdit ? (
               <Field label="Employee ID">
                 <input value="" disabled placeholder="Auto-generated on save" />
               </Field>
             ) : (
-              <Field label="Employee ID" required>
+              <Field label="Employee ID" required={!isEdit && !autoGenEmpNum}>
                 <input
                   name="employee_id"
                   value={form.employee_id}
                   onChange={handleChange}
                   placeholder="e.g. EMP-2026-0001"
+                  disabled={autoGenEmpNum && isEdit}
                 />
               </Field>
             )}

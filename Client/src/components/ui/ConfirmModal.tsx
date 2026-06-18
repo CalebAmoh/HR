@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { AlertTriangle, Trash2 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -22,7 +23,7 @@ export function ConfirmModal({
   const iconBg    = isDanger ? 'bg-[var(--danger-dim)]'  : 'bg-amber-50';
   const iconColor = isDanger ? 'text-[var(--danger)]'    : 'text-amber-500';
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onCancel} />
       <motion.div
@@ -42,13 +43,14 @@ export function ConfirmModal({
           </div>
         </div>
 
-        <div className="px-6 py-4 border-t border-[var(--border)] bg-slate-50/50 flex justify-end gap-3">
+        <div className="px-6 py-4 border-t border-[var(--border)] bg-[var(--bg)] flex justify-end gap-3">
           <button onClick={onCancel} className="secondary-btn">Cancel</button>
           <button onClick={onConfirm} className={isDanger ? 'danger-btn' : 'primary-btn'}>
             {confirmLabel}
           </button>
         </div>
       </motion.div>
-    </div>
+    </div>,
+    document.body
   );
 }

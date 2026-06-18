@@ -1,15 +1,17 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, Eye, FileEdit, Filter, Plus, X, Users, Award, FileBadge, Globe, Baby, HeartPulse, RefreshCw, WifiOff } from 'lucide-react';
+import { ChevronDown, Eye, FileEdit, Filter, Plus, X, Users, Award, FileBadge, Globe, Baby, HeartPulse, RefreshCw, WifiOff, ShieldAlert } from 'lucide-react';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
 import { ConfirmAlert } from './ConfirmAlert';
 import { EmployeeFormFull } from './EmployeeFormFull';
 import { EmployeeDetailsSlideOver } from './EmployeeDetailsSlideOver';
 import { RelationalTab } from './EmployeeTabs';
+import { DisciplinaryTab } from './DisciplinaryTab';
 import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import api from '../../lib/api';
+import { useCan } from '@/hooks/useCan';
 
 const ICON_TABS = [
   { label: 'Employees',          icon: Users      },
@@ -19,6 +21,7 @@ const ICON_TABS = [
   { label: 'Languages',          icon: Globe      },
   { label: 'Dependents',         icon: Baby       },
   { label: 'Emergency Contacts', icon: HeartPulse },
+  { label: 'Disciplinary',       icon: ShieldAlert },
 ];
 
 const DEACTIVATED_TABS = ['Suspended Employees', 'Terminated Employees'];
@@ -40,6 +43,18 @@ function ApprovalPill({ status }: { status: string }) {
   return <span className="pill pill-danger">REJECTED</span>;
 }
 
+function PendingActionPill({ action }: { action: string | null | undefined }) {
+  if (!action) return null;
+  const map: Record<string, { label: string; cls: string }> = {
+    RESIGNED:   { label: 'Resignation Pending', cls: 'bg-rose-50 text-rose-700 border border-rose-200'   },
+    SUSPENDED:  { label: 'Suspension Pending',  cls: 'bg-amber-50 text-amber-700 border border-amber-200' },
+    TERMINATED: { label: 'Termination Pending', cls: 'bg-red-50 text-red-700 border border-red-200'       },
+  };
+  const s = map[action];
+  if (!s) return null;
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${s.cls}`}>{s.label}</span>;
+}
+
 export function Employees() {
   const [activeTab, setActiveTab]     = useState('Employees');
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -47,7 +62,11 @@ export function Employees() {
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage]               = useState(1);
   const [pageSize, setPageSize]       = useState(10);
-  const [filters, setFilters]         = useState({ department: '', jobTitle: '', employmentStatus: '', approvalStatus: '' });
+  const [filters, setFilters] = useState({
+    department: '', branch: '', unit: '', jobTitle: '',
+    employmentStatus: '', staffLevel: '', lifecycleStatus: '',
+    approvalStatus: '', hireFrom: '', hireTo: '',
+  });
 
   const [employees, setEmployees]         = useState<any[]>([]);
   const [loading, setLoading]             = useState(true);
@@ -69,7 +88,7 @@ export function Employees() {
   }, []);
 
   useEffect(() => { fetchEmployees(); }, [fetchEmployees]);
-  useEffect(() => { setPage(1); }, [searchQuery, activeTab]);
+  useEffect(() => { setPage(1); }, [searchQuery, activeTab, filters]);
   useEffect(() => {
     if (loading || isDetailsOpen) return;
     const targetId = sessionStorage.getItem('centralApproval.employeeId');
@@ -85,24 +104,43 @@ export function Employees() {
   // ── Filter by active tab ─────────────────────────────────────────────────
   const visibleEmployees = useMemo(() => {
     let list = employees;
-    if (activeTab === 'Suspended Employees')  list = employees.filter(e => e.lifecycleStatus === 'SUSPENDED');
-    else if (activeTab === 'Terminated Employees') list = employees.filter(e => e.lifecycleStatus === 'TERMINATED');
-    else if (activeTab === 'Employees') list = employees.filter(e => !['SUSPENDED','TERMINATED','RESIGNED'].includes(e.lifecycleStatus));
+    if (activeTab === 'Suspended Employees')       list = employees.filter(e => e.lifecycleStatus === 'SUSPENDED');
+    else if (activeTab === 'Terminated Employees') list = employees.filter(e => ['TERMINATED', 'RESIGNED'].includes(e.lifecycleStatus));
+    else if (activeTab === 'Employees')            list = employees.filter(e => !['SUSPENDED','TERMINATED','RESIGNED'].includes(e.lifecycleStatus));
     return list;
   }, [employees, activeTab]);
 
   const filtered = useMemo(() => {
     let list = visibleEmployees;
-    const q = searchQuery.toLowerCase();
+
+    // ── Text search — name, ID, emails, mobile, department, job title, branch ──
+    const q = searchQuery.trim().toLowerCase();
     if (q) list = list.filter((e: any) =>
-      `${e.firstName} ${e.lastName}`.toLowerCase().includes(q) ||
-      e.employee_id?.toLowerCase().includes(q) ||
-      e.email?.toLowerCase().includes(q)
+      `${e.firstName ?? ''} ${e.middleName ?? ''} ${e.lastName ?? ''}`.toLowerCase().includes(q) ||
+      (e.employee_id   ?? '').toLowerCase().includes(q) ||
+      (e.email         ?? '').toLowerCase().includes(q) ||
+      (e.work_email    ?? '').toLowerCase().includes(q) ||
+      (e.mobilePhone   ?? '').toLowerCase().includes(q) ||
+      (e.department?.title ?? '').toLowerCase().includes(q) ||
+      (e.jobTitle?.label   ?? '').toLowerCase().includes(q) ||
+      (e.branch?.title     ?? '').toLowerCase().includes(q) ||
+      (e.supervisor?.name  ?? '').toLowerCase().includes(q)
     );
-    if (filters.department)       list = list.filter((e: any) => e.department?.title       === filters.department);
+
+    // ── Dropdown filters ──────────────────────────────────────────────────────
+    if (filters.department)       list = list.filter((e: any) => e.department?.title        === filters.department);
+    if (filters.branch)           list = list.filter((e: any) => e.branch?.title            === filters.branch);
+    if (filters.unit)             list = list.filter((e: any) => e.unit?.title              === filters.unit);
     if (filters.jobTitle)         list = list.filter((e: any) => e.jobTitle?.label          === filters.jobTitle);
     if (filters.employmentStatus) list = list.filter((e: any) => e.employmentStatus?.label  === filters.employmentStatus);
+    if (filters.staffLevel)       list = list.filter((e: any) => e.staffLevel?.label        === filters.staffLevel);
+    if (filters.lifecycleStatus)  list = list.filter((e: any) => e.lifecycleStatus          === filters.lifecycleStatus);
     if (filters.approvalStatus)   list = list.filter((e: any) => e.approvalStatus           === filters.approvalStatus);
+
+    // ── Hire date range ───────────────────────────────────────────────────────
+    if (filters.hireFrom) list = list.filter((e: any) => e.hireDate && e.hireDate >= filters.hireFrom);
+    if (filters.hireTo)   list = list.filter((e: any) => e.hireDate && e.hireDate <= filters.hireTo);
+
     return list;
   }, [visibleEmployees, searchQuery, filters]);
 
@@ -110,6 +148,8 @@ export function Employees() {
     const start = (page - 1) * pageSize;
     return filtered.slice(start, start + pageSize);
   }, [filtered, page, pageSize]);
+
+  const { can } = useCan();
 
   // ── Handlers ─────────────────────────────────────────────────────────────
   const handleAddClick  = () => { setSelectedEmployee(null); setIsFormOpen(true); };
@@ -136,11 +176,11 @@ export function Employees() {
   const handleSave = async (data: any, id?: string) => {
     try {
       if (id) {
-        await api.put(`/employees/${id}`, data);
-        toast.success('Employee updated — pending re-approval');
+        const res = await api.put(`/employees/${id}`, data);
+        toast.success(res.data?.message ?? 'Employee updated');
       } else {
-        await api.post('/employees', data);
-        toast.success('Employee created — pending approval');
+        const res = await api.post('/employees', data);
+        toast.success(res.data?.message ?? 'Employee created');
       }
       await fetchEmployees();
       setIsFormOpen(false);
@@ -151,38 +191,63 @@ export function Employees() {
 
   // ── Filters ──────────────────────────────────────────────────────────────
   const setFilter = (k: keyof typeof filters, v: string) => { setFilters((p: typeof filters) => ({ ...p, [k]: v })); setPage(1); };
-  const clearFilters = () => { setFilters({ department: '', jobTitle: '', employmentStatus: '', approvalStatus: '' }); setPage(1); };
-  const hasFilters = Object.values(filters).some(Boolean);
+  const clearFilters = () => {
+    setFilters({ department: '', branch: '', unit: '', jobTitle: '', employmentStatus: '', staffLevel: '', lifecycleStatus: '', approvalStatus: '', hireFrom: '', hireTo: '' });
+    setPage(1);
+  };
+  const activeFilterCount = Object.values(filters).filter(Boolean).length;
 
-  const deptOptions    = useMemo(() => [...new Set(employees.map((e: any) => e.department?.title).filter(Boolean))].sort(), [employees]);
-  const jtOptions      = useMemo(() => [...new Set(employees.map((e: any) => e.jobTitle?.label).filter(Boolean))].sort(), [employees]);
-  const empStOptions   = useMemo(() => [...new Set(employees.map((e: any) => e.employmentStatus?.label).filter(Boolean))].sort(), [employees]);
+  const uniq = (arr: any[]) => [...new Set(arr.filter(Boolean))].sort() as string[];
+  const deptOptions    = useMemo(() => uniq(employees.map((e: any) => e.department?.title)),        [employees]);
+  const branchOptions  = useMemo(() => uniq(employees.map((e: any) => e.branch?.title)),            [employees]);
+  const unitOptions    = useMemo(() => uniq(employees.map((e: any) => e.unit?.title)),              [employees]);
+  const jtOptions      = useMemo(() => uniq(employees.map((e: any) => e.jobTitle?.label)),          [employees]);
+  const empStOptions   = useMemo(() => uniq(employees.map((e: any) => e.employmentStatus?.label)),  [employees]);
+  const slOptions      = useMemo(() => uniq(employees.map((e: any) => e.staffLevel?.label)),        [employees]);
+
+  const FilterSelect = ({ field, label, options }: { field: keyof typeof filters; label: string; options: string[] }) => (
+    <div className="flex flex-col gap-1 min-w-[140px]">
+      <label className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">{label}</label>
+      <select
+        value={filters[field]}
+        onChange={e => setFilter(field, e.target.value)}
+        className="text-[12px] h-8 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
+      >
+        <option value="">All</option>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
 
   const filterBar = (
-    <div className="flex flex-wrap items-end gap-3 py-3">
-      {([
-        { key: 'department',      label: 'Department',        options: deptOptions  },
-        { key: 'jobTitle',        label: 'Job Title',         options: jtOptions    },
-        { key: 'employmentStatus',label: 'Employment Status', options: empStOptions },
-        { key: 'approvalStatus',  label: 'Approval Status',   options: ['PENDING', 'APPROVED', 'REJECTED'] },
-      ] as const).map(({ key, label, options }) => (
-        <div key={key} className="flex flex-col gap-1 min-w-[160px]">
-          <label className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">{label}</label>
-          <select
-            value={filters[key]}
-            onChange={(e: { target: { value: string } }) => setFilter(key, e.target.value)}
-            className="text-[12px] h-8 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
-          >
-            <option value="">All</option>
-            {options.map(o => <option key={o} value={o}>{o}</option>)}
-          </select>
+    <div className="flex flex-col gap-3 py-3">
+      <div className="flex flex-wrap items-end gap-3">
+        <FilterSelect field="department"       label="Department"        options={deptOptions}   />
+        <FilterSelect field="branch"           label="Branch"            options={branchOptions} />
+        <FilterSelect field="unit"             label="Unit"              options={unitOptions}   />
+        <FilterSelect field="jobTitle"         label="Job Title"         options={jtOptions}     />
+        <FilterSelect field="employmentStatus" label="Employment Status" options={empStOptions}  />
+        <FilterSelect field="staffLevel"       label="Staff Level"       options={slOptions}     />
+        <FilterSelect field="lifecycleStatus"  label="Lifecycle"         options={['PENDING', 'ACTIVE', 'SUSPENDED', 'TERMINATED', 'RESIGNED']} />
+        <FilterSelect field="approvalStatus"   label="Approval"          options={['PENDING', 'APPROVED', 'REJECTED']} />
+      </div>
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-col gap-1">
+          <label className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">Hired From</label>
+          <input type="date" value={filters.hireFrom} onChange={e => setFilter('hireFrom', e.target.value)}
+            className="text-[12px] h-8 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]" />
         </div>
-      ))}
-      {hasFilters && (
-        <button onClick={clearFilters} className="flex items-center gap-1 text-[12px] text-[var(--danger)] hover:underline h-8 self-end">
-          <X size={12} /> Clear
-        </button>
-      )}
+        <div className="flex flex-col gap-1">
+          <label className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">Hired To</label>
+          <input type="date" value={filters.hireTo} onChange={e => setFilter('hireTo', e.target.value)}
+            className="text-[12px] h-8 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]" />
+        </div>
+        {activeFilterCount > 0 && (
+          <button onClick={clearFilters} className="flex items-center gap-1 text-[12px] text-[var(--danger)] hover:underline h-8 self-end">
+            <X size={12} /> Clear all ({activeFilterCount})
+          </button>
+        )}
+      </div>
     </div>
   );
 
@@ -248,7 +313,7 @@ export function Employees() {
             filterBar={showFilters ? filterBar : undefined}
             actions={
               <>
-                {activeTab === 'Employees' && (
+                {activeTab === 'Employees' && can('create_employees') && (
                   <button onClick={handleAddClick} className="primary-btn shrink-0">
                     <span className="hidden sm:inline">Add New</span>
                     <span className="sm:hidden">Add</span>
@@ -257,9 +322,14 @@ export function Employees() {
                 )}
                 <button
                   onClick={() => setShowFilters(!showFilters)}
-                  className={`secondary-btn shrink-0 ${showFilters ? 'ring-2 ring-[var(--accent)] border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-dim)]' : ''}`}
+                  className={`secondary-btn shrink-0 relative ${showFilters || activeFilterCount > 0 ? 'ring-2 ring-[var(--accent)] border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-dim)]' : ''}`}
                 >
                   Filter <Filter className="w-[14px] h-[14px] fill-current opacity-80" />
+                  {activeFilterCount > 0 && (
+                    <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[var(--accent)] text-white text-[9px] font-bold flex items-center justify-center">
+                      {activeFilterCount}
+                    </span>
+                  )}
                 </button>
               </>
             }
@@ -311,6 +381,7 @@ export function Employees() {
                         <div className="flex items-center gap-1.5 flex-wrap">
                           {row.approvalStatus !== 'REJECTED' && <LifecyclePill status={row.lifecycleStatus} />}
                           <ApprovalPill status={row.approvalStatus} />
+                          <PendingActionPill action={row.pending_lifecycle_action} />
                           {row.sync_status === 'failed' && (
                             <span
                               className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-red-50 text-red-600 border border-red-200"
@@ -326,9 +397,16 @@ export function Employees() {
                           <button onClick={() => handleViewClick(row)} className="action-btn text-[var(--accent)]" title="View Details">
                             <Eye size={14} />
                           </button>
-                          <button onClick={() => handleEditClick(row)} className="action-btn text-[var(--warning)]" title="Edit">
-                            <FileEdit size={14} />
-                          </button>
+                          {can('edit_employees') && (
+                            <button
+                              onClick={() => handleEditClick(row)}
+                              disabled={['TERMINATED', 'RESIGNED'].includes(row.lifecycleStatus)}
+                              className="action-btn text-[var(--warning)] disabled:opacity-30 disabled:cursor-not-allowed"
+                              title={['TERMINATED', 'RESIGNED'].includes(row.lifecycleStatus) ? 'Cannot edit a terminated or resigned employee' : 'Edit'}
+                            >
+                              <FileEdit size={14} />
+                            </button>
+                          )}
                           {row.sync_status === 'failed' && (
                             <button
                               onClick={() => handleSync(row)}
@@ -357,10 +435,12 @@ export function Employees() {
             filtered={filtered.length}
             page={page}
             pageSize={pageSize}
-            onPageChange={setPage}
+            onPageChange={p => { setPage(p); }}
             onPageSizeChange={s => { setPageSize(s); setPage(1); }}
           />
         </div>
+      ) : activeTab === 'Disciplinary' ? (
+        <DisciplinaryTab onViewEmployee={handleViewClick} />
       ) : (
         <RelationalTab activeTab={activeTab} mockEmployees={employees} />
       )}

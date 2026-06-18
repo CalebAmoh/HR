@@ -48,23 +48,7 @@ const PERMISSIONS = {
     'deactivate_users',
     'activate_users',
     'change_user_password',
-  ],
-
-  // ── Roles ───────────────────────────────────────────────
-  'Roles': [
-    'view_roles',
-    'create_roles',
-    'edit_roles',
-    'delete_roles',
-    'assign_roles',
-    'revoke_roles',
-  ],
-
-  // ── Permissions ─────────────────────────────────────────
-  'Permissions': [
-    'view_permissions',
-    'assign_permissions',
-    'revoke_permissions',
+    'manage_roles',
   ],
 
   // ── Employees ───────────────────────────────────────────
@@ -80,6 +64,7 @@ const PERMISSIONS = {
   'Employee Relations': [
     'manage_skills',
     'manage_certifications',
+    'manage_education',
     'manage_languages',
     'manage_dependents',
     'manage_emergency_contacts',
@@ -99,17 +84,10 @@ const PERMISSIONS = {
     'create_documents',
     'edit_documents',
     'delete_documents',
-    'download_documents',
   ],
 
   // ── Leave Management ────────────────────────────────────
-  'Leave': [
-    'view_leave',
-    'apply_leave',
-    'approve_leave',
-    'cancel_leave',
-    'view_subordinate_leave',
-  ],
+  'Leave': [],
 
   // ── Leave Setup ─────────────────────────────────────────
   'Leave Setup': [
@@ -120,6 +98,7 @@ const PERMISSIONS = {
     'manage_work_week',
     'manage_leave_groups',
     'manage_leave_rules',
+    'manage_leave_approvals',
   ],
 
   // ── Salary ──────────────────────────────────────────────
@@ -139,38 +118,24 @@ const PERMISSIONS = {
     'manage_payroll_employees',
     'process_payroll',
     'approve_payroll',
-    'view_payroll_reports',
     'export_payroll_reports',
     'manage_payroll_columns',
     'manage_calculation_groups',
+    'manage_report_templates',
   ],
 
   // ── Reports ─────────────────────────────────────────────
   'Reports': [
-    'view_reports',
     'generate_reports',
     'export_reports',
   ],
 
-  // ── System ──────────────────────────────────────────────
+  // ── System (App Settings + Settings pages + Audit logs) ──
   'System': [
-    'view_system',
-    'manage_app_setup',
-    'manage_code_lists',
-    'create_code_lists',
-    'edit_code_lists',
-  ],
-
-  // ── Settings ────────────────────────────────────────────
-  'Settings': [
+    'view_app_settings',
+    'manage_app_settings',
     'view_settings',
-    'edit_settings',
-    'manage_leave_settings',
-    'manage_notification_settings',
-  ],
-
-  // ── Audit ───────────────────────────────────────────────
-  'Audit': [
+    'manage_settings',
     'view_audit_logs',
   ],
 };
@@ -196,7 +161,6 @@ const ROLE_PERMISSIONS = {
     ...PERMISSIONS['Audit'],
     // Read access to HR
     'view_employees',
-    'view_reports',
   ],
 
   'hr-manager': [
@@ -218,16 +182,10 @@ const ROLE_PERMISSIONS = {
     ...PERMISSIONS['Reports'],
     // Read-only user/role access
     'view_users',
-    'view_roles',
   ],
 
   'employee': [
-    'view_leave',
-    'apply_leave',
-    'cancel_leave',
     'view_documents',
-    'download_documents',
-    'view_reports',
   ],
 };
 

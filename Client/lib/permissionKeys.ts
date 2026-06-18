@@ -14,19 +14,7 @@ export const PERMISSIONS = {
   DEACTIVATE_USERS:                   'deactivate_users',
   ACTIVATE_USERS:                     'activate_users',
   CHANGE_USER_PASSWORD:               'change_user_password',
-
-  // ── Roles ──────────────────────────────────────────────────
-  VIEW_ROLES:                         'view_roles',
-  CREATE_ROLES:                       'create_roles',
-  EDIT_ROLES:                         'edit_roles',
-  DELETE_ROLES:                       'delete_roles',
-  ASSIGN_ROLES:                       'assign_roles',
-  REVOKE_ROLES:                       'revoke_roles',
-
-  // ── Permissions ────────────────────────────────────────────
-  VIEW_PERMISSIONS:                   'view_permissions',
-  ASSIGN_PERMISSIONS:                 'assign_permissions',
-  REVOKE_PERMISSIONS:                 'revoke_permissions',
+  MANAGE_ROLES:                       'manage_roles',
 
   // ── Employees ──────────────────────────────────────────────
   VIEW_EMPLOYEES:                     'view_employees',
@@ -34,10 +22,12 @@ export const PERMISSIONS = {
   EDIT_EMPLOYEES:                     'edit_employees',
   APPROVE_EMPLOYEES:                  'approve_employees',
   CHANGE_EMPLOYEE_STATUS:             'change_employee_status',
+  MANAGE_ONBOARDING:                  'manage_onboarding',
 
   // ── Employee Relations ─────────────────────────────────────
   MANAGE_SKILLS:                      'manage_skills',
   MANAGE_CERTIFICATIONS:              'manage_certifications',
+  MANAGE_EDUCATION:                   'manage_education',
   MANAGE_LANGUAGES:                   'manage_languages',
   MANAGE_DEPENDENTS:                  'manage_dependents',
   MANAGE_EMERGENCY_CONTACTS:          'manage_emergency_contacts',
@@ -53,14 +43,10 @@ export const PERMISSIONS = {
   CREATE_DOCUMENTS:                   'create_documents',
   EDIT_DOCUMENTS:                     'edit_documents',
   DELETE_DOCUMENTS:                   'delete_documents',
-  DOWNLOAD_DOCUMENTS:                 'download_documents',
 
   // ── Leave ──────────────────────────────────────────────────
-  VIEW_LEAVE:                         'view_leave',
-  APPLY_LEAVE:                        'apply_leave',
-  APPROVE_LEAVE:                      'approve_leave',
-  CANCEL_LEAVE:                       'cancel_leave',
-  VIEW_SUBORDINATE_LEAVE:             'view_subordinate_leave',
+  // Leave is open to every user by default (incl. approving subordinates' leave) — no permission needed.
+  // The HR "Leave Approval List" in Manage Leave is gated by VIEW_LEAVE_SETUP.
 
   // ── Leave Setup ────────────────────────────────────────────
   VIEW_LEAVE_SETUP:                   'view_leave_setup',
@@ -70,6 +56,7 @@ export const PERMISSIONS = {
   MANAGE_WORK_WEEK:                   'manage_work_week',
   MANAGE_LEAVE_GROUPS:                'manage_leave_groups',
   MANAGE_LEAVE_RULES:                 'manage_leave_rules',
+  MANAGE_LEAVE_APPROVALS:             'manage_leave_approvals',
 
   // ── Salary ─────────────────────────────────────────────────
   VIEW_SALARY_SETUP:                  'view_salary_setup',
@@ -85,31 +72,60 @@ export const PERMISSIONS = {
   MANAGE_PAYROLL_EMPLOYEES:           'manage_payroll_employees',
   PROCESS_PAYROLL:                    'process_payroll',
   APPROVE_PAYROLL:                    'approve_payroll',
-  VIEW_PAYROLL_REPORTS:               'view_payroll_reports',
   EXPORT_PAYROLL_REPORTS:             'export_payroll_reports',
   MANAGE_PAYROLL_COLUMNS:             'manage_payroll_columns',
   MANAGE_CALCULATION_GROUPS:          'manage_calculation_groups',
+  MANAGE_REPORT_TEMPLATES:            'manage_report_templates',
 
   // ── Reports ────────────────────────────────────────────────
-  VIEW_REPORTS:                       'view_reports',
   GENERATE_REPORTS:                   'generate_reports',
   EXPORT_REPORTS:                     'export_reports',
 
   // ── System ─────────────────────────────────────────────────
-  VIEW_SYSTEM:                        'view_system',
-  MANAGE_APP_SETUP:                   'manage_app_setup',
-  MANAGE_CODE_LISTS:                  'manage_code_lists',
-  CREATE_CODE_LISTS:                  'create_code_lists',
-  EDIT_CODE_LISTS:                    'edit_code_lists',
-
-  // ── Settings ───────────────────────────────────────────────
+  // App Settings page (App Setup + code lists)
+  VIEW_APP_SETTINGS:                  'view_app_settings',
+  MANAGE_APP_SETTINGS:                'manage_app_settings',
+  // Settings page (controls, approvals, email, etc.)
   VIEW_SETTINGS:                      'view_settings',
-  EDIT_SETTINGS:                      'edit_settings',
-  MANAGE_LEAVE_SETTINGS:              'manage_leave_settings',
-  MANAGE_NOTIFICATION_SETTINGS:       'manage_notification_settings',
-
-  // ── Audit ──────────────────────────────────────────────────
+  MANAGE_SETTINGS:                    'manage_settings',
+  // Audit logs (view only)
   VIEW_AUDIT_LOGS:                    'view_audit_logs',
+
+
+  // ── Dashboard ──────────────────────────────────────────────
+  VIEW_DASHBOARD:            'view_dashboard',
+
+  // ── Recruitment ────────────────────────────────────────────
+  VIEW_RECRUITMENT:          'view_recruitment',
+  MANAGE_JOBS:               'manage_jobs',
+  MANAGE_CANDIDATES:         'manage_candidates',
+  MANAGE_APPLICATIONS:       'manage_applications',
+  MANAGE_INTERVIEWS:         'manage_interviews',
+
+  // ── Performance ────────────────────────────────────────────
+  VIEW_PERFORMANCE:          'view_performance',
+  CREATE_PERFORMANCE:        'create_performance',
+  DELETE_PERFORMANCE:        'delete_performance',
+  REVIEW_PERFORMANCE:        'review_performance',
+
+  // ── Medical ────────────────────────────────────────────────
+  VIEW_MEDICAL:              'view_medical',
+  CREATE_MEDICAL:            'create_medical',
+  EDIT_MEDICAL:              'edit_medical',
+  DELETE_MEDICAL:            'delete_medical',
+  APPROVE_MEDICAL:           'approve_medical',
+  MANAGE_MEDICAL_LIMITS:     'manage_medical_limits',
+  MANAGE_HOSPITALS:          'manage_hospitals',
+
+  // ── Attendance ─────────────────────────────────────────────
+  VIEW_ATTENDANCE:           'view_attendance',
+  MANAGE_ATTENDANCE:         'manage_attendance',
+
+  // ── Training ───────────────────────────────────────────────
+  VIEW_TRAINING:             'view_training',
+  CREATE_TRAINING:           'create_training',
+  DELETE_TRAINING:           'delete_training',
+  APPROVE_TRAINING:          'approve_training',
 } as const;
 
 export type PermissionKey = typeof PERMISSIONS[keyof typeof PERMISSIONS];
@@ -122,31 +138,36 @@ export type PermissionKey = typeof PERMISSIONS[keyof typeof PERMISSIONS];
 // ─────────────────────────────────────────────────────────────
 export const NAV_PERMISSIONS: Record<string, string[]> = {
   // ── Always visible ────────────────────────────────────────────
-  Dashboard:          [],
   Modules:            [],
   PersonalInfo:       [],
+  StaffOrganogram:    [],
   Help:               [],
 
+  // ── Must be assigned ──────────────────────────────────────────
+  // Overview (Dashboard) is gated; users without it land on Modules instead.
+  Dashboard:          ['view_dashboard'],
+
   // ── Main Menu ─────────────────────────────────────────────────
-  Admin:              ['manage_app_setup', 'edit_settings', 'view_employees'],
-  JobTitleSetups:     ['manage_app_setup', 'edit_settings'],
-  QualificationSetups:['manage_app_setup', 'edit_settings'],
-  LeavingSettings:    ['manage_app_setup', 'edit_settings'],
-  AdminReports:       ['generate_reports', 'view_employees'],
-  CentralApproval:    ['approve_leave', 'approve_payroll', 'view_subordinate_leave'],
-  UserReports:        ['view_reports'],
+  Admin:              ['manage_app_settings', 'manage_settings', 'view_employees'],
+  JobTitleSetups:     ['manage_app_settings'],
+  QualificationSetups:['manage_app_settings'],
+  LeavingSettings:    ['manage_app_settings'],
+  AdminReports:       ['generate_reports'],
+  CentralApproval:    ['approve_employees', 'approve_payroll', 'approve_medical'],
+  UserReports:        [],  // Personal reports - open to all
 
   // ── Management ────────────────────────────────────────────────
   Employees:          ['view_employees'],
-  Organogram:         ['view_company_structure', 'view_employees'],
-  Company:            ['view_company_structure', 'view_employees'],
-  Documents:          ['view_documents', 'download_documents'],
+  SelfOnboarding:     ['manage_onboarding'],
+  Organogram:         ['view_company_structure'],
+  Company:            ['view_company_structure'],
+  Documents:          ['view_documents'],
 
   // Leave
-  Leave:              ['view_leave', 'apply_leave', 'approve_leave', 'view_leave_setup', 'manage_leave_types'],
+  Leave:              ['view_leave_setup', 'manage_leave_types'],
   LeaveSetup:         ['view_leave_setup', 'manage_leave_types', 'manage_leave_periods', 'manage_holidays'],
-  LeaveCalendar:      ['view_leave', 'apply_leave'],
-  LeaveManagement:    ['view_leave', 'apply_leave'],
+  LeaveCalendar:      [],  // Personal calendar - open to all
+  LeaveManagement:    [],  // Personal leave management - open to all
 
   // Payroll
   Payroll:            ['view_payroll', 'process_payroll', 'approve_payroll', 'manage_payroll_employees'],
@@ -155,11 +176,31 @@ export const NAV_PERMISSIONS: Record<string, string[]> = {
   // Medical
   Medical:            [],
   PersonalMedical:    [],
-  AdminMedical:       ['view_employees'],
+  AdminMedical:       ['view_medical'],
+
+
+  // Training & Development
+  AdminTraining:    ['view_training'],
+  PersonalTraining: [],
+
+  // Performance Management
+  ManagePerformance: ['view_performance'],
+  PersonalPerformance: [],
+
+  // Recruitment
+  Recruitment: ['view_recruitment'],
+
+  // Documents
+  PersonalDocuments:  [],  // Personal view - open to all
+
+  // Attendance
+  AdminAttendance:  ['view_attendance'],
+  MyAttendance:     [],
+  Attendance:       [],
 
   // Users & System
-  Users:              ['view_users', 'view_roles'],
-  System:             ['view_system', 'manage_app_setup', 'manage_code_lists'],
-  Settings:           ['view_settings', 'edit_settings', 'manage_leave_settings'],
+  Users:              ['view_users', 'manage_roles'],
+  System:             ['view_app_settings'],
+  Settings:           ['view_settings'],
   AuditLogs:          ['view_audit_logs'],
 };

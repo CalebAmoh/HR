@@ -3,16 +3,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 const { logActivity, fromReq } = require('./auditController');
 
-// Convert BigInt fields to strings so JSON.stringify works
-function serialize(obj) {
-  if (Array.isArray(obj)) return obj.map(serialize);
-  if (obj === null || typeof obj !== 'object') return obj;
-  const out = {};
-  for (const [k, v] of Object.entries(obj)) {
-    out[k] = typeof v === 'bigint' ? v.toString() : (v !== null && typeof v === 'object' ? serialize(v) : v);
-  }
-  return out;
-}
+const { serialize } = require('../helpers/controllerHelpers');
 
 // Prisma enum value → display label
 const TYPE_LABEL = {

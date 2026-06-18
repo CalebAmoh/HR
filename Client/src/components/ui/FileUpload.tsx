@@ -19,8 +19,8 @@ export function FileUpload({
   onClear,
   currentFile,
   currentFileName,
-  accept = '.pdf,.doc,.docx,.xls,.xlsx',
-  hint  = 'PDF, DOCX, XLSX (Max 10MB)',
+  accept = '.pdf,image/*',
+  hint  = 'PDF or image (Max 20MB)',
 }: FileUploadProps) {
   const [preview, setPreview] = useState(false);
 
@@ -42,7 +42,7 @@ export function FileUpload({
   return (
     <div className="space-y-2">
       {/* Drop zone */}
-      <label className="flex-1 border-2 border-dashed border-slate-300 bg-slate-50 hover:bg-slate-100 transition-colors rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer">
+      <label className="flex-1 border-2 border-dashed border-slate-300 bg-slate-50 hover:bg-[var(--surface-hover)] transition-colors rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer">
         <Upload size={24} className="text-slate-400 mb-2" />
         <span className="text-sm font-medium text-slate-600">
           {displayName ? 'Click to replace' : 'Click to upload document'}

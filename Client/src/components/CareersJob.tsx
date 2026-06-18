@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { CountedTextarea } from './ui/CountedTextarea';
 
 // Social icons (lucide dropped these)
 const IconFacebook = () => (
@@ -402,8 +403,8 @@ export function CareersJob({ code, onBack }: Props) {
 
                     <div>
                       <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Cover Letter</label>
-                      <textarea name="coverLetter" value={form.coverLetter} onChange={handleChange} rows={5}
-                        className={inputCls} placeholder="Why are you a great fit for this role?"
+                      <CountedTextarea name="coverLetter" value={form.coverLetter} onChange={handleChange} rows={5}
+                        maxChars={2000} className={inputCls} placeholder="Why are you a great fit for this role?"
                         style={{ ['--tw-ring-color' as string]: `${brand}40` }} />
                     </div>
 

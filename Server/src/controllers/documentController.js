@@ -5,23 +5,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const { UPLOAD_DIR } = require('../middleware/upload');
 const { prisma }   = require('../helpers/dbQueryHelper');
 
-function toBigInt(val) {
-  if (!val && val !== 0) return null;
-  try { return BigInt(val); } catch { return null; }
-}
-
-function s(obj) {
-  if (typeof obj === 'bigint')                return obj.toString();
-  if (obj instanceof Date)                    return obj.toISOString();
-  if (Array.isArray(obj))                     return obj.map(s);
-  if (obj !== null && typeof obj === 'object') {
-    if (typeof obj.toFixed === 'function')    return obj.toString();
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) out[k] = s(v);
-    return out;
-  }
-  return obj;
-}
+const { toBigInt, s } = require('../helpers/controllerHelpers');
 
 // POST /employees/documents/upload
 const uploadDocument = asyncHandler(async (req, res) => {
@@ -198,6 +182,118 @@ const deleteCompanyDoc = asyncHandler(async (req, res) => {
   respond.ok(res, 'Company document deleted');
 });
 
+// ─── Employee document admin CRUD ─────────────────────────────────────────────
+
+// Upsert a document type by name and return its ID
+async function resolveDocTypeId(name) {
+  if (!name) return null;
+  const existing = await prisma.$queryRawUnsafe(
+    'SELECT id FROM documents WHERE name=? LIMIT 1', name
+  ).then(r => r[0]).catch(() => null);
+  if (existing) return existing.id;
+  const newId = BigInt(Date.now());
+  await prisma.$executeRawUnsafe('INSERT INTO documents (id, name) VALUES (?,?)', newId, name);
+  return newId;
+}
+
+// GET /documents/employee
+const getEmployeeDocs = asyncHandler(async (req, res) => {
+  const rows = await prisma.$queryRawUnsafe(`
+    SELECT ed.id, ed.employee, ed.date_added, ed.valid_until,
+           ed.place_of_issue, ed.details, ed.attachment, ed.expire_notification_last,
+           CONCAT(e.firstName, ' ', e.lastName) AS employee_name,
+           d.name AS document_type_name
+    FROM employeedocuments ed
+    JOIN employee e ON e.id = ed.employee
+    LEFT JOIN documents d ON d.id = ed.document
+    WHERE ed.status = 'Active'
+    ORDER BY ed.id DESC
+  `).catch(() => []);
+  respond.ok(res, 'Employee documents', s(rows));
+});
+
+// POST /documents/employee
+const createEmployeeDoc = asyncHandler(async (req, res) => {
+  const { employee, documentType, dateOfIssue, placeOfIssue, expiryDate, details, attachment } = req.body;
+  if (!employee) return respond.badReq(res, 'Employee is required');
+  const docTypeId = await resolveDocTypeId(documentType);
+  const id = BigInt(Date.now());
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO employeedocuments (id, employee, document, date_added, valid_until, place_of_issue, details, attachment, status)
+     VALUES (?,?,?,?,?,?,?,?,'Active')`,
+    id, toBigInt(employee), docTypeId,
+    dateOfIssue || null, expiryDate || null,
+    placeOfIssue || null, details || null, attachment || null
+  );
+  respond.ok(res, 'Employee document created', { id: String(id) });
+});
+
+// PUT /documents/employee/:id
+const updateEmployeeDoc = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+  if (!id) return respond.badReq(res, 'Invalid id');
+  const { employee, documentType, dateOfIssue, placeOfIssue, expiryDate, details, attachment } = req.body;
+  const docTypeId = await resolveDocTypeId(documentType);
+  await prisma.$executeRawUnsafe(
+    `UPDATE employeedocuments
+     SET employee=?, document=?, date_added=?, valid_until=?, place_of_issue=?, details=?, attachment=?
+     WHERE id=?`,
+    toBigInt(employee), docTypeId,
+    dateOfIssue || null, expiryDate || null,
+    placeOfIssue || null, details || null, attachment || null, id
+  );
+  respond.ok(res, 'Employee document updated');
+});
+
+// DELETE /documents/employee/:id  — soft-delete
+const deleteEmployeeDoc = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+  if (!id) return respond.badReq(res, 'Invalid id');
+  await prisma.$executeRawUnsafe(
+    `UPDATE employeedocuments SET status='Archived' WHERE id=?`, id
+  );
+  respond.ok(res, 'Employee document deleted');
+});
+
+// POST /documents/employee/notify-expired
+// Finds all expired employee documents not yet notified, sends emails, marks as notified
+const notifyExpiredDocs = asyncHandler(async (req, res) => {
+  const { sendDocumentExpiryEmail } = require('../helpers/emailHelper');
+  const today = new Date().toISOString().slice(0, 10);
+
+  const expired = await prisma.$queryRawUnsafe(`
+    SELECT ed.id, ed.valid_until,
+           e.firstName, e.lastName, e.work_email,
+           d.name AS document_type_name
+    FROM employeedocuments ed
+    JOIN employee e ON e.id = ed.employee
+    LEFT JOIN documents d ON d.id = ed.document
+    WHERE ed.status = 'Active'
+      AND ed.valid_until IS NOT NULL
+      AND ed.valid_until <= ?
+      AND ed.expire_notification_last IS NULL
+  `, today).catch(() => []);
+
+  let sent = 0;
+  for (const doc of expired) {
+    if (doc.work_email) {
+      await sendDocumentExpiryEmail({
+        to:           doc.work_email,
+        employeeName: `${doc.firstName ?? ''} ${doc.lastName ?? ''}`.trim(),
+        docType:      doc.document_type_name || 'Document',
+        expiryDate:   doc.valid_until,
+      }).catch(() => {});
+      sent++;
+    }
+    await prisma.$executeRawUnsafe(
+      'UPDATE employeedocuments SET expire_notification_last=? WHERE id=?',
+      Math.floor(Date.now() / 1000), toBigInt(doc.id)
+    ).catch(() => {});
+  }
+
+  respond.ok(res, `Notified ${sent} of ${expired.length} expired document(s)`, { notified: sent, total: expired.length });
+});
+
 module.exports = {
   uploadDocument,
   downloadDocument,
@@ -209,4 +305,9 @@ module.exports = {
   createCompanyDoc,
   updateCompanyDoc,
   deleteCompanyDoc,
+  getEmployeeDocs,
+  createEmployeeDoc,
+  updateEmployeeDoc,
+  deleteEmployeeDoc,
+  notifyExpiredDocs,
 };

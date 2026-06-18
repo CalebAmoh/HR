@@ -56,12 +56,13 @@ const checkToken = asyncHandler(async (req, res, next) => {
     return res.status(403).json({ status: '403', message: 'Account is deactivated. Contact administrator.' });
   }
 
-  // Get user roles
+  // Get user roles — only ACTIVE roles grant access. A deactivated role contributes
+  // neither its name nor its permissions until it is reactivated.
   const rolesResult = await helper.selectRecordsWithQuery(`
     SELECT r.id, r.name
     FROM roles r
     INNER JOIN model_has_roles mhr ON mhr.role_id = r.id
-    WHERE mhr.model_id = ? AND mhr.model_type = 'users'
+    WHERE mhr.model_id = ? AND mhr.model_type = 'users' AND r.status = '1'
   `, [user.id]);
 
   const roles = rolesResult.data ?? [];

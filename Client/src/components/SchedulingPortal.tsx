@@ -9,12 +9,18 @@ function getToken(): string | null {
   return match ? match[1] : null;
 }
 
-function formatSlot(iso: string) {
-  const d = new Date(iso);
-  return {
-    date: d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }),
-    time: d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-  };
+function normalizeSlot(raw: any): { start: string; end: string | null } {
+  if (typeof raw === 'string') return { start: raw, end: null };
+  return { start: raw.start ?? raw, end: raw.end ?? null };
+}
+
+function formatSlot(raw: any) {
+  const { start, end } = normalizeSlot(raw);
+  const d = new Date(start);
+  const date = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  const startTime = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  const endTime = end ? new Date(end).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : null;
+  return { date, time: endTime ? `${startTime} – ${endTime}` : startTime };
 }
 
 export function SchedulingPortal() {
@@ -139,13 +145,14 @@ export function SchedulingPortal() {
               {(data.slots ?? []).length === 0 && (
                 <p style={{ color: '#6b7280', fontSize: 14 }}>No slots available. Please contact HR.</p>
               )}
-              {(data.slots ?? []).map((slot: string) => {
-                const { date, time } = formatSlot(slot);
-                const isSelected = selected === slot;
+              {(data.slots ?? []).map((slotRaw: any) => {
+                const slotKey = normalizeSlot(slotRaw).start;
+                const { date, time } = formatSlot(slotRaw);
+                const isSelected = selected === slotKey;
                 return (
                   <button
-                    key={slot}
-                    onClick={() => setSelected(slot)}
+                    key={slotKey}
+                    onClick={() => setSelected(slotKey)}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 14,
                       padding: '14px 18px', borderRadius: 10,

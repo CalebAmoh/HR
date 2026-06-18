@@ -9,11 +9,15 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FormModal } from './ui/FormModal';
+import { DetailSlideOver, DetailGrid, DetailField, DetailSection } from './ui/DetailSlideOver';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { FormField, inputClass } from './ui/FormField';
+import { CountedTextarea } from './ui/CountedTextarea';
 import { Combobox } from './EmployeeTabs';
 import api from '../../lib/api';
+import { getCurrentUser } from '../../lib/auth';
+import { useCan } from '@/hooks/useCan';
 import { toast } from 'sonner';
 import { getSettings } from '../../lib/settings';
 
@@ -97,6 +101,73 @@ const BLANK_PROCESS: ProcessItem = {
   lower_limit_condition: 'NO_LOWER_LIMIT', lower_limit: '',
   upper_limit_condition: 'NO_UPPER_LIMIT', upper_limit: '', value: '',
 };
+
+// Visual payslip mockup for a report template — shared by the designer's live preview
+// and the read-only View slide-over. `template.visible_columns` must be an array of column ids.
+function PayslipTemplatePreview({ template, paymentCols, deductionCols }: {
+  template: any; paymentCols: PayrollCol[]; deductionCols: PayrollCol[];
+}) {
+  const accent = template.accent_color || '#3B82F6';
+  const vis = Array.isArray(template.visible_columns) ? template.visible_columns.map(String) : [];
+  const visE = vis.length ? paymentCols.filter(c => vis.includes(String(c.id)))   : paymentCols;
+  const visD = vis.length ? deductionCols.filter(c => vis.includes(String(c.id))) : deductionCols;
+  return (
+    <div className="bg-white rounded-[14px] shadow-xl border border-gray-200 overflow-hidden font-sans">
+      <div className="px-5 py-3 flex items-center gap-3" style={{ background: accent }}>
+        {template.company_logo_url && <img src={template.company_logo_url.startsWith('http') ? template.company_logo_url : `${api.defaults.baseURL}/documents/${template.company_logo_url}`} alt="" className="h-8 w-8 rounded object-contain bg-white/20 shrink-0" />}
+        <div className="flex-1 min-w-0">
+          <p className="font-bold text-white text-[13px] truncate">{template.company_name || 'Company Name'}</p>
+          {template.company_address && <p className="text-white/75 text-[10px] mt-0.5 truncate">{template.company_address}</p>}
+        </div>
+        <div className="text-right shrink-0">
+          <p className="text-white/90 font-semibold text-[11px]">PAYSLIP</p>
+          <p className="text-white/60 text-[10px]">May 2026</p>
+        </div>
+      </div>
+      <div className="px-5 py-3 grid grid-cols-2 gap-x-4 gap-y-1.5 border-b border-gray-100 bg-gray-50/60">
+        <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Name</span><p className="font-semibold text-gray-700 text-[10px]">John Doe</p></div>
+        {template.show_emp_id && <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Employee ID</span><p className="font-semibold text-gray-700 text-[10px]">EMP-001</p></div>}
+        {template.show_department && <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Department</span><p className="font-semibold text-gray-700 text-[10px]">Finance</p></div>}
+        {template.show_position && <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Position</span><p className="font-semibold text-gray-700 text-[10px]">Accountant</p></div>}
+        {template.show_bank_account && <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Bank</span><p className="font-semibold text-gray-700 text-[10px]">****-4567</p></div>}
+      </div>
+      {template.header_note && <div className="px-5 py-2 text-[10px] text-gray-500 italic bg-gray-50 border-b border-gray-100">{template.header_note}</div>}
+      <div className="grid grid-cols-2 divide-x divide-gray-100">
+        <div className="px-4 py-3">
+          <p className="font-bold text-[10px] uppercase mb-2" style={{ color: accent }}>Earnings</p>
+          {visE.length > 0
+            ? visE.map(c => (
+                <div key={c.id} className="flex justify-between py-0.5 text-[10px]">
+                  <span className="text-gray-500 truncate max-w-[80px]">{c.name}</span>
+                  <span className="text-gray-700">0.00</span>
+                </div>
+              ))
+            : paymentCols.length === 0
+              ? <div className="flex justify-between py-0.5 text-[10px]"><span className="text-gray-400">Basic Salary</span><span>5,000</span></div>
+              : <p className="text-[9px] text-gray-300 italic">No columns selected</p>}
+        </div>
+        <div className="px-4 py-3">
+          <p className="font-bold text-[10px] uppercase mb-2" style={{ color: accent }}>Deductions</p>
+          {visD.length > 0
+            ? visD.map(c => (
+                <div key={c.id} className="flex justify-between py-0.5 text-[10px]">
+                  <span className="text-gray-500 truncate max-w-[80px]">{c.name}</span>
+                  <span className="text-gray-700">0.00</span>
+                </div>
+              ))
+            : deductionCols.length === 0
+              ? <div className="flex justify-between py-0.5 text-[10px]"><span className="text-gray-400">Tax</span><span>450</span></div>
+              : <p className="text-[9px] text-gray-300 italic">No columns selected</p>}
+        </div>
+      </div>
+      <div className="px-5 py-3 flex items-center justify-between" style={{ background: `${accent}18` }}>
+        <span className="font-semibold text-[11px]" style={{ color: accent }}>Net Pay</span>
+        <span className="font-bold text-[13px]" style={{ color: accent }}>—</span>
+      </div>
+      {template.footer_note && <div className="px-5 py-2 text-[10px] text-gray-400 italic border-t border-gray-100 bg-gray-50">{template.footer_note}</div>}
+    </div>
+  );
+}
 
 const BLANK_PC = {
   name: '', function_type: 'Simple', enabled: 'Yes', editable: 'Yes', colorder: '',
@@ -558,6 +629,7 @@ function PayrollGrid({
   onReject: () => void;
   onLoadAudit: () => void;
 }) {
+  const { can } = useCan();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [pinShadow, setPinShadow] = useState(false);
   const [scrollPct, setScrollPct] = useState(0);
@@ -720,7 +792,7 @@ function PayrollGrid({
         </div>
         <div className="flex gap-2 flex-wrap items-center">
           {/* Generate / Recalculate — only when the run can still be edited */}
-          {canEdit && (
+          {canEdit && can('process_payroll') && (
             <button className="secondary-btn" onClick={onGenerate} disabled={generating}>
               <RefreshCw size={14} className={generating ? 'animate-spin' : ''} />
               {generating ? 'Generating…' : gridData.length ? 'Recalculate' : 'Generate Payroll'}
@@ -728,14 +800,14 @@ function PayrollGrid({
           )}
 
           {/* Edit amounts — only when editable and data exists */}
-          {canEdit && gridData.length > 0 && (
+          {canEdit && gridData.length > 0 && can('process_payroll') && (
             <button className={editMode ? 'primary-btn' : 'secondary-btn'} onClick={onToggleEdit}>
               <Edit size={14} /> {editMode ? 'Done Editing' : 'Edit Amounts'}
             </button>
           )}
 
           {/* Submit for Approval — Processing, approval workflow on, data exists */}
-          {activeRun.status === 'Processing' && approvalSettings.payrollApproval && gridData.length > 0 && (
+          {activeRun.status === 'Processing' && approvalSettings.payrollApproval && gridData.length > 0 && can('process_payroll') && (
             <button className="secondary-btn" onClick={onSubmit} disabled={submitting}
               style={{ borderColor: '#f59e0b', color: '#b45309' }}>
               <Send size={14} /> {submitting ? 'Submitting…' : 'Submit for Approval'}
@@ -743,7 +815,7 @@ function PayrollGrid({
           )}
 
           {/* Approve / Reject — only when Pending Approval */}
-          {isPendingApproval && (() => {
+          {isPendingApproval && can('approve_payroll') && (() => {
             const isSelf = currentUserId != null && activeRun.submitted_by != null
               && String(activeRun.submitted_by) === String(currentUserId);
             const canAct = approvalSettings.selfApproval || !isSelf;
@@ -771,13 +843,13 @@ function PayrollGrid({
           })()}
 
           {/* Finalize — either Approved (went through workflow) or Processing (no workflow) */}
-          {(isApproved || (activeRun.status === 'Processing' && !approvalSettings.payrollApproval)) && (
+          {(isApproved || (activeRun.status === 'Processing' && !approvalSettings.payrollApproval)) && can('approve_payroll') && (
             <button className="success-btn" onClick={onFinalize} disabled={finalizing}>
               <Lock size={14} /> {finalizing ? 'Finalizing…' : 'Finalize & Lock'}
             </button>
           )}
 
-          {gridData.length > 0 && (
+          {gridData.length > 0 && can('export_payroll_reports') && (
             <button className="secondary-btn" onClick={onExport}>
               <FileText size={14} /> Export CSV
             </button>
@@ -885,12 +957,14 @@ function PayrollGrid({
                   {glErrMsg}
                 </p>
               )}
+              {can('approve_payroll') && (
               <div>
                 <button className="secondary-btn text-[12px]" onClick={onRetryGL} disabled={retryingGL}>
                   <RefreshCw size={13} className={retryingGL ? 'animate-spin' : ''} />
                   {retryingGL ? 'Retrying…' : 'Retry GL Posting'}
                 </button>
               </div>
+              )}
             </div>
           );
         })()
@@ -899,7 +973,7 @@ function PayrollGrid({
       {/* ── Empty state ── */}
       {gridData.length === 0 && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] p-12 text-center space-y-3">
-          {canEdit ? (
+          {canEdit && can('process_payroll') ? (
             <>
               <p className="text-[var(--text-muted)] text-[13px]">No payroll data yet. Generate to populate the grid.</p>
               <button className="primary-btn" onClick={onGenerate} disabled={generating}>
@@ -1204,7 +1278,9 @@ function PayrollGrid({
 // ─── Main component ────────────────────────────────────────────────────────────
 
 export function Payroll() {
+  const { can } = useCan();
   const [activeTab,   setActiveTab]   = useState('Payroll Runs');
+  const [viewRow,     setViewRow]     = useState<{ type: string; data: any } | null>(null);  // read-only detail slide-over
 
   // ── Calculation Groups ──────────────────────────────────────────────────────
   const [cgRows,      setCgRows]      = useState<CalcGroup[]>([]);
@@ -1304,7 +1380,8 @@ export function Payroll() {
   const [rejectOpen,        setRejectOpen]        = useState(false);
   const [rejectReason,      setRejectReason]      = useState('');
   const [currentUserId]                           = useState<string | null>(() => {
-    try { const u = JSON.parse(sessionStorage.getItem('current_user') ?? 'null'); return u?.id ? String(u.id) : null; } catch { return null; }
+    const u = getCurrentUser();
+    return u?.id != null ? String(u.id) : null;
   });
 
   // ── Audit log ────────────────────────────────────────────────────────────────
@@ -1433,6 +1510,13 @@ export function Payroll() {
     });
     setPsSelected(t);
     setPsModalOpen(true);
+  }
+
+  // View (read-only): parse the stored column arrays so the slide-over can render the payslip preview.
+  function openPsView(t: any) {
+    let cols: string[] = [];
+    try { cols = t.visible_columns ? JSON.parse(t.visible_columns) : []; } catch { cols = []; }
+    setViewRow({ type: 'ps', data: { ...t, visible_columns: cols } });
   }
 
   async function savePayslipSettings() {
@@ -1600,7 +1684,10 @@ export function Payroll() {
     try {
       const res = await api.post(`/payroll/runs/${activeRunId}/generate`);
       const d   = res.data.data ?? {};
-      if (d.notchRowsFound === 0 && d.salaryRowsFound === 0 && d.employees > 0) {
+      // No payroll columns / no enrolled employees → backend returns an empty array + an explanatory message
+      if (Array.isArray(d) || d.employees === undefined) {
+        toast.error(res.data?.message || 'Nothing was generated — set up payroll columns and enrol employees for this pay frequency first.', { duration: 8000 });
+      } else if (d.notchRowsFound === 0 && d.salaryRowsFound === 0 && d.employees > 0) {
         toast.error('No salary data — employees have no notch or salary components assigned.', { duration: 8000 });
       } else if (d.missingComponents?.length > 0) {
         toast.warning(`Generated, but no selected employees have salary values for: ${d.missingComponents.join(', ')}`, { duration: 10000 });
@@ -2062,6 +2149,14 @@ export function Payroll() {
     } catch { toast.error('Failed to load saved calculation'); }
   }
 
+  // View (read-only): fetch the full rule so the formula items are available in the slide-over.
+  async function openScView(sc: SavedCalc) {
+    try {
+      const res = await api.get(`/payroll/saved-calculations/${sc.id}`);
+      setViewRow({ type: 'sc', data: { ...sc, items: res.data.data?.items ?? [] } });
+    } catch { toast.error('Failed to load calculation rule'); }
+  }
+
   async function saveSc() {
     if (!scForm.name.trim()) return toast.error('Name is required');
     const scNameLower = scForm.name.trim().toLowerCase();
@@ -2210,7 +2305,7 @@ export function Payroll() {
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden">
         <TableToolbar searchQuery={cgSearch} onSearchChange={setCgSearch} searchPlaceholder="Search groups..."
-          actions={<button className="primary-btn" onClick={openCgAdd}><Plus size={15} /> Add Group</button>} />
+          actions={can('manage_calculation_groups') ? <button className="primary-btn" onClick={openCgAdd}><Plus size={15} /> Add Group</button> : undefined} />
         <div className="overflow-x-auto">
           <table className="w-full border-collapse">
             <thead>
@@ -2231,10 +2326,13 @@ export function Payroll() {
                   <td className="td text-[var(--text-muted)] max-w-[500px] truncate">{cg.details || '—'}</td>
                   <td className="td text-right">
                     <div className="flex items-center justify-end gap-1">
+                      <button className="action-btn text-[var(--accent)]" title="View" onClick={() => setViewRow({ type: 'cg', data: cg })}><Eye size={14} /></button>
+                      {can('manage_calculation_groups') && (<>
                       <button className="action-btn text-[var(--warning)]" onClick={() => openCgEdit(cg)}><Edit size={14} /></button>
                       <button className="action-btn text-[var(--danger)]" onClick={() => deleteCg(cg.id)} disabled={cgDeleting === cg.id}>
                         {cgDeleting === cg.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
                       </button>
+                      </>)}
                     </div>
                   </td>
                 </motion.tr>
@@ -2260,7 +2358,7 @@ export function Payroll() {
     return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
       {/* Bulk action bar */}
-      {someSelected && (
+      {someSelected && can('manage_payroll_employees') && (
         <div className="mb-2 px-4 py-2.5 bg-[var(--accent-dim)] border border-[var(--accent)] rounded-[12px] flex items-center gap-3 text-[13px]">
           <CheckSquare size={15} className="text-[var(--accent)] shrink-0" />
           <span className="font-medium text-[var(--accent)]">{peBulkSelected.length} employee{peBulkSelected.length !== 1 ? 's' : ''} selected</span>
@@ -2275,13 +2373,13 @@ export function Payroll() {
         <TableToolbar searchQuery={peSearch} onSearchChange={setPeSearch} searchPlaceholder="Search employees..."
           actions={
             <>
-              <button className="primary-btn" onClick={openPeAdd}><Plus size={15} /> Add Employee</button>
-              <button className="secondary-btn" onClick={() => {
+              {can('manage_payroll_employees') && <button className="primary-btn" onClick={openPeAdd}><Plus size={15} /> Add Employee</button>}
+              {can('manage_payroll_employees') && <button className="secondary-btn" onClick={() => {
                 setPfSetupOpen(true);
                 if (!pfRows.length) api.get('/payroll/pay-frequencies').then((r: { data: { data: PayFreq[] } }) => setPfRows(r.data.data || [])).catch(() => {});
               }}>
                 <span className="text-[13px]">⚙</span> Pay Frequencies
-              </button>
+              </button>}
             </>
           }
           filterBar={
@@ -2361,10 +2459,13 @@ export function Payroll() {
                     <td className="td text-[var(--text-muted)]">{pe.group_name || <span className="opacity-50">None</span>}</td>
                     <td className="td text-right">
                       <div className="flex items-center justify-end gap-1">
+                        <button className="action-btn text-[var(--accent)]" title="View" onClick={() => setViewRow({ type: 'pe', data: { ...pe, _currency: curLabel } })}><Eye size={14} /></button>
+                        {can('manage_payroll_employees') && (<>
                         <button className="action-btn text-[var(--warning)]" onClick={() => openPeEdit(pe)}><Edit size={14} /></button>
                         <button className="action-btn text-[var(--danger)]" onClick={() => deletePe(pe.id)} disabled={peDeleting === pe.id}>
                           {peDeleting === pe.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
                         </button>
+                        </>)}
                       </div>
                     </td>
                   </motion.tr>
@@ -2388,7 +2489,7 @@ export function Payroll() {
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden">
         <TableToolbar searchQuery={pcSearch} onSearchChange={setPcSearch} searchPlaceholder="Search columns..."
-          actions={<button className="primary-btn" onClick={openPcAdd}><Plus size={15} /> Add Column</button>}
+          actions={can('manage_payroll_columns') ? <button className="primary-btn" onClick={openPcAdd}><Plus size={15} /> Add Column</button> : undefined}
           filterBar={
             <div className="flex items-center gap-1.5 flex-wrap">
               {([
@@ -2505,11 +2606,14 @@ export function Payroll() {
                   </td>
                   <td className="td text-right">
                     <div className="flex items-center justify-end gap-1">
+                      <button className="action-btn text-[var(--accent)]" title="View" onClick={() => setViewRow({ type: 'pc', data: pc })}><Eye size={14} /></button>
+                      {can('manage_payroll_columns') && (<>
                       <button className="action-btn text-[var(--text-muted)]" title="Duplicate column" onClick={() => openPcDuplicate(pc)}><Copy size={14} /></button>
                       <button className="action-btn text-[var(--warning)]" onClick={() => openPcEdit(pc)}><Edit size={14} /></button>
                       <button className="action-btn text-[var(--danger)]" onClick={() => deletePc(pc.id)} disabled={pcDeleting === pc.id}>
                         {pcDeleting === pc.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
                       </button>
+                      </>)}
                     </div>
                   </td>
                 </motion.tr>
@@ -2531,7 +2635,7 @@ export function Payroll() {
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden">
         <TableToolbar searchQuery={scSearch} onSearchChange={setScSearch} searchPlaceholder="Search calculations..."
-          actions={<button className="primary-btn" onClick={openScAdd}><Plus size={15} /> Add Calculation</button>} />
+          actions={can('manage_calculation_groups') ? <button className="primary-btn" onClick={openScAdd}><Plus size={15} /> Add Calculation</button> : undefined} />
         <div className="overflow-x-auto">
           <table className="w-full border-collapse">
             <thead>
@@ -2560,11 +2664,14 @@ export function Payroll() {
                   <td className="td text-[var(--text-muted)]">{sc.group_name || <span className="opacity-50">None</span>}</td>
                   <td className="td text-right">
                     <div className="flex items-center justify-end gap-1">
+                      <button className="action-btn text-[var(--accent)]" title="View" onClick={() => openScView(sc)}><Eye size={14} /></button>
+                      {can('manage_calculation_groups') && (<>
                       <button className="action-btn text-[var(--text-muted)]" title="Duplicate rule" onClick={() => openScDuplicate(sc)}><Copy size={14} /></button>
                       <button className="action-btn text-[var(--warning)]" onClick={() => openScEdit(sc)}><Edit size={14} /></button>
                       <button className="action-btn text-[var(--danger)]" onClick={() => deleteSc(sc.id)} disabled={scDeleting === sc.id}>
                         {scDeleting === sc.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
                       </button>
+                      </>)}
                     </div>
                   </td>
                 </motion.tr>
@@ -2605,7 +2712,7 @@ export function Payroll() {
         {/* ── Template list ── */}
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden">
           <TableToolbar searchQuery="" onSearchChange={() => {}} searchPlaceholder="Report templates..."
-            actions={<button className="primary-btn" onClick={openPsAdd}><Plus size={15} /> New Template</button>} />
+            actions={can('manage_report_templates') ? <button className="primary-btn" onClick={openPsAdd}><Plus size={15} /> New Template</button> : undefined} />
           <div className="overflow-x-auto">
             {psLoading ? (
               <p className="text-sm text-[var(--text-muted)] text-center py-10">Loading...</p>
@@ -2646,10 +2753,13 @@ export function Payroll() {
                         </td>
                         <td className="td text-right">
                           <div className="flex items-center justify-end gap-1">
+                            <button className="action-btn text-[var(--accent)]" title="View" onClick={() => openPsView(t)}><Eye size={14} /></button>
+                            {can('manage_report_templates') && (<>
                             <button className="action-btn text-[var(--warning)]" onClick={() => openPsEdit(t)}><Edit size={14} /></button>
                             <button className="action-btn text-[var(--danger)]" onClick={() => deletePsTemplate(t.id)} disabled={psDeleting === t.id}>
                               {psDeleting === t.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
                             </button>
+                            </>)}
                           </div>
                         </td>
                       </motion.tr>
@@ -2714,7 +2824,7 @@ export function Payroll() {
                       <input className={inputClass} value={ps.company_name} onChange={e => setPsForm((f: any) => ({ ...f, company_name: e.target.value }))} placeholder="e.g. Acme Corp Ltd" />
                     </FormField>
                     <FormField label="Company Address">
-                      <textarea className={inputClass} rows={2} value={ps.company_address} onChange={e => setPsForm((f: any) => ({ ...f, company_address: e.target.value }))} placeholder="Full address..." />
+                      <CountedTextarea className={inputClass} rows={2} maxChars={500} value={ps.company_address} onChange={e => setPsForm((f: any) => ({ ...f, company_address: e.target.value }))} placeholder="Full address..." />
                     </FormField>
                     <div>
                       <p className="text-[11.5px] font-semibold text-[var(--text-muted)] mb-1.5">Company Logo</p>
@@ -2767,10 +2877,10 @@ export function Payroll() {
                     </p>
                     <div className="grid grid-cols-2 gap-3">
                       <FormField label="Header Note">
-                        <textarea className={inputClass} rows={2} value={ps.header_note} onChange={e => setPsForm((f: any) => ({ ...f, header_note: e.target.value }))} placeholder="Shown at top of payslip..." />
+                        <CountedTextarea className={inputClass} rows={2} maxChars={500} value={ps.header_note} onChange={e => setPsForm((f: any) => ({ ...f, header_note: e.target.value }))} placeholder="Shown at top of payslip..." />
                       </FormField>
                       <FormField label="Footer Note">
-                        <textarea className={inputClass} rows={2} value={ps.footer_note} onChange={e => setPsForm((f: any) => ({ ...f, footer_note: e.target.value }))} placeholder="Shown at bottom of payslip..." />
+                        <CountedTextarea className={inputClass} rows={2} maxChars={500} value={ps.footer_note} onChange={e => setPsForm((f: any) => ({ ...f, footer_note: e.target.value }))} placeholder="Shown at bottom of payslip..." />
                       </FormField>
                     </div>
                   </div>
@@ -2884,72 +2994,7 @@ export function Payroll() {
                 <div className="w-72 shrink-0">
                   <div className="sticky top-4">
                     <p className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-3">Live Preview</p>
-                    <div className="bg-white rounded-[14px] shadow-xl border border-gray-200 overflow-hidden font-sans">
-                      {/* Header bar */}
-                      <div className="px-5 py-3 flex items-center gap-3" style={{ background: accent }}>
-                        {ps.company_logo_url && <img src={ps.company_logo_url.startsWith('http') ? ps.company_logo_url : `${api.defaults.baseURL}/documents/${ps.company_logo_url}`} alt="" className="h-8 w-8 rounded object-contain bg-white/20 shrink-0" />}
-                        <div className="flex-1 min-w-0">
-                          <p className="font-bold text-white text-[13px] truncate">{ps.company_name || 'Company Name'}</p>
-                          {ps.company_address && <p className="text-white/75 text-[10px] mt-0.5 truncate">{ps.company_address}</p>}
-                        </div>
-                        <div className="text-right shrink-0">
-                          <p className="text-white/90 font-semibold text-[11px]">PAYSLIP</p>
-                          <p className="text-white/60 text-[10px]">May 2026</p>
-                        </div>
-                      </div>
-                      {/* Employee info */}
-                      <div className="px-5 py-3 grid grid-cols-2 gap-x-4 gap-y-1.5 border-b border-gray-100 bg-gray-50/60">
-                        <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Name</span><p className="font-semibold text-gray-700 text-[10px]">John Doe</p></div>
-                        {ps.show_emp_id && <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Employee ID</span><p className="font-semibold text-gray-700 text-[10px]">EMP-001</p></div>}
-                        {ps.show_department && <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Department</span><p className="font-semibold text-gray-700 text-[10px]">Finance</p></div>}
-                        {ps.show_position && <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Position</span><p className="font-semibold text-gray-700 text-[10px]">Accountant</p></div>}
-                        {ps.show_bank_account && <div><span className="text-gray-400 text-[9px] uppercase tracking-wide block">Bank</span><p className="font-semibold text-gray-700 text-[10px]">****-4567</p></div>}
-                      </div>
-                      {/* Header note */}
-                      {ps.header_note && <div className="px-5 py-2 text-[10px] text-gray-500 italic bg-gray-50 border-b border-gray-100">{ps.header_note}</div>}
-                      {/* Earnings / Deductions columns */}
-                      {(() => {
-                        const visE = ps.visible_columns?.length ? paymentCols.filter((c: PayrollCol) => ps.visible_columns.includes(String(c.id))) : paymentCols;
-                        const visD = ps.visible_columns?.length ? deductionCols.filter((c: PayrollCol) => ps.visible_columns.includes(String(c.id))) : deductionCols;
-                        return (
-                          <div className="grid grid-cols-2 divide-x divide-gray-100">
-                            <div className="px-4 py-3">
-                              <p className="font-bold text-[10px] uppercase mb-2" style={{ color: accent }}>Earnings</p>
-                              {visE.length > 0
-                                ? visE.map((c: PayrollCol) => (
-                                    <div key={c.id} className="flex justify-between py-0.5 text-[10px]">
-                                      <span className="text-gray-500 truncate max-w-[80px]">{c.name}</span>
-                                      <span className="text-gray-700">0.00</span>
-                                    </div>
-                                  ))
-                                : paymentCols.length === 0
-                                  ? <div className="flex justify-between py-0.5 text-[10px]"><span className="text-gray-400">Basic Salary</span><span>5,000</span></div>
-                                  : <p className="text-[9px] text-gray-300 italic">No columns selected</p>}
-                            </div>
-                            <div className="px-4 py-3">
-                              <p className="font-bold text-[10px] uppercase mb-2" style={{ color: accent }}>Deductions</p>
-                              {visD.length > 0
-                                ? visD.map((c: PayrollCol) => (
-                                    <div key={c.id} className="flex justify-between py-0.5 text-[10px]">
-                                      <span className="text-gray-500 truncate max-w-[80px]">{c.name}</span>
-                                      <span className="text-gray-700">0.00</span>
-                                    </div>
-                                  ))
-                                : deductionCols.length === 0
-                                  ? <div className="flex justify-between py-0.5 text-[10px]"><span className="text-gray-400">Tax</span><span>450</span></div>
-                                  : <p className="text-[9px] text-gray-300 italic">No columns selected</p>}
-                            </div>
-                          </div>
-                        );
-                      })()}
-                      {/* Net Pay footer */}
-                      <div className="px-5 py-3 flex items-center justify-between" style={{ background: `${accent}18` }}>
-                        <span className="font-semibold text-[11px]" style={{ color: accent }}>Net Pay</span>
-                        <span className="font-bold text-[13px]" style={{ color: accent }}>—</span>
-                      </div>
-                      {/* Footer note */}
-                      {ps.footer_note && <div className="px-5 py-2 text-[10px] text-gray-400 italic border-t border-gray-100 bg-gray-50">{ps.footer_note}</div>}
-                    </div>
+                    <PayslipTemplatePreview template={ps} paymentCols={paymentCols} deductionCols={deductionCols} />
                   </div>
                 </div>
               </div>
@@ -3019,7 +3064,7 @@ export function Payroll() {
                   This will reject the payroll run. The submitter must re-generate and re-submit the run.
                 </p>
                 <FormField label="Reason (optional)">
-                  <textarea className={inputClass} rows={3} value={rejectReason}
+                  <CountedTextarea className={inputClass} rows={3} maxChars={500} value={rejectReason}
                     onChange={(e: { target: HTMLTextAreaElement }) => setRejectReason(e.target.value)}
                     placeholder="Enter rejection reason..." />
                 </FormField>
@@ -3044,9 +3089,9 @@ export function Payroll() {
           <TableToolbar searchQuery={runSearch} onSearchChange={setRunSearch} searchPlaceholder="Search runs..."
             actions={
               <>
-                <button className="primary-btn" onClick={() => { setRunForm(BLANK_RUN); setEditingRun(null); setRunModalOpen(true); }}>
+                {can('process_payroll') && <button className="primary-btn" onClick={() => { setRunForm(BLANK_RUN); setEditingRun(null); setRunModalOpen(true); }}>
                   <Plus size={15} /> New Run
-                </button>
+                </button>}
                 {runRows.length >= 2 && (
                   <button className="secondary-btn" onClick={() => { setCompareRunA(''); setCompareRunB(''); setCompareDataA([]); setCompareDataB([]); setCompareOpen(true); }}>
                     <GitCompare size={14} /> Compare Runs
@@ -3095,10 +3140,12 @@ export function Payroll() {
                       <td className="td text-right" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
                           <button className="action-btn text-[var(--accent)]" onClick={() => openRun(run)}><Eye size={14} /></button>
+                          {can('process_payroll') && (
                           <button className="action-btn text-[var(--text-muted)]" title="Duplicate run" onClick={() => openRunDuplicate(run)}>
                             <Copy size={14} />
                           </button>
-                          {run.status !== 'Completed' && run.status !== 'GL Failed' && (
+                          )}
+                          {can('process_payroll') && run.status !== 'Completed' && run.status !== 'GL Failed' && (
                             <button className="action-btn text-[var(--warning)]" onClick={() => {
                               setRunForm({
                                 name: run.name, pay_frequency: run.pay_frequency ?? '',
@@ -3111,7 +3158,7 @@ export function Payroll() {
                               setRunModalOpen(true);
                             }}><Edit size={14} /></button>
                           )}
-                          {run.status !== 'Completed' && run.status !== 'GL Failed' && (
+                          {can('process_payroll') && run.status !== 'Completed' && run.status !== 'GL Failed' && (
                             <button className="action-btn text-[var(--danger)]" onClick={() => deleteRun(run.id)} disabled={runDeleting === run.id}>
                               {runDeleting === run.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
                             </button>
@@ -3436,6 +3483,90 @@ export function Payroll() {
         {activeTab === 'Calculation Rules' && renderScTab()}
         {activeTab === 'Report Templates'  && renderPayslipDesignerTab()}
 
+        {/* Read-only detail slide-over (View action) */}
+        <DetailSlideOver
+          open={!!viewRow}
+          onClose={() => setViewRow(null)}
+          maxWidth={viewRow?.type === 'ps' ? 'lg' : 'md'}
+          title={
+            viewRow?.type === 'cg' ? 'Deduction Group'
+            : viewRow?.type === 'pe' ? 'Payroll Employee'
+            : viewRow?.type === 'pc' ? 'Payroll Column'
+            : viewRow?.type === 'sc' ? 'Calculation Rule'
+            : viewRow?.type === 'ps' ? 'Report Template'
+            : 'Details'
+          }
+        >
+          {viewRow && (() => {
+            const d = viewRow.data;
+            switch (viewRow.type) {
+              case 'cg': return (
+                <DetailGrid cols={1}>
+                  <DetailField label="Name" value={d.name} />
+                  <DetailField label="Details" value={d.details} />
+                </DetailGrid>
+              );
+              case 'pe': return (
+                <DetailGrid>
+                  <DetailField label="Employee" value={d.emp_name || `#${d.employee}`} full />
+                  <DetailField label="Pay Frequency" value={d.freq_name} />
+                  <DetailField label="Currency" value={d._currency} />
+                  <DetailField label="Deduction Group" value={d.group_name} full />
+                </DetailGrid>
+              );
+              case 'pc': return (
+                <DetailGrid>
+                  <DetailField label="Name" value={d.name} full />
+                  <DetailField label="Payslip Label" value={d.payslip_label} />
+                  <DetailField label="GL Account" value={d.salarycomponent_gl} />
+                  <DetailField label="Type" value={d.payment_deduction} />
+                  <DetailField label="Order" value={d.colorder} />
+                  <DetailField label="Formula" value={d.calculation_function} full />
+                  <DetailField label="Posting Column" value={d.posting_column === 'Yes' ? 'Yes' : 'No'} />
+                  <DetailField label="Status" value={d.enabled === 'Yes' ? 'Active' : 'Disabled'} />
+                  <DetailField label="Visible on Report" value={d.visible ? 'Yes' : 'No'} />
+                  <DetailField label="Included in Net" value={d.include_in_net ? 'Yes' : 'No'} />
+                </DetailGrid>
+              );
+              case 'sc': return (
+                <div className="space-y-4">
+                  <DetailGrid>
+                    <DetailField label="Name" value={d.name} full />
+                    <DetailField label="Target Type" value={d.target_type === 'component' ? 'Salary Component' : 'Payroll Column'} />
+                    <DetailField label="Target" value={d.target_name} />
+                    <DetailField label="Group" value={d.group_name} full />
+                  </DetailGrid>
+                  <DetailSection title="Formula">
+                    {(d.items ?? []).length === 0 ? (
+                      <p className="text-[13px] text-[var(--text-muted)]">No conditions defined.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {d.items.map((item: ProcessItem, idx: number) => (
+                          <div key={idx} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3.5 py-2.5">
+                            <div className="text-[12px] text-[var(--text-secondary)]">{bracketLabel(item, d.target_name || 'amount')}</div>
+                            <div className="text-[13px] font-semibold text-[var(--text-primary)] mt-0.5">→ {item.value}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </DetailSection>
+                </div>
+              );
+              case 'ps': return (
+                <div className="space-y-4">
+                  <DetailField label="Template Name" value={d.template_name || d.name} full />
+                  <PayslipTemplatePreview
+                    template={d}
+                    paymentCols={pcRows.filter((c: PayrollCol) => c.payment_deduction === 'Payment')}
+                    deductionCols={pcRows.filter((c: PayrollCol) => c.payment_deduction === 'Deduction')}
+                  />
+                </div>
+              );
+              default: return null;
+            }
+          })()}
+        </DetailSlideOver>
+
         {/* Deduction Group modal */}
         <AnimatePresence>
           {cgModalOpen && (
@@ -3448,7 +3579,7 @@ export function Payroll() {
                     placeholder="Enter group name..." />
                 </FormField>
                 <FormField label="Details">
-                  <textarea className={inputClass} rows={4} value={cgForm.details ?? ''}
+                  <CountedTextarea className={inputClass} rows={4} maxChars={1000} value={cgForm.details ?? ''}
                     onChange={e => setCgForm(f => ({ ...f, details: e.target.value }))}
                     placeholder="Optional description..." />
                 </FormField>
@@ -3841,10 +3972,12 @@ export function Payroll() {
                               <td className="td py-2 px-3 text-center text-[var(--text-muted)] text-[12px]">{pf.sort_order}</td>
                               <td className="td py-2 px-3 text-right">
                                 <div className="flex items-center justify-end gap-1">
+                                  {can('manage_payroll_employees') && (<>
                                   <button className="action-btn text-[var(--warning)]" onClick={() => openPfEdit(pf)}><Edit size={13} /></button>
                                   <button className="action-btn text-[var(--danger)]" onClick={() => deletePf(String(pf.id))} disabled={pfDeleting === String(pf.id)}>
                                     {pfDeleting === String(pf.id) ? <span className="text-[11px]">…</span> : <Trash2 size={13} />}
                                   </button>
+                                  </>)}
                                 </div>
                               </td>
                             </tr>

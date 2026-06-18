@@ -1,12 +1,15 @@
-import { useState, useEffect, type ComponentType } from 'react';
-import { Download, FileSpreadsheet, FileText, Receipt, X, Stethoscope, Printer } from 'lucide-react';
+import { useState, useMemo, type ComponentType } from 'react';
+import { Download, FileSpreadsheet, FileText, Receipt, X, Stethoscope, Printer, TrendingUp } from 'lucide-react';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { FormModal } from './ui/FormModal';
 import { AnimatePresence } from 'motion/react';
+import { SearchSelect } from './ui/SearchSelect';
+import { exportReportExcel, reportPdf, ReportPreview, uniqOpts } from './ui/reportTools';
 import api from '../../lib/api';
+import { getCurrentUser } from '../../lib/auth';
 
 interface PayslipRun {
   run_id: string;
@@ -118,6 +121,99 @@ export function UserReports() {
     }
   }
 
+  // ── My Leave Statement ──────────────────────────────────────────────────────
+  const [lvOpen, setLvOpen]           = useState(false);
+  const [lvApps, setLvApps]           = useState<any[]>([]);
+  const [lvBalances, setLvBalances]   = useState<any[]>([]);
+  const [lvLoading, setLvLoading]     = useState(false);
+  const [lvPdfBusy, setLvPdfBusy]     = useState(false);
+  const [lvFilters, setLvFilters]     = useState({ type: '', status: '' });
+  const lvFilterCount = Object.values(lvFilters).filter(Boolean).length;
+
+  function openLeaveStatement() {
+    setLvOpen(true);
+    if (lvApps.length === 0 && !lvLoading) {
+      setLvLoading(true);
+      const empId = getCurrentUser()?.employeeId;
+      Promise.all([
+        api.get('/leave/leaves'),
+        empId ? api.get(`/leave/balance/${empId}`) : Promise.resolve({ data: { data: [] } }),
+      ])
+        .then(([a, b]) => {
+          setLvApps(a.data.data ?? []);
+          setLvBalances(b.data?.data ?? []);
+        })
+        .catch(() => toast.error('Failed to load your leave data'))
+        .finally(() => setLvLoading(false));
+    }
+  }
+
+  const lvTypeOpts   = useMemo(() => uniqOpts(lvApps.map((l: any) => l.leave_type_name ?? l.leave_name)), [lvApps]);
+  const lvStatusOpts = useMemo(() => uniqOpts(lvApps.map((l: any) => l.status)), [lvApps]);
+  const LV_HEADERS = ['Leave Type', 'Period', 'Start', 'End', 'Days', 'Status'];
+  const lvRows = useMemo(() => lvApps
+    .filter((l: any) => {
+      if (lvFilters.type   && (l.leave_type_name ?? l.leave_name) !== lvFilters.type) return false;
+      if (lvFilters.status && l.status !== lvFilters.status) return false;
+      return true;
+    })
+    .map((l: any) => [
+      l.leave_type_name ?? l.leave_name ?? '',
+      l.period_name ?? '',
+      l.date_start ? String(l.date_start).slice(0, 10) : '',
+      l.date_end ? String(l.date_end).slice(0, 10) : '',
+      Number(l.day_count ?? 0),
+      l.status ?? '',
+    ] as (string | number)[]), [lvApps, lvFilters]);
+  const lvSummary = () => {
+    const p: string[] = [];
+    if (lvFilters.type)   p.push(`Type: ${lvFilters.type}`);
+    if (lvFilters.status) p.push(`Status: ${lvFilters.status}`);
+    const bal = lvBalances.map((b: any) => `${b.name}: ${b.balance ?? 0}d left`).join(', ');
+    return [(p.length ? p.join('  ·  ') : 'All applications'), bal ? `Balances — ${bal}` : ''].filter(Boolean).join('   |   ');
+  };
+
+  // ── My Performance Report ───────────────────────────────────────────────────
+  const [perfOpen, setPerfOpen]       = useState(false);
+  const [perfRows, setPerfRows]       = useState<any[]>([]);
+  const [perfLoading, setPerfLoading] = useState(false);
+  const [perfPdfBusy, setPerfPdfBusy] = useState(false);
+  const [perfFilters, setPerfFilters] = useState({ cycle: '', status: '' });
+  const perfFilterCount = Object.values(perfFilters).filter(Boolean).length;
+
+  function openPerfReport() {
+    setPerfOpen(true);
+    if (perfRows.length === 0 && !perfLoading) {
+      setPerfLoading(true);
+      api.get('/performance/reviews/my')
+        .then(r => setPerfRows(r.data.data ?? r.data ?? []))
+        .catch(() => toast.error('Failed to load your performance data'))
+        .finally(() => setPerfLoading(false));
+    }
+  }
+
+  const perfCycleOpts  = useMemo(() => uniqOpts(perfRows.map((r: any) => r.cycle_name)), [perfRows]);
+  const perfStatusOpts = useMemo(() => uniqOpts(perfRows.map((r: any) => r.status)), [perfRows]);
+  const PERF_HEADERS = ['Cycle', 'Period', 'Status', 'Self', 'Supervisor', 'HR', 'Overall'];
+  const psc = (v: any) => (v === null || v === undefined || v === '') ? '—' : String(v);
+  const perfTableRows = useMemo(() => perfRows
+    .filter((r: any) => {
+      if (perfFilters.cycle  && (r.cycle_name ?? '') !== perfFilters.cycle)  return false;
+      if (perfFilters.status && (r.status ?? '')      !== perfFilters.status) return false;
+      return true;
+    })
+    .map((r: any) => [
+      r.cycle_name ?? '—',
+      `${r.period_start ? String(r.period_start).slice(0, 10) : '—'} – ${r.period_end ? String(r.period_end).slice(0, 10) : '—'}`,
+      r.status ?? '—', psc(r.self_score), psc(r.supervisor_score), psc(r.hr_score), psc(r.overall_score),
+    ] as (string | number)[]), [perfRows, perfFilters]);
+  const perfSummary = () => {
+    const p: string[] = [];
+    if (perfFilters.cycle)  p.push(`Cycle: ${perfFilters.cycle}`);
+    if (perfFilters.status) p.push(`Status: ${perfFilters.status}`);
+    return p.length ? p.join('  ·  ') : 'All review cycles';
+  };
+
   const filteredRuns = payslipRuns.filter(r =>
     r.name.toLowerCase().includes(runSearch.toLowerCase()) ||
     (r.freq_name ?? '').toLowerCase().includes(runSearch.toLowerCase())
@@ -134,29 +230,27 @@ export function UserReports() {
     },
     {
       id: 2,
-      name: 'My Personal Info Summary',
-      description: 'Export a summary of your profile and demographic details.',
-      icon: FileSpreadsheet,
-    },
-    {
-      id: 3,
       name: 'My Leave Statement',
       description: 'Get a statement of all your past leave requests and remaining balances.',
       icon: FileText,
+      action: openLeaveStatement,
+      actionLabel: 'Generate',
     },
     {
-      id: 4,
-      name: 'My Tax Documents',
-      description: 'End-of-year tax summary documents and declarations.',
-      icon: FileText,
-    },
-    {
-      id: 5,
+      id: 3,
       name: 'My Medical Statement',
       description: 'View your medical limit, amount utilised, remaining balance, and full records history.',
       icon: Stethoscope,
       action: openMedStatement,
       actionLabel: 'View Statement',
+    },
+    {
+      id: 4,
+      name: 'My Performance Report',
+      description: 'Your appraisal review scores and status across all cycles.',
+      icon: TrendingUp,
+      action: openPerfReport,
+      actionLabel: 'Generate',
     },
   ];
 
@@ -245,6 +339,105 @@ export function UserReports() {
           <TablePagination total={reports.length} filtered={filtered.length} />
         </motion.div>
       </div>
+
+      {/* My Leave Statement modal */}
+      <AnimatePresence>
+        {lvOpen && (
+          <FormModal title="My Leave Statement" subtitle="Your leave balances and full application history"
+            maxWidth="4xl" onClose={() => setLvOpen(false)} onSave={() => setLvOpen(false)} saveLabel="Close">
+            {lvLoading ? (
+              <p className="text-center text-[var(--text-muted)] text-sm py-8">Loading your leave data…</p>
+            ) : (
+              <div className="space-y-4">
+                {lvBalances.length > 0 && (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {lvBalances.map((b: any) => (
+                      <div key={b.leave_type_id} className="rounded-[10px] border border-[var(--border)] px-3 py-2 bg-[var(--bg)]">
+                        <p className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wide truncate">{b.name}</p>
+                        <p className="text-[14px] font-bold text-[var(--text-primary)]">
+                          {b.balance ?? 0}<span className="text-[11px] text-[var(--text-muted)] font-normal"> of {b.allocated ?? 0}d left</span>
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="w-52">
+                    <label className="label">Leave Type</label>
+                    <SearchSelect value={lvFilters.type} onChange={v => setLvFilters(p => ({ ...p, type: v }))}
+                      options={[{ id: '', label: 'All types' }, ...lvTypeOpts]} placeholder="All types" />
+                  </div>
+                  <div className="w-48">
+                    <label className="label">Status</label>
+                    <SearchSelect value={lvFilters.status} onChange={v => setLvFilters(p => ({ ...p, status: v }))}
+                      options={[{ id: '', label: 'All statuses' }, ...lvStatusOpts]} placeholder="All statuses" />
+                  </div>
+                  {lvFilterCount > 0 && (
+                    <button onClick={() => setLvFilters({ type: '', status: '' })}
+                      className="flex items-center gap-1 text-[12px] text-[var(--danger)] hover:underline h-9 self-end">
+                      <X size={12} /> Clear all ({lvFilterCount})
+                    </button>
+                  )}
+                </div>
+
+                <ReportPreview
+                  headers={LV_HEADERS}
+                  rows={lvRows}
+                  total={lvApps.length}
+                  emptyMessage={lvApps.length === 0 ? 'You have no leave applications yet.' : 'No applications match the selected filters.'}
+                  pdfBusy={lvPdfBusy}
+                  onExcel={() => exportReportExcel('My Leave Statement', lvSummary(), LV_HEADERS, lvRows)}
+                  onPdf={() => reportPdf('My Leave Statement', lvSummary(), LV_HEADERS, lvRows, setLvPdfBusy)}
+                />
+              </div>
+            )}
+          </FormModal>
+        )}
+      </AnimatePresence>
+
+      {/* My Performance Report modal */}
+      <AnimatePresence>
+        {perfOpen && (
+          <FormModal title="My Performance Report" subtitle="Your appraisal review scores and status"
+            maxWidth="3xl" onClose={() => setPerfOpen(false)} onSave={() => setPerfOpen(false)} saveLabel="Close">
+            {perfLoading ? (
+              <p className="text-center text-[var(--text-muted)] text-sm py-8">Loading…</p>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="w-48">
+                    <label className="label">Cycle</label>
+                    <SearchSelect value={perfFilters.cycle} onChange={v => setPerfFilters(p => ({ ...p, cycle: v }))}
+                      options={[{ id: '', label: 'All cycles' }, ...perfCycleOpts]} placeholder="All cycles" />
+                  </div>
+                  <div className="w-44">
+                    <label className="label">Status</label>
+                    <SearchSelect value={perfFilters.status} onChange={v => setPerfFilters(p => ({ ...p, status: v }))}
+                      options={[{ id: '', label: 'All statuses' }, ...perfStatusOpts]} placeholder="All statuses" />
+                  </div>
+                  {perfFilterCount > 0 && (
+                    <button onClick={() => setPerfFilters({ cycle: '', status: '' })}
+                      className="flex items-center gap-1 text-[12px] text-[var(--danger)] hover:underline h-9 self-end">
+                      <X size={12} /> Clear all ({perfFilterCount})
+                    </button>
+                  )}
+                </div>
+
+                <ReportPreview
+                  headers={PERF_HEADERS}
+                  rows={perfTableRows}
+                  total={perfRows.length}
+                  emptyMessage={perfRows.length === 0 ? 'You have no performance reviews yet.' : 'No reviews match the selected filters.'}
+                  pdfBusy={perfPdfBusy}
+                  onExcel={() => exportReportExcel('My Performance Report', perfSummary(), PERF_HEADERS, perfTableRows)}
+                  onPdf={() => reportPdf('My Performance Report', perfSummary(), PERF_HEADERS, perfTableRows, setPerfPdfBusy)}
+                />
+              </div>
+            )}
+          </FormModal>
+        )}
+      </AnimatePresence>
 
       {/* My Medical Statement modal */}
       <AnimatePresence>

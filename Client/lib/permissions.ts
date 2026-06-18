@@ -39,6 +39,7 @@ export function normalizeFromLogin(data: LoginResponseData): AppUser {
     allRoles,
     directPermissions:   [],                          // not in login response
     resolvedPermissions: new Set(data.permissions),   // use backend-resolved set directly
+    theme:               data.theme === 'dark' ? 'dark' : data.theme === 'light' ? 'light' : null,
   };
 }
 
@@ -85,6 +86,7 @@ export function normalizeFromUserEndpoint(apiUser: ApiUser): AppUser {
     allRoles,
     directPermissions:   apiUser.direct_permissions,
     resolvedPermissions,
+    theme:               apiUser.theme === 'dark' ? 'dark' : apiUser.theme === 'light' ? 'light' : null,
   };
 }
 
@@ -114,14 +116,29 @@ export function resolvePermissions(
 
 // ─────────────────────────────────────────────────────────────
 // canAccessNav — check a nav key against NAV_PERMISSIONS map
+// 
+// Returns true ONLY if:
+//   1. navKey exists in NAV_PERMISSIONS, AND
+//   2. EITHER: has empty permission array (explicitly open)
+//      OR: user has at least one of the required permissions
+//
+// Default: DENY access (security-first approach)
 // ─────────────────────────────────────────────────────────────
 export function canAccessNav(user: AppUser, navKey: string): boolean {
+  // If navKey not in map, DENY by default
+  if (!(navKey in NAV_PERMISSIONS)) return false;
+  
   const required = NAV_PERMISSIONS[navKey];
-  if (!required || required.length === 0) return true;
+  
+  // Empty array = explicitly open view
+  if (required.length === 0) return true;
+  
+  // Check if user has ANY of the required permissions
   return required.some(k => user.resolvedPermissions.has(k));
 }
 
 export function canAccessAny(user: AppUser, keys: string[]): boolean {
-  if (!keys || keys.length === 0) return true;
+  // Empty keys array = must have at least one permission to check, DENY by default
+  if (!keys || keys.length === 0) return false;
   return keys.some(k => user.resolvedPermissions.has(k));
 }

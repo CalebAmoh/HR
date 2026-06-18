@@ -3,32 +3,23 @@ import { User, ShieldCheck } from 'lucide-react';
 import { FormModal } from './ui/FormModal';
 import { Combobox } from './EmployeeTabs';
 import api from '../../lib/api';
+import { toast } from 'sonner';
 
 const PERMISSION_GROUPS = [
   {
     label: 'Users & Access',
     color: { active: '#2563eb', light: '#eff6ff', text: '#1d4ed8', border: '#bfdbfe' },
-    perms: ['view_users', 'create_users', 'edit_users', 'deactivate_users', 'activate_users', 'change_user_password'],
-  },
-  {
-    label: 'Roles',
-    color: { active: '#7c3aed', light: '#f5f3ff', text: '#6d28d9', border: '#ddd6fe' },
-    perms: ['view_roles', 'create_roles', 'edit_roles', 'delete_roles', 'assign_roles', 'revoke_roles'],
-  },
-  {
-    label: 'Permissions',
-    color: { active: '#9333ea', light: '#faf5ff', text: '#7e22ce', border: '#e9d5ff' },
-    perms: ['view_permissions', 'assign_permissions', 'revoke_permissions'],
+    perms: ['view_users', 'create_users', 'edit_users', 'deactivate_users', 'activate_users', 'change_user_password', 'manage_roles'],
   },
   {
     label: 'Employees',
     color: { active: '#059669', light: '#ecfdf5', text: '#047857', border: '#a7f3d0' },
-    perms: ['view_employees', 'create_employees', 'edit_employees', 'approve_employees', 'change_employee_status'],
+    perms: ['view_employees', 'create_employees', 'edit_employees', 'approve_employees', 'change_employee_status', 'manage_onboarding'],
   },
   {
     label: 'Employee Relations',
     color: { active: '#0891b2', light: '#ecfeff', text: '#0e7490', border: '#a5f3fc' },
-    perms: ['manage_skills', 'manage_certifications', 'manage_languages', 'manage_dependents', 'manage_emergency_contacts'],
+    perms: ['manage_skills', 'manage_certifications', 'manage_education', 'manage_languages', 'manage_dependents', 'manage_emergency_contacts'],
   },
   {
     label: 'Company',
@@ -38,17 +29,12 @@ const PERMISSION_GROUPS = [
   {
     label: 'Documents',
     color: { active: '#c2410c', light: '#fff7ed', text: '#9a3412', border: '#fed7aa' },
-    perms: ['view_documents', 'create_documents', 'edit_documents', 'delete_documents', 'download_documents'],
-  },
-  {
-    label: 'Leave',
-    color: { active: '#0d9488', light: '#f0fdfa', text: '#0f766e', border: '#99f6e4' },
-    perms: ['view_leave', 'apply_leave', 'approve_leave', 'cancel_leave', 'view_subordinate_leave'],
+    perms: ['view_documents', 'create_documents', 'edit_documents', 'delete_documents'],
   },
   {
     label: 'Leave Setup',
     color: { active: '#0f766e', light: '#f0fdfa', text: '#134e4a', border: '#99f6e4' },
-    perms: ['view_leave_setup', 'manage_leave_types', 'manage_leave_periods', 'manage_holidays', 'manage_work_week', 'manage_leave_groups', 'manage_leave_rules'],
+    perms: ['view_leave_setup', 'manage_leave_types', 'manage_leave_periods', 'manage_holidays', 'manage_work_week', 'manage_leave_groups', 'manage_leave_rules', 'manage_leave_approvals'],
   },
   {
     label: 'Salary',
@@ -58,27 +44,47 @@ const PERMISSION_GROUPS = [
   {
     label: 'Payroll',
     color: { active: '#d97706', light: '#fffbeb', text: '#b45309', border: '#fde68a' },
-    perms: ['view_payroll', 'manage_payroll_employees', 'process_payroll', 'approve_payroll', 'view_payroll_reports', 'export_payroll_reports', 'manage_payroll_columns', 'manage_calculation_groups'],
+    perms: ['view_payroll', 'manage_payroll_employees', 'process_payroll', 'approve_payroll', 'export_payroll_reports', 'manage_payroll_columns', 'manage_calculation_groups', 'manage_report_templates'],
   },
   {
     label: 'Reports',
     color: { active: '#0284c7', light: '#f0f9ff', text: '#0369a1', border: '#bae6fd' },
-    perms: ['view_reports', 'generate_reports', 'export_reports'],
+    perms: ['generate_reports', 'export_reports'],
   },
   {
     label: 'System',
     color: { active: '#475569', light: '#f8fafc', text: '#334155', border: '#e2e8f0' },
-    perms: ['view_system', 'manage_app_setup', 'manage_code_lists', 'create_code_lists', 'edit_code_lists'],
+    perms: ['view_app_settings', 'manage_app_settings', 'view_settings', 'manage_settings', 'view_audit_logs'],
   },
   {
-    label: 'Settings',
-    color: { active: '#e11d48', light: '#fff1f2', text: '#be123c', border: '#fecdd3' },
-    perms: ['view_settings', 'edit_settings', 'manage_leave_settings', 'manage_notification_settings'],
+    label: 'Dashboard',
+    color: { active: '#0d9488', light: '#f0fdfa', text: '#115e59', border: '#5eead4' },
+    perms: ['view_dashboard'],
   },
   {
-    label: 'Audit',
-    color: { active: '#374151', light: '#f9fafb', text: '#1f2937', border: '#d1d5db' },
-    perms: ['view_audit_logs'],
+    label: 'Recruitment',
+    color: { active: '#7c3aed', light: '#f5f3ff', text: '#5b21b6', border: '#c4b5fd' },
+    perms: ['view_recruitment', 'manage_jobs', 'manage_candidates', 'manage_applications', 'manage_interviews'],
+  },
+  {
+    label: 'Performance',
+    color: { active: '#0891b2', light: '#ecfeff', text: '#155e75', border: '#67e8f9' },
+    perms: ['view_performance', 'create_performance', 'delete_performance', 'review_performance'],
+  },
+  {
+    label: 'Medical',
+    color: { active: '#dc2626', light: '#fef2f2', text: '#991b1b', border: '#fca5a5' },
+    perms: ['view_medical', 'create_medical', 'edit_medical', 'delete_medical', 'approve_medical', 'manage_medical_limits', 'manage_hospitals'],
+  },
+  {
+    label: 'Attendance',
+    color: { active: '#0d9488', light: '#f0fdfa', text: '#115e59', border: '#5eead4' },
+    perms: ['view_attendance', 'manage_attendance'],
+  },
+  {
+    label: 'Training',
+    color: { active: '#d97706', light: '#fffbeb', text: '#92400e', border: '#fcd34d' },
+    perms: ['view_training', 'create_training', 'delete_training', 'approve_training'],
   },
 ];
 
@@ -90,7 +96,7 @@ const blank = (type: string) =>
     ? { employeeId: '', employee: '', username: '', roleId: '', status: 'Active', directPermissions: [] }
     : { roleName: '', status: 'Active', permissions: [] };
 
-export function UserCreationForm({ onClose, initialData, onSave, type, roles = [] }: any) {
+export function UserCreationForm({ onClose, initialData, onSave, type, roles = [], users = [] }: any) {
   const [formData, setFormData] = useState<any>(() => initialData ?? blank(type));
   const [employees, setEmployees] = useState<any[]>([]);
   // Map of permission name → id from the database
@@ -131,10 +137,24 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
     }
   }, [initialData, type]);
 
-  const empOpts = employees.map((e) => ({
-    id: String(e.id),
-    label: e.name + (e.employee_id ? ` (${e.employee_id})` : ''),
-  }));
+  // Employees that already have a user account — exclude them from the picker so a second
+  // account can't be created for the same person. Keep the employee linked to the user being
+  // edited so it still shows in edit mode.
+  const takenEmployeeIds = useMemo(() => {
+    const editingEmpId = initialData?.employeeId != null ? String(initialData.employeeId) : null;
+    return new Set(
+      (users as any[])
+        .map((u) => (u.employeeId != null ? String(u.employeeId) : null))
+        .filter((id): id is string => !!id && id !== editingEmpId)
+    );
+  }, [users, initialData]);
+
+  const empOpts = employees
+    .filter((e) => !takenEmployeeIds.has(String(e.id)))
+    .map((e) => ({
+      id: String(e.id),
+      label: e.name + (e.employee_id ? ` (${e.employee_id})` : ''),
+    }));
 
   const handleEmpChange = (id: string) => {
     const match = employees.find((e) => String(e.id) === id);
@@ -170,6 +190,10 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
   };
 
   const handleSave = () => {
+    if (type === 'Users' && !formData.roleId) {
+      toast.error('Please select a role for this user');
+      return;
+    }
     const data = { ...formData };
     if (type === 'Roles') {
       data.permissionsCount = (data.permissions ?? []).length;
@@ -233,7 +257,7 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
 
             {/* Role */}
             <div>
-              <label className="label">Role</label>
+              <label className="label">Role <span className="text-[var(--danger)]">*</span></label>
               <select value={formData.roleId ?? ''} onChange={(e: any) => set('roleId', e.target.value)}>
                 <option value="">Select role</option>
                 {roles.map((r: any) => (
@@ -334,13 +358,13 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
                 {/* Group header */}
                 <div
                   className="flex items-center justify-between px-4 py-2.5"
-                  style={{ backgroundColor: group.color.light }}
+                  style={{ backgroundColor: `color-mix(in srgb, ${group.color.active} 14%, transparent)` }}
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold" style={{ color: group.color.text }}>
+                    <span className="text-sm font-bold" style={{ color: group.color.active }}>
                       {group.label}
                     </span>
-                    <span className="text-xs font-semibold" style={{ color: group.color.text, opacity: 0.75 }}>
+                    <span className="text-xs font-semibold" style={{ color: group.color.active, opacity: 0.75 }}>
                       {groupCount}/{group.perms.length}
                     </span>
                   </div>
@@ -367,9 +391,9 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
                         disabled={inherited}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-medium transition-all select-none"
                         style={inherited
-                          ? { backgroundColor: group.color.light, borderColor: group.color.active, color: group.color.text, opacity: 0.85, cursor: 'default' }
+                          ? { backgroundColor: `color-mix(in srgb, ${group.color.active} 14%, transparent)`, borderColor: group.color.active, color: group.color.active, opacity: 0.85, cursor: 'default' }
                           : on
-                            ? { backgroundColor: group.color.light, borderColor: group.color.active, color: group.color.text }
+                            ? { backgroundColor: `color-mix(in srgb, ${group.color.active} 14%, transparent)`, borderColor: group.color.active, color: group.color.active }
                             : { backgroundColor: 'var(--surface)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }
                         }
                       >

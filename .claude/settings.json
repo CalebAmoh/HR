@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(\"OK\")",
+      "Bash(curl -s -m 20 -X POST __TRACKED_VAR__/public/attendance/kiosk/__TRACKED_VAR__/punch -H 'Content-Type: application/json' -d '{\"employee_no\":\"EMP-00003\",\"photo\":\"data:image/jpeg;base64,/9j/test\"}')",
+      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const d=JSON.parse\\(s\\).data;console.log\\('headcount',d.headcount,'| day counts',JSON.stringify\\(d.days['2026-06-11']??{}\\)\\)}\\)\")",
+      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const d=JSON.parse\\(s\\).data;console.log\\('range', d.date_from, '→', d.date_to, '| days:', d.days.length, '| totals', JSON.stringify\\(d.totals\\)\\)}\\)\")",
+      "PowerShell(node --check Server\\\\src\\\\controllers\\\\dashboardController.js)",
+      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const d=JSON.parse\\(s\\).data;console.log\\('stats', JSON.stringify\\(d.stats\\)\\);console.log\\('att rows', d.attendance_today.length, JSON.stringify\\(d.attendance_today[0]??null\\)\\);console.log\\('emp status', JSON.stringify\\(d.employment_status\\)\\);console.log\\('growth', JSON.stringify\\(d.growth\\)\\);console.log\\('service', JSON.stringify\\(d.service\\)\\);console.log\\('recent', d.recent_employees.length, JSON.stringify\\(d.recent_employees[0]??null\\)\\)}\\)\")"
+    ]
+  }
+}

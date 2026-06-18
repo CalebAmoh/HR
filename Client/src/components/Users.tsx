@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { FileEdit, Trash2, Plus, KeyRound, ShieldOff, CheckCircle2, Lock, Eye, EyeOff, ShieldCheck } from 'lucide-react';
+import { FileEdit, Trash2, Plus, KeyRound, ShieldOff, CheckCircle2, Lock, Eye, EyeOff, ShieldCheck, Users as UsersIcon } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ConfirmAlert } from './ConfirmAlert';
 import { UserCreationForm } from './UserCreationForm';
@@ -9,25 +9,27 @@ import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import api from '../../lib/api';
 import { toast } from 'sonner';
+import { useCan } from '@/hooks/useCan';
 
 const TABS = ['Users', 'Roles', 'Permissions'];
 
 const PERMISSION_GROUPS = [
-  { label: 'Users & Access',      color: '#2563eb', perms: ['view_users','create_users','edit_users','deactivate_users','activate_users','change_user_password'] },
-  { label: 'Roles',               color: '#7c3aed', perms: ['view_roles','create_roles','edit_roles','delete_roles','assign_roles','revoke_roles'] },
-  { label: 'Permissions',         color: '#9333ea', perms: ['view_permissions','assign_permissions','revoke_permissions'] },
-  { label: 'Employees',           color: '#059669', perms: ['view_employees','create_employees','edit_employees','approve_employees','change_employee_status'] },
-  { label: 'Employee Relations',  color: '#0891b2', perms: ['manage_skills','manage_certifications','manage_languages','manage_dependents','manage_emergency_contacts'] },
+  { label: 'Dashboard',           color: '#0d9488', perms: ['view_dashboard'] },
+  { label: 'Users & Access',      color: '#2563eb', perms: ['view_users','create_users','edit_users','deactivate_users','activate_users','change_user_password','manage_roles'] },
+  { label: 'Employees',           color: '#059669', perms: ['view_employees','create_employees','edit_employees','approve_employees','change_employee_status','manage_onboarding'] },
+  { label: 'Employee Relations',  color: '#0891b2', perms: ['manage_skills','manage_certifications','manage_education','manage_languages','manage_dependents','manage_emergency_contacts'] },
   { label: 'Company',             color: '#64748b', perms: ['view_company_structure','create_company_structure','edit_company_structure','delete_company_structure'] },
-  { label: 'Documents',           color: '#c2410c', perms: ['view_documents','create_documents','edit_documents','delete_documents','download_documents'] },
-  { label: 'Leave',               color: '#0d9488', perms: ['view_leave','apply_leave','approve_leave','cancel_leave','view_subordinate_leave'] },
-  { label: 'Leave Setup',         color: '#0f766e', perms: ['view_leave_setup','manage_leave_types','manage_leave_periods','manage_holidays','manage_work_week','manage_leave_groups','manage_leave_rules'] },
+  { label: 'Documents',           color: '#c2410c', perms: ['view_documents','create_documents','edit_documents','delete_documents'] },
+  { label: 'Leave Setup',         color: '#0f766e', perms: ['view_leave_setup','manage_leave_types','manage_leave_periods','manage_holidays','manage_work_week','manage_leave_groups','manage_leave_rules','manage_leave_approvals'] },
   { label: 'Salary',              color: '#b45309', perms: ['view_salary_setup','manage_salary_component_types','manage_salary_components','manage_employee_salary_components','manage_notch_setup','manage_payment_types','manage_notch_movements'] },
-  { label: 'Payroll',             color: '#d97706', perms: ['view_payroll','manage_payroll_employees','process_payroll','approve_payroll','view_payroll_reports','export_payroll_reports','manage_payroll_columns','manage_calculation_groups'] },
-  { label: 'Reports',             color: '#0284c7', perms: ['view_reports','generate_reports','export_reports'] },
-  { label: 'System',              color: '#475569', perms: ['view_system','manage_app_setup','manage_code_lists','create_code_lists','edit_code_lists'] },
-  { label: 'Settings',            color: '#e11d48', perms: ['view_settings','edit_settings','manage_leave_settings','manage_notification_settings'] },
-  { label: 'Audit',               color: '#374151', perms: ['view_audit_logs'] },
+  { label: 'Payroll',             color: '#d97706', perms: ['view_payroll','manage_payroll_employees','process_payroll','approve_payroll','export_payroll_reports','manage_payroll_columns','manage_calculation_groups','manage_report_templates'] },
+  { label: 'Reports',             color: '#0284c7', perms: ['generate_reports','export_reports'] },
+  { label: 'System',              color: '#475569', perms: ['view_app_settings','manage_app_settings','view_settings','manage_settings','view_audit_logs'] },
+  { label: 'Recruitment',         color: '#7c3aed', perms: ['view_recruitment','manage_jobs','manage_candidates','manage_applications','manage_interviews'] },
+  { label: 'Performance',         color: '#0891b2', perms: ['view_performance','create_performance','delete_performance','review_performance'] },
+  { label: 'Medical',             color: '#dc2626', perms: ['view_medical','create_medical','edit_medical','delete_medical','approve_medical','manage_medical_limits','manage_hospitals'] },
+  { label: 'Attendance',          color: '#0d9488', perms: ['view_attendance','manage_attendance'] },
+  { label: 'Training',            color: '#d97706', perms: ['view_training','create_training','delete_training','approve_training'] },
 ];
 
 const fmtPerm = (p: string) => p.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -51,6 +53,7 @@ function parseJsonField(val: any): any[] {
 }
 
 export function Users() {
+  const { can } = useCan();
   const [users, setUsers] = useState<any[]>([]);
   const [roles, setRoles] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState('Users');
@@ -59,6 +62,7 @@ export function Users() {
   const [isAlertOpen, setIsAlertOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [loading, setLoading] = useState(false);
+  const [viewRole, setViewRole] = useState<any | null>(null);  // role whose permissions are being viewed
   // Password reset modal state
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [passwordTarget, setPasswordTarget] = useState<any | null>(null);
@@ -252,7 +256,12 @@ export function Users() {
     <div className="p-4 sm:p-6 md:p-6 w-full max-w-[1400px] mx-auto overflow-x-hidden flex flex-col h-full relative">
       <PageHeader title="System Users & Roles" subtitle="Manage application access, mapping users to employees, and configuring role permissions." />
 
-      <TabBar tabs={TABS} activeTab={activeTab} onChange={onTabChange} />
+      <TabBar tabs={TABS} activeTab={activeTab} onChange={onTabChange}
+        icons={{
+          Users:       <UsersIcon size={14} />,
+          Roles:       <ShieldCheck size={14} />,
+          Permissions: <Lock size={14} />,
+        }} />
 
       {/* ── Permissions tab ─────────────────────────────────────────────── */}
       {isPerms ? (
@@ -315,11 +324,13 @@ export function Users() {
           onSearchChange={setSearchQuery}
           searchPlaceholder={`Search ${activeTab.toLowerCase()}...`}
           actions={
-            <button onClick={handleAddClick} className="primary-btn shrink-0">
-              <span className="hidden sm:inline">Add {isUsers ? 'User' : 'Role'}</span>
-              <span className="sm:hidden">Add</span>
-              <Plus className="w-[14px] h-[14px]" />
-            </button>
+            (isUsers ? can('create_users') : can('manage_roles')) ? (
+              <button onClick={handleAddClick} className="primary-btn shrink-0">
+                <span className="hidden sm:inline">Add {isUsers ? 'User' : 'Role'}</span>
+                <span className="sm:hidden">Add</span>
+                <Plus className="w-[14px] h-[14px]" />
+              </button>
+            ) : undefined
           }
         />
 
@@ -376,20 +387,31 @@ export function Users() {
                     )}
                     <td className="td">
                       <div className="flex items-center justify-end gap-1">
-                        {isUsers && (
+                        {isUsers && can('change_user_password') && (
                           <button onClick={() => handleResetPassword(row)} className="action-btn text-[var(--text-secondary)]" title="Trigger Password Change">
                             <KeyRound size={14} />
                           </button>
                         )}
-                        <button
-                          onClick={() => handleToggleStatus(row)}
-                          className={`action-btn ${row.status === '1' ? 'text-[var(--danger)]' : 'text-[var(--success)]'}`}
-                          title={row.status === '1' ? 'Deactivate' : 'Activate'}
-                        >
-                          {row.status === '1' ? <ShieldOff size={14} /> : <CheckCircle2 size={14} />}
-                        </button>
-                        <button onClick={() => handleEditClick(row)} className="action-btn text-[var(--warning)]" title="Edit"><FileEdit size={14} /></button>
-                        <button onClick={() => handleDeleteClick(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={14} /></button>
+                        {!isUsers && (
+                          <button onClick={() => setViewRole(row)} className="action-btn text-[var(--text-secondary)]" title="View Permissions">
+                            <Eye size={14} />
+                          </button>
+                        )}
+                        {(isUsers ? can(row.status === '1' ? 'deactivate_users' : 'activate_users') : can('manage_roles')) && (
+                          <button
+                            onClick={() => handleToggleStatus(row)}
+                            className={`action-btn ${row.status === '1' ? 'text-[var(--danger)]' : 'text-[var(--success)]'}`}
+                            title={row.status === '1' ? 'Deactivate' : 'Activate'}
+                          >
+                            {row.status === '1' ? <ShieldOff size={14} /> : <CheckCircle2 size={14} />}
+                          </button>
+                        )}
+                        {(isUsers ? can('edit_users') : can('manage_roles')) && (
+                          <button onClick={() => handleEditClick(row)} className="action-btn text-[var(--warning)]" title="Edit"><FileEdit size={14} /></button>
+                        )}
+                        {isUsers && can('deactivate_users') && (
+                          <button onClick={() => handleDeleteClick(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={14} /></button>
+                        )}
                       </div>
                     </td>
                   </motion.tr>
@@ -421,6 +443,7 @@ export function Users() {
           onSave={handleSave}
           type={activeTab}
           roles={roles}
+          users={users}
         />
       )}
 
@@ -435,6 +458,74 @@ export function Users() {
         onCancel={() => setIsAlertOpen(false)}
         variant="danger"
       />
+
+      {/* ── View Role Permissions Modal ──────────────────────── */}
+      {viewRole && (() => {
+        const rolePerms = new Set((viewRole.permissions ?? []).map((p: any) => typeof p === 'object' ? p.name : p));
+        const isInactive = viewRole.status !== '1';
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+            <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setViewRole(null)} />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              className="bg-[var(--surface)] w-full max-w-2xl rounded-2xl shadow-xl z-10 flex flex-col border border-[var(--border)] overflow-hidden max-h-[85vh]"
+            >
+              <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ backgroundColor: '#7c3aed18' }}>
+                    <ShieldCheck size={16} style={{ color: '#7c3aed' }} />
+                  </div>
+                  <div>
+                    <h3 className="text-[15px] font-bold text-[var(--text-primary)]">{viewRole.roleName ?? viewRole.name}</h3>
+                    <p className="text-[11px] text-[var(--text-muted)]">{rolePerms.size} permission{rolePerms.size !== 1 ? 's' : ''} assigned</p>
+                  </div>
+                </div>
+                <span className={`pill ${isInactive ? 'pill-danger' : 'pill-success'}`}>{isInactive ? 'Inactive' : 'Active'}</span>
+              </div>
+
+              {isInactive && (
+                <div className="px-6 py-2.5 text-[12px] font-medium border-b border-[var(--border)]"
+                  style={{ background: 'color-mix(in srgb, var(--danger) 10%, transparent)', color: 'var(--danger)' }}>
+                  This role is deactivated — users with it do not receive these permissions until it is reactivated.
+                </div>
+              )}
+
+              <div className="overflow-y-auto flex-1 p-4 space-y-3">
+                {rolePerms.size === 0 ? (
+                  <p className="text-[13px] text-[var(--text-muted)] text-center py-8">No permissions assigned to this role.</p>
+                ) : (
+                  PERMISSION_GROUPS.map(group => {
+                    const granted = group.perms.filter(p => rolePerms.has(p));
+                    if (granted.length === 0) return null;
+                    return (
+                      <div key={group.label} className="border border-[var(--border)] rounded-xl overflow-hidden">
+                        <div className="flex items-center gap-2 px-4 py-2.5" style={{ backgroundColor: group.color + '18' }}>
+                          <ShieldCheck size={13} style={{ color: group.color }} />
+                          <span className="text-[13px] font-bold" style={{ color: group.color }}>{group.label}</span>
+                          <span className="text-[11px] font-semibold text-[var(--text-muted)] ml-1">{granted.length}</span>
+                        </div>
+                        <div className="p-3 flex flex-wrap gap-2 bg-[var(--surface)]">
+                          {granted.map(p => (
+                            <span key={p} className="text-[11px] font-medium px-2.5 py-1 rounded-full border"
+                              style={{ backgroundColor: group.color + '12', borderColor: group.color + '35', color: group.color }}>
+                              {fmtPerm(p)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="px-6 py-4 border-t border-[var(--border)] shrink-0 flex justify-end">
+                <button onClick={() => setViewRole(null)} className="secondary-btn">Close</button>
+              </div>
+            </motion.div>
+          </div>
+        );
+      })()}
 
       {/* ── Password Reset Modal ──────────────────────── */}
       {passwordModalOpen && (

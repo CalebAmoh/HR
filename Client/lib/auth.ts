@@ -1,38 +1,28 @@
 import { AppUser } from '@/types/permissions';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Access token — lives ONLY in memory (never written to any storage).
+// Auth persistence uses localStorage so sessions survive page reloads AND
+// browser restarts. For an internal HR system on a corporate network this
+// trade-off (XSS-readable vs. persistent sessions) is acceptable.
 //
-// Why: localStorage / sessionStorage are readable by any JS on the page,
-// making them vulnerable to XSS. An in-memory variable is invisible to
-// injected scripts.
-//
-// Trade-off: the token is lost on page refresh — this is intentional and is
-// recovered transparently by initAuth() via the httpOnly refresh token cookie
-// that the browser sends automatically.
+// logout() wipes both keys, so the session ends immediately on explicit logout.
 // ─────────────────────────────────────────────────────────────────────────────
+const TOKEN_KEY = 'hr_access_token';
+const USER_KEY  = 'hr_current_user';
+
 let _accessToken: string | null = null;
 
-// Listeners notified whenever the stored user is updated (e.g. after a token refresh)
 type UserChangeListener = (user: AppUser) => void;
 const _userChangeListeners = new Set<UserChangeListener>();
 
-/**
- * Subscribe to user/permission updates.
- * Returns an unsubscribe function — call it in a useEffect cleanup.
- */
 export function onUserChange(fn: UserChangeListener): () => void {
   _userChangeListeners.add(fn);
   return () => _userChangeListeners.delete(fn);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// User — stored in sessionStorage (auto-cleared when the tab closes).
-// We avoid localStorage so stale user data never persists across sessions.
-// Set<string> doesn't survive JSON, so we serialize it as a plain array.
+// User serialisation — Set<string> doesn't survive JSON round-trips.
 // ─────────────────────────────────────────────────────────────────────────────
-const USER_KEY = 'current_user';
-
 interface SerializedUser extends Omit<AppUser, 'resolvedPermissions'> {
   resolvedPermissions: string[];
 }
@@ -54,8 +44,7 @@ function deserializeUser(raw: string): AppUser {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// JWT expiry check — no external library needed.
-// JWTs are base64url: header.payload.signature — we only decode the payload.
+// JWT expiry check
 // ─────────────────────────────────────────────────────────────────────────────
 export function isTokenExpired(token: string): boolean {
   try {
@@ -63,115 +52,158 @@ export function isTokenExpired(token: string): boolean {
     if (!payloadBase64) return true;
     const json = atob(payloadBase64.replace(/-/g, '+').replace(/_/g, '/'));
     const payload: { exp?: number } = JSON.parse(json);
-    if (!payload.exp) return false; // no expiry claim → treat as valid
+    if (!payload.exp) return false;
     return payload.exp * 1000 < Date.now();
   } catch {
-    return true; // malformed token → treat as expired
+    return true;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Storage helpers — safe wrappers so private-mode / quota errors don't crash
+// ─────────────────────────────────────────────────────────────────────────────
+function storageGet(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function storageSet(key: string, value: string): void {
+  try { localStorage.setItem(key, value); } catch { /* ignore */ }
+}
+function storageRemove(key: string): void {
+  try { localStorage.removeItem(key); } catch { /* ignore */ }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Persist a session after a successful login or silent token refresh.
- * Token goes into memory only; user goes into sessionStorage.
- */
+/** Persist a session after login or silent token refresh. */
 export function setSession(token: string, user: AppUser): void {
   _accessToken = token;
-  sessionStorage.setItem(USER_KEY, serializeUser(user));
+  storageSet(TOKEN_KEY, token);
+  storageSet(USER_KEY, serializeUser(user));
 }
 
-/** Wipe all auth state and send the user to the login page. */
+/**
+ * Clear all auth data and navigate to the login screen.
+ * Also cleans up any legacy sessionStorage keys from older builds.
+ */
 export function logout(): void {
   _accessToken = null;
-  sessionStorage.removeItem(USER_KEY);
+  storageRemove(TOKEN_KEY);
+  storageRemove(USER_KEY);
+  // Clean up legacy keys used before switching to localStorage
+  try { sessionStorage.removeItem('access_token');  } catch { /* ignore */ }
+  try { sessionStorage.removeItem('current_user');  } catch { /* ignore */ }
   window.location.replace('/');
 }
 
 /**
- * Returns the in-memory access token.
- * Returns null (and triggers logout) if it is absent or expired.
+ * Returns a valid access token, or null.
+ * Checks memory first, then localStorage (page-reload / new-tab case).
+ * Never calls logout() — callers rely on the 401 interceptor for silent refresh.
  */
 export function getToken(): string | null {
-  if (!_accessToken) return null;
-  if (isTokenExpired(_accessToken)) {
-    logout();
-    return null;
+  if (_accessToken && !isTokenExpired(_accessToken)) return _accessToken;
+
+  const stored = storageGet(TOKEN_KEY);
+  if (stored && !isTokenExpired(stored)) {
+    _accessToken = stored;
+    return stored;
   }
-  return _accessToken;
+
+  return null;
 }
 
-/**
- * Overwrite the in-memory token without touching the user.
- * Called by the silent refresh in api.ts after a successful token rotation.
- */
+/** Update token after a silent refresh. */
 export function updateToken(token: string): void {
   _accessToken = token;
+  storageSet(TOKEN_KEY, token);
 }
 
-/**
- * Overwrite the stored user and notify all subscribers (e.g. App.tsx).
- * Called by the silent refresh when the server returns fresh user/permission data.
- */
+/** Update stored user and notify subscribers. */
 export function updateUser(user: AppUser): void {
-  sessionStorage.setItem(USER_KEY, serializeUser(user));
+  storageSet(USER_KEY, serializeUser(user));
   _userChangeListeners.forEach(fn => fn(user));
 }
 
-/** Returns the stored AppUser, or null if absent / storage is corrupted. */
+/**
+ * Returns the stored AppUser, or null.
+ * Never calls logout() — corrupted storage is silently cleared instead.
+ */
 export function getCurrentUser(): AppUser | null {
   try {
-    const raw = sessionStorage.getItem(USER_KEY);
+    const raw = storageGet(USER_KEY);
     if (!raw) return null;
     return deserializeUser(raw);
   } catch {
-    // Corrupted storage — wipe everything and force re-login
-    logout();
+    storageRemove(TOKEN_KEY);
+    storageRemove(USER_KEY);
     return null;
   }
 }
 
-/** True only when a valid (non-expired) token AND a user object are present. */
 export function isAuthenticated(): boolean {
   return !!getToken() && !!getCurrentUser();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// initAuth — call ONCE at app startup before rendering (main.tsx / App.tsx).
+// initAuth — call once before rendering (main.tsx).
 //
-// On page refresh the in-memory token is gone, but the httpOnly refresh token
-// cookie is still present. We silently call /user/refresh-token to restore
-// the session, so the user is never kicked out just because they refreshed.
-//
-// Returns the AppUser on success, or null if the session cannot be restored
-// (refresh token missing / expired / revoked → show the login screen).
-//
-// Usage in main.tsx:
-//   const user = await initAuth();
-//   render(<App initialUser={user} />);
+// Priority:
+//   1. Valid token in localStorage → restore instantly, zero network calls.
+//   2. Token missing/expired → try the httpOnly refresh-token cookie.
+//   3. Both fail → return null → show login screen.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function initAuth(): Promise<AppUser | null> {
+  // Fast path — valid token in storage (reload / new tab / browser restart)
+  const storedToken = storageGet(TOKEN_KEY);
+  const storedUser  = storageGet(USER_KEY);
+
+  if (storedToken && !isTokenExpired(storedToken) && storedUser) {
+    try {
+      _accessToken = storedToken;
+      return deserializeUser(storedUser);
+    } catch {
+      // Corrupted user data — fall through to refresh
+      storageRemove(USER_KEY);
+    }
+  }
+
+  // Slow path — token expired or user data missing, try refresh-token cookie
   try {
-    const { default: api }           = await import('./api');
-    const { normalizeFromLogin }     = await import('./permissions');
+    const { default: api }       = await import('./api');
+    const { normalizeFromLogin } = await import('./permissions');
 
-    const res = await api.get<{ accessToken: string; data: any }>(
-      '/user/refresh-token'
-    );
+    const res = await api.get<{ accessToken?: string; data?: any }>('/user/refresh-token');
+    const { accessToken, data } = res.data ?? {};
 
-    const { accessToken, data } = res.data;
-    if (!accessToken || !data) return null;
+    if (!accessToken) return null;
 
-    const appUser = normalizeFromLogin(data);
-    setSession(accessToken, appUser);
-    return appUser;
+    if (data) {
+      // Full user payload returned — update everything
+      const appUser = normalizeFromLogin(data);
+      setSession(accessToken, appUser);
+      return appUser;
+    }
+
+    // Token-only refresh response (server's handleRefreshToken) — reuse stored user
+    const existingUser = storageGet(USER_KEY);
+    if (existingUser) {
+      try {
+        const appUser = deserializeUser(existingUser);
+        _accessToken = accessToken;
+        storageSet(TOKEN_KEY, accessToken);
+        return appUser;
+      } catch {
+        storageRemove(USER_KEY);
+      }
+    }
+
+    return null;
 
   } catch {
-    // Refresh token absent, expired, or revoked — no session to restore.
-    // Clear any stale user data but do NOT redirect (app hasn't rendered yet).
-    sessionStorage.removeItem(USER_KEY);
+    storageRemove(TOKEN_KEY);
+    storageRemove(USER_KEY);
     return null;
   }
 }

@@ -1,6 +1,6 @@
 const nodemailer = require('nodemailer');
 
-// ── Config resolution ──────────────────────────────────────────────────────────
+// Config resolution
 
 async function resolveMailConfig() {
   try {
@@ -58,17 +58,33 @@ async function makeTransporter() {
   return { transport, from: cfg.from };
 }
 
-// ── Shared email shell ─────────────────────────────────────────────────────────
+// Shared email shell
+
+function escapeHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function safeAccent(color) {
+  return /^#[0-9a-f]{6}$/i.test(color || '') ? color : '#2563eb';
+}
 
 function emailShell({ branding, preheader = '', body }) {
-  const { name, address, logoUrl, accent } = branding;
+  const name = escapeHtml(branding.name || 'HR System');
+  const address = escapeHtml(branding.address || '');
+  const logoUrl = escapeHtml(branding.logoUrl || '');
+  const accent = safeAccent(branding.accent);
 
   const logoHtml = logoUrl
-    ? `<img src="${logoUrl}" alt="${name}" style="max-height:48px;max-width:180px;object-fit:contain;display:block;margin:0 auto 12px" />`
-    : '';
+    ? `<img src="${logoUrl}" alt="${name}" width="132" style="width:auto;max-width:132px;max-height:44px;object-fit:contain;display:block;border:0;outline:none;text-decoration:none" />`
+    : `<div style="width:44px;height:44px;border-radius:10px;background:${accent};color:#ffffff;font-size:17px;line-height:44px;font-weight:800;text-align:center">${name.charAt(0).toUpperCase()}</div>`;
 
   const addressHtml = address
-    ? `<p style="margin:4px 0 0;font-size:11px;color:#9ca3af">${address}</p>`
+    ? `<p style="margin:6px 0 0;font-size:12px;line-height:1.6;color:#94a3b8">${address}</p>`
     : '';
 
   return `<!DOCTYPE html>
@@ -78,42 +94,64 @@ function emailShell({ branding, preheader = '', body }) {
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <!--[if mso]><noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript><![endif]-->
   <style>
-    body{margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+    body{margin:0;padding:0;background:#eef2f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+    table{border-collapse:separate}
+    img{border:0;line-height:100%;outline:none;text-decoration:none}
     a{color:${accent}}
-    @media(prefers-color-scheme:dark){body{background:#0f172a}}
+    .outer{padding:40px 16px}
+    .panel{border-radius:18px;overflow:hidden}
+    .content{padding:36px 34px 34px}
+    @media(max-width:620px){
+      .outer{padding:18px 10px!important}
+      .content{padding:28px 22px!important}
+      .brand-cell{padding:22px!important}
+      .footer-cell{padding:20px 22px!important}
+      .fluid{width:100%!important}
+    }
   </style>
 </head>
-<body style="margin:0;padding:0;background:#f1f5f9">
-  ${preheader ? `<div style="display:none;font-size:1px;color:#f1f5f9;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden">${preheader}</div>` : ''}
+<body style="margin:0;padding:0;background:#eef2f7">
+  ${preheader ? `<div style="display:none;font-size:1px;color:#eef2f7;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden">${escapeHtml(preheader)}</div>` : ''}
 
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:32px 16px">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef2f7">
     <tr><td align="center">
-      <table role="presentation" width="100%" style="max-width:580px" cellpadding="0" cellspacing="0">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" class="outer">
+        <tr><td align="center">
+      <table role="presentation" width="100%" class="panel fluid" style="max-width:620px;background:#ffffff;border:1px solid #dbe3ee;border-radius:18px;overflow:hidden;box-shadow:0 18px 42px rgba(15,23,42,.08)" cellpadding="0" cellspacing="0">
 
-        <!-- Header / Logo -->
+        <!-- Brand -->
         <tr>
-          <td style="background:${accent};border-radius:12px 12px 0 0;padding:28px 32px;text-align:center">
-            ${logoHtml}
-            <h1 style="margin:0;font-size:20px;font-weight:700;color:#ffffff;letter-spacing:-0.3px">${name}</h1>
+          <td class="brand-cell" style="padding:24px 34px;background:#ffffff;border-top:5px solid ${accent};border-bottom:1px solid #e5edf6">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="vertical-align:middle;width:1%;padding-right:14px">${logoHtml}</td>
+                <td style="vertical-align:middle">
+                  <p style="margin:0;font-size:13px;line-height:1.4;color:#64748b;font-weight:700;text-transform:uppercase">HR Notification</p>
+                  <h1 style="margin:2px 0 0;font-size:22px;line-height:1.25;font-weight:800;color:#0f172a">${name}</h1>
+                </td>
+              </tr>
+            </table>
           </td>
         </tr>
 
         <!-- Body -->
         <tr>
-          <td style="background:#ffffff;padding:36px 32px;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0">
+          <td class="content" style="background:#ffffff;padding:36px 34px 34px">
             ${body}
           </td>
         </tr>
 
         <!-- Footer -->
         <tr>
-          <td style="background:#f8fafc;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;padding:20px 32px;text-align:center">
-            <p style="margin:0;font-size:12px;color:#64748b;font-weight:600">${name}</p>
+          <td class="footer-cell" style="background:#f8fafc;border-top:1px solid #e5edf6;padding:22px 34px;text-align:center">
+            <p style="margin:0;font-size:13px;color:#475569;font-weight:700">${name}</p>
             ${addressHtml}
-            <p style="margin:12px 0 0;font-size:11px;color:#94a3b8">This is an automated message — please do not reply directly to this email.</p>
+            <p style="margin:12px 0 0;font-size:12px;line-height:1.5;color:#94a3b8">This is an automated message. Please do not reply directly to this email.</p>
           </td>
         </tr>
 
+      </table>
+        </td></tr>
       </table>
     </td></tr>
   </table>
@@ -121,41 +159,41 @@ function emailShell({ branding, preheader = '', body }) {
 </html>`;
 }
 
-// ── Shared style helpers ───────────────────────────────────────────────────────
+// Shared style helpers
 
 function infoTable(rows) {
   const cells = rows.filter(Boolean).map(([label, value]) => `
     <tr>
-      <td style="padding:10px 16px 10px 0;color:#64748b;font-size:13px;white-space:nowrap;vertical-align:top;font-weight:500">${label}</td>
-      <td style="padding:10px 0;font-size:13px;color:#0f172a;font-weight:600">${value}</td>
+      <td style="padding:13px 16px;color:#64748b;font-size:13px;line-height:1.5;white-space:nowrap;vertical-align:top;font-weight:700;border-bottom:1px solid #e5edf6">${label}</td>
+      <td style="padding:13px 16px 13px 0;font-size:14px;line-height:1.5;color:#0f172a;font-weight:700;border-bottom:1px solid #e5edf6">${value}</td>
     </tr>`).join('');
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"
-    style="border-collapse:collapse;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin:20px 0">
+    style="border-collapse:collapse;background:#f8fafc;border:1px solid #e5edf6;border-radius:10px;overflow:hidden;margin:22px 0">
     ${cells}
   </table>`;
 }
 
 function primaryButton(label, href, accent) {
-  return `<a href="${href}"
-    style="display:inline-block;background:${accent};color:#ffffff;padding:14px 32px;border-radius:8px;
-           text-decoration:none;font-weight:700;font-size:15px;letter-spacing:-0.2px;margin-top:8px">
-    ${label} &rarr;
+  return `<a href="${escapeHtml(href)}"
+    style="display:inline-block;background:${safeAccent(accent)};color:#ffffff;padding:14px 24px;border-radius:9px;
+           text-decoration:none;font-weight:800;font-size:15px;line-height:1.2;margin-top:8px">
+    ${escapeHtml(label)} &rarr;
   </a>`;
 }
 
 function badge(text, color) {
-  return `<span style="display:inline-block;background:${color};color:#fff;padding:3px 12px;border-radius:999px;font-size:12px;font-weight:600">${text}</span>`;
+  return `<span style="display:inline-block;background:${safeAccent(color)};color:#fff;padding:5px 12px;border-radius:999px;font-size:12px;line-height:1.2;font-weight:800">${escapeHtml(text)}</span>`;
 }
 
 function greeting(name) {
-  return `<p style="margin:0 0 20px;font-size:15px;color:#334155">Hello <strong>${name}</strong>,</p>`;
+  return `<p style="margin:0 0 18px;font-size:16px;line-height:1.5;color:#334155">Hello <strong style="color:#0f172a">${escapeHtml(name)}</strong>,</p>`;
 }
 
 function muted(text) {
-  return `<p style="margin:24px 0 0;font-size:12px;color:#94a3b8;line-height:1.6">${text}</p>`;
+  return `<p style="margin:24px 0 0;font-size:13px;color:#64748b;line-height:1.6">${escapeHtml(text)}</p>`;
 }
 
-// ── Email functions ────────────────────────────────────────────────────────────
+// Email functions
 
 async function sendWelcomeEmail({ to, name, username, password }) {
   const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
@@ -171,7 +209,7 @@ async function sendWelcomeEmail({ to, name, username, password }) {
       ['Password', `<span style="font-family:monospace;font-size:13px">${password}</span>`],
     ])}
     <p style="margin:20px 0 0;font-size:13px;color:#ef4444;font-weight:600">
-      ⚠ Please change your password immediately after your first login.
+      Important: Please change your password immediately after your first login.
     </p>
     ${muted('If you did not expect this email, please contact your HR administrator immediately.')}
   `;
@@ -220,7 +258,7 @@ async function sendSchedulingInvite({ to, candidateName, jobTitle, slots, link, 
       weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
       hour: '2-digit', minute: '2-digit',
     });
-    return `<li style="padding:10px 0;border-bottom:1px solid #e2e8f0;list-style:none;font-size:13px;color:#334155">📅 &nbsp;${label}</li>`;
+    return `<li style="padding:10px 0;border-bottom:1px solid #e2e8f0;list-style:none;font-size:13px;color:#334155">Date: ${label}</li>`;
   }).join('');
 
   const expiryNote = expiresAt
@@ -243,7 +281,7 @@ async function sendSchedulingInvite({ to, candidateName, jobTitle, slots, link, 
 
   await t.transport.sendMail({
     from: t.from, to,
-    subject: `Interview Invitation — ${jobTitle}`,
+    subject: `Interview Invitation - ${jobTitle}`,
     html: emailShell({ branding, preheader: `You've been shortlisted for ${jobTitle}`, body }),
   });
 }
@@ -269,7 +307,7 @@ async function sendInterviewConfirmation({ to, name, jobTitle, level, datetime, 
 
   await t.transport.sendMail({
     from: t.from, to,
-    subject: `Interview Confirmed — ${jobTitle}`,
+    subject: `Interview Confirmed - ${jobTitle}`,
     html: emailShell({ branding, preheader: `Your interview for ${jobTitle} is confirmed`, body }),
     attachments: [{ filename: 'interview.ics', content: icsContent, contentType: 'text/calendar' }],
   });
@@ -296,7 +334,7 @@ async function sendCandidateStageEmail({ to, candidateName, stageName, jobTitle 
 
   await t.transport.sendMail({
     from: t.from, to,
-    subject: `Application Update — ${stageName}${jobTitle ? ` · ${jobTitle}` : ''}`,
+    subject: `Application Update - ${stageName}${jobTitle ? ` - ${jobTitle}` : ''}`,
     html: emailShell({ branding, preheader: `Your application has moved to ${stageName}`, body }),
   });
 }
@@ -317,4 +355,130 @@ function buildIcs({ uid, summary, dtstart, dtend, location, organizerEmail, atte
   ].filter(Boolean).join('\r\n');
 }
 
-module.exports = { sendWelcomeEmail, sendLeaveEmail, sendSchedulingInvite, sendInterviewConfirmation, buildIcs, sendCandidateStageEmail };
+async function sendDisciplinaryEmail({ to, name, incidentType, incidentDate, description, severity, actionTaken }) {
+  if (!to) return;
+  const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
+  if (!t) return;
+
+  const severityColors = { Low: '#64748b', Medium: '#f59e0b', High: '#f97316', Critical: '#ef4444' };
+  const color   = severityColors[severity] ?? '#64748b';
+  const subject = `Disciplinary Notice - ${incidentType}`;
+
+  const fmtDate = d => { try { return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); } catch { return d; } };
+
+  const body = `
+    ${greeting(name)}
+    <p style="margin:0 0 16px;font-size:14px;color:#475569;line-height:1.6">
+      This is to formally notify you of a disciplinary record that has been raised against you:
+    </p>
+    <p style="margin:0 0 20px">${badge(severity + ' Severity', color)}</p>
+    ${infoTable([
+      ['Incident Type',  incidentType],
+      ['Incident Date',  fmtDate(incidentDate)],
+      actionTaken ? ['Action Taken', actionTaken] : null,
+    ])}
+    <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#374151">Details</p>
+    <p style="margin:0 0 20px;font-size:13px;color:#4b5563;line-height:1.6;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px">${description}</p>
+    ${muted('If you wish to appeal or discuss this matter, please contact your HR administrator. This is an official record and should be treated in confidence.')}
+  `;
+
+  await t.transport.sendMail({
+    from: t.from, to,
+    subject,
+    html: emailShell({ branding, preheader: subject, body }),
+  });
+}
+
+async function sendEmployeeLifecycleEmail({ to, name, action, reason, effectiveDate }) {
+  if (!to) return;
+  const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
+  if (!t) return;
+
+  const meta = {
+    SUSPENDED:  { subject: 'Employment Suspension Notice',  color: '#f59e0b', label: 'Suspended'  },
+    TERMINATED: { subject: 'Employment Termination Notice', color: '#ef4444', label: 'Terminated' },
+    RESIGNED:   { subject: 'Resignation Confirmation',      color: '#64748b', label: 'Resigned'   },
+    REINSTATED: { subject: 'Reinstatement Confirmation',    color: '#22c55e', label: 'Reinstated' },
+  };
+  const m = meta[action] ?? { subject: 'Employment Status Update', color: '#6b7280', label: action };
+
+  const body = `
+    ${greeting(name)}
+    <p style="margin:0 0 20px;font-size:14px;color:#475569;line-height:1.6">
+      This is to inform you that your employment status has been updated:
+    </p>
+    <p style="margin:0 0 20px">${badge(m.label, m.color)}</p>
+    ${infoTable([
+      effectiveDate ? ['Effective Date', effectiveDate] : null,
+      reason        ? ['Reason',         reason]        : null,
+    ])}
+    ${muted('If you have questions about this update, please contact the HR administrator.')}
+  `;
+
+  await t.transport.sendMail({
+    from: t.from, to,
+    subject: m.subject,
+    html: emailShell({ branding, preheader: m.subject, body }),
+  });
+}
+
+async function sendPerformanceEmail({ to, name, action, cycleName, dueDate, employeeName }) {
+  if (!to) return;
+  const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
+  if (!t) return;
+
+  const fmtDate = d => { try { return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); } catch { return d ?? '-'; } };
+
+  const meta = {
+    CYCLE_STARTED:     { subject: 'Performance Review - Self Assessment Open', color: '#3b82f6', msg: 'A new performance review cycle has started. Please complete your self-assessment by the due date below.' },
+    SUPERVISOR_NOTIFY: { subject: 'Performance Review - Subordinate Self-Assessment Submitted', color: '#8b5cf6', msg: `${employeeName ?? 'An employee'} has submitted their self-assessment. Please log in to review and submit your assessment.` },
+    HR_NOTIFY:         { subject: 'Performance Review - Supervisor Assessment Submitted', color: '#f59e0b', msg: 'A supervisor has submitted their review. Please complete the final HR sign-off.' },
+    REVIEW_COMPLETED:  { subject: 'Performance Review - Completed', color: '#22c55e', msg: 'Your performance review has been completed. You can log in to view your final scores and development plan.' },
+  };
+  const m = meta[action] ?? { subject: 'Performance Review Update', color: '#6b7280', msg: '' };
+
+  const body = `
+    ${greeting(name)}
+    <p style="margin:0 0 20px;font-size:14px;color:#475569;line-height:1.6">${m.msg}</p>
+    ${infoTable([
+      ['Cycle',    cycleName ?? '-'],
+      dueDate ? ['Due Date', fmtDate(dueDate)] : null,
+    ])}
+    ${muted('Please log in to the HR system to take action. If you have questions, contact the HR administrator.')}
+  `;
+
+  await t.transport.sendMail({
+    from: t.from, to, subject: m.subject,
+    html: emailShell({ branding, preheader: m.subject, body }),
+  });
+}
+
+async function sendDocumentExpiryEmail({ to, employeeName, docType, expiryDate }) {
+  const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
+  if (!t) return;
+
+  const fmtDate = d => { try { return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); } catch { return d ?? '-'; } };
+
+  const subject = `Document Expiry Notice - ${docType}`;
+  const body = `
+    ${greeting(employeeName)}
+    <p style="margin:0 0 20px;font-size:14px;color:#475569;line-height:1.6">
+      This is an automated notice that one of your employee documents has expired and requires renewal.
+    </p>
+    ${infoTable([
+      ['Document Type', docType],
+      ['Expiry Date',   `<span style="color:#ef4444;font-weight:700">${fmtDate(expiryDate)}</span>`],
+    ])}
+    <p style="margin:20px 0 0;font-size:13px;color:#ef4444;font-weight:600">
+      Important: Please renew this document and submit the updated copy to HR as soon as possible.
+    </p>
+    ${muted('If you have already renewed this document, please provide the updated copy to your HR department.')}
+  `;
+
+  await t.transport.sendMail({
+    from: t.from, to, subject,
+    html: emailShell({ branding, preheader: subject, body }),
+  });
+}
+
+module.exports = { sendWelcomeEmail, sendLeaveEmail, sendSchedulingInvite, sendInterviewConfirmation, buildIcs, sendCandidateStageEmail, sendEmployeeLifecycleEmail, sendDisciplinaryEmail, sendPerformanceEmail, sendDocumentExpiryEmail };

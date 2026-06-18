@@ -3,10 +3,11 @@ import {
   ShieldAlert, Users, FileText, Settings, PieChart,
   User, CalendarCheck, FolderOpen, Building2, FileSpreadsheet,
   ChevronRight, ChevronDown, LayoutDashboard, X,
-  PanelLeftClose, PanelLeftOpen, Banknote, CheckCircle, HelpCircle, Stethoscope, Briefcase
+  PanelLeftClose, PanelLeftOpen, Banknote, CheckCircle, HelpCircle, Stethoscope, Briefcase, TrendingUp, GraduationCap, Clock, Network
 } from 'lucide-react';
 import { usePermission } from '@/hooks/usePermission';
 import { AppUser } from '@/types/permissions';
+import { useEnabledModules } from '@/lib/moduleState';
 
 
 interface SidebarProps {
@@ -21,6 +22,7 @@ type MenuItem = {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
   id?: string;
+  moduleIds?: string[];
   hasSubmenu?: boolean;
   subItems?: { label: string; id: string }[];
 };
@@ -43,30 +45,41 @@ const menuSections: MenuSection[] = [
           { label: 'Modules',  id: 'Modules'   },
         ],
       },
-      {
-        icon: ShieldAlert,
-        label: 'Admin',
-        hasSubmenu: true,
-        subItems: [
-          { label: 'Job Title Setups',    id: 'JobTitleSetups'     },
-          { label: 'Qualification Setups', id: 'QualificationSetups' },
-          { label: 'Leaving Settings',    id: 'LeavingSettings'    },
-        ],
-      },
+      // {
+      //   icon: ShieldAlert,
+      //   label: 'Admin',
+      //   hasSubmenu: true,
+      //   subItems: [
+      //     { label: 'Job Title Setups',    id: 'JobTitleSetups'     },
+      //     { label: 'Qualification Setups', id: 'QualificationSetups' },
+      //     { label: 'Leaving Settings',    id: 'LeavingSettings'    },
+      //   ],
+      // },
       { icon: FileText,      label: 'Admin Reports',      id: 'AdminReports'    },
       { icon: CheckCircle,   label: 'Central Approval',   id: 'CentralApproval' },
       { icon: User,          label: 'Personal Info',      id: 'PersonalInfo'    },
+      { icon: Network,       label: 'Staff Organogram',   id: 'StaffOrganogram' },
       { icon: FileSpreadsheet, label: 'User Reports',     id: 'UserReports'     },
     ],
   },
   {
     title: 'Management',
     items: [
-      { icon: Users,       label: 'Employees', hasSubmenu: true },
-      { icon: Building2,   label: 'Company',   hasSubmenu: true },
+      {
+        icon: Users,
+        label: 'Employees',
+        moduleIds: ['Employees'],
+        hasSubmenu: true,
+        subItems: [
+          { label: 'Manage Employees', id: 'Employees'      },
+          { label: 'Self-Onboarding',  id: 'SelfOnboarding' },
+        ],
+      },
+      { icon: Building2, label: 'Company',   moduleIds: ['Company'],       hasSubmenu: true },
       {
         icon: FolderOpen,
         label: 'Documents',
+        moduleIds: ['Documents'],
         hasSubmenu: true,
         subItems: [
           { label: 'Manage Documents',   id: 'Documents'         },
@@ -77,16 +90,18 @@ const menuSections: MenuSection[] = [
         icon: CalendarCheck,
         label: 'Leave',
         id: 'Leave',
+        moduleIds: ['LeaveManagement'],
         hasSubmenu: true,
         subItems: [
-          { label: 'Manage Leave',     id: 'LeaveSetup'      },
-          { label: 'Leave Calendar',  id: 'LeaveCalendar'   },
-          { label: 'Personal Leave',           id: 'LeaveManagement' },
+          { label: 'Manage Leave',    id: 'LeaveSetup'      },
+          { label: 'Leave Calendar', id: 'LeaveCalendar'   },
+          { label: 'Personal Leave', id: 'LeaveManagement' },
         ],
       },
       {
         icon: Banknote,
         label: 'Payroll',
+        moduleIds: ['Payroll'],
         hasSubmenu: true,
         subItems: [
           { label: 'Salary',  id: 'Salary'  },
@@ -96,14 +111,45 @@ const menuSections: MenuSection[] = [
       {
         icon: Stethoscope,
         label: 'Medical',
+        moduleIds: ['Medical'],
         hasSubmenu: true,
         subItems: [
-          { label: 'Manage Medical',    id: 'AdminMedical'    },
+          { label: 'Manage Medical',   id: 'AdminMedical'    },
           { label: 'Personal Medical', id: 'PersonalMedical' },
         ],
       },
-      { icon: Briefcase, label: 'Recruitment', id: 'Recruitment' },
-      { icon: Users,  label: 'Users', hasSubmenu: true },
+      { icon: Briefcase, label: 'Recruitment', moduleIds: ['Recruitment'], id: 'Recruitment' },
+      {
+        icon: TrendingUp,
+        label: 'Performance',
+        moduleIds: ['Performance'],
+        hasSubmenu: true,
+        subItems: [
+          { label: 'Manage Performance',   id: 'ManagePerformance'   },
+          { label: 'Personal Performance', id: 'PersonalPerformance' },
+        ],
+      },
+      {
+        icon: GraduationCap,
+        label: 'Training',
+        moduleIds: ['Training'],
+        hasSubmenu: true,
+        subItems: [
+          { label: 'Manage Training',   id: 'AdminTraining'    },
+          { label: 'Personal Training', id: 'PersonalTraining' },
+        ],
+      },
+      {
+        icon: Clock,
+        label: 'Attendance',
+        moduleIds: ['Attendance'],
+        hasSubmenu: true,
+        subItems: [
+          { label: 'Manage Attendance', id: 'AdminAttendance' },
+          { label: 'My Attendance',     id: 'MyAttendance'    },
+        ],
+      },
+      { icon: Users, label: 'Users', hasSubmenu: true },
     ],
   },
   {
@@ -128,6 +174,7 @@ export function Sidebar({ currentUser,activeView, setActiveView, isOpen, onClose
   const [expandedItems, setExpandedItems] = useState<string[]>([]);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const { canNav } = usePermission(currentUser);
+  const { enabled: enabledModules } = useEnabledModules();
 
 
   const toggleSubmenu = (label: string, e: React.MouseEvent) => {
@@ -234,6 +281,9 @@ export function Sidebar({ currentUser,activeView, setActiveView, isOpen, onClose
                   const visibleSubItems = item.subItems
                     ? item.subItems.filter(s => canNav(s.id))
                     : undefined;
+
+                  // Hide if the associated module(s) are disabled
+                  if (item.moduleIds && !item.moduleIds.some(m => enabledModules.includes(m))) return null;
 
                   // Hide parent if it has sub-items and ALL are hidden
                   // or if the parent itself requires permissions the user lacks

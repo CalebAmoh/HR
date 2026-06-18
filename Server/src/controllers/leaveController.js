@@ -3,34 +3,13 @@ const asyncHandler      = require('../middleware/asyncHandler');
 const respond           = require('../helpers/respondHelper');
 const { sendLeaveEmail } = require('../helpers/emailHelper');
 const { logActivity, fromReq } = require('./auditController');
+const { toBigInt, s } = require('../helpers/controllerHelpers');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function toBigInt(val) {
-  if (!val && val !== 0) return null;
-  try { return BigInt(val); } catch { return null; }
-}
 
 function toInt(val) {
   const n = parseInt(val, 10);
   return isNaN(n) ? null : n;
-}
-
-function s(obj) {
-  if (typeof obj === 'bigint')               return obj.toString();
-  if (obj instanceof Date)                   return obj.toISOString();
-  if (Array.isArray(obj))                    return obj.map(s);
-  if (obj !== null && typeof obj === 'object') {
-    if (typeof obj.toFixed === 'function')   return obj.toString();
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) out[k] = s(v);
-    return out;
-  }
-  return obj;
-}
-
-async function safeAlter(sql) {
-  try { await prisma.$executeRawUnsafe(sql); } catch {}
 }
 
 // Whole months from dateA to dateB (positive if B > A)
@@ -40,45 +19,6 @@ function monthsDiff(dateA, dateB) {
   return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
 }
 
-// ── One-time schema patches ───────────────────────────────────────────────────
-
-(async () => {
-  await safeAlter(`ALTER TABLE employeeleaves ADD COLUMN submitted_by BIGINT NULL`);
-  await safeAlter(`ALTER TABLE employeeleaves ADD COLUMN approved_by BIGINT NULL`);
-  await safeAlter(`ALTER TABLE employeeleaves ADD COLUMN rejection_reason TEXT NULL`);
-  await safeAlter(`ALTER TABLE employeeleaves ADD COLUMN leave_tax VARCHAR(30) NULL`);
-  await safeAlter(`ALTER TABLE employeeleaves ADD COLUMN api_response TEXT NULL`);
-  await safeAlter(`ALTER TABLE employeeleaves ADD COLUMN branch VARCHAR(50) NULL`);
-  await safeAlter(`ALTER TABLE employeeleaves MODIFY COLUMN allowance_status VARCHAR(50) NULL`);
-  await safeAlter(`ALTER TABLE employeeleaves MODIFY COLUMN status VARCHAR(50) NULL DEFAULT 'Draft'`);
-  await safeAlter(`ALTER TABLE leaveperiods ADD COLUMN name VARCHAR(100) NOT NULL DEFAULT ''`);
-  await safeAlter(`ALTER TABLE holidays ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'Full_Day'`);
-  await safeAlter(`ALTER TABLE workdays ADD COLUMN country BIGINT NULL`);
-  await safeAlter(`ALTER TABLE leavetypes ADD COLUMN gender VARCHAR(5) NOT NULL DEFAULT 'All'`);
-  await safeAlter(`ALTER TABLE leavetypes ADD COLUMN leave_allowance VARCHAR(3) NOT NULL DEFAULT 'No'`);
-  await safeAlter(`ALTER TABLE leavetypes ADD COLUMN leave_allowance_once VARCHAR(3) NOT NULL DEFAULT 'No'`);
-  await safeAlter(`ALTER TABLE leaverules ADD COLUMN leave_allowance VARCHAR(3) NOT NULL DEFAULT 'No'`);
-  await safeAlter(`ALTER TABLE leaverules ADD COLUMN leave_allowance_once VARCHAR(3) NOT NULL DEFAULT 'No'`);
-  // Paygrade-based leave group assignment (replaces manual leavegroupemployees)
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS leavegrouppaygrades (
-      id BIGINT PRIMARY KEY,
-      leave_group BIGINT NOT NULL,
-      paygrade_id BIGINT NOT NULL,
-      created DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE KEY uq_lg_pg (leave_group, paygrade_id)
-    )
-  `).catch(() => {});
-  // Many-to-many: leave type ↔ leave groups
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS leavetype_groups (
-      id BIGINT PRIMARY KEY,
-      leave_type_id BIGINT NOT NULL,
-      leave_group_id BIGINT NOT NULL,
-      UNIQUE KEY uq_ltg (leave_type_id, leave_group_id)
-    )
-  `).catch(() => {});
-})();
 
 // ── Working days calculator ───────────────────────────────────────────────────
 
@@ -450,6 +390,7 @@ exports.runDailyLeaveGL = async function () {
   }
 };
 
+// POST /leave/retry-gl/:id — HR/admin only. Retry a failed GL posting for a leave's allowance payment.
 exports.retryLeaveGL = asyncHandler(async (req, res) => {
   const isAdmin = req.user?.roles?.some(r => ['admin', 'super-admin'].includes(r));
   if (!isAdmin) return respond.badReq(res, 'Only HR/admin can retry GL posting');
@@ -479,10 +420,13 @@ exports.retryLeaveGL = asyncHandler(async (req, res) => {
   }
 });
 
+// GET /leave/allowance-settings — read the leave allowance configuration (enabled flag, GL accounts, tax/factor rates).
 exports.getLeaveAllowanceSettings = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave allowance settings', await getAllowanceSettings());
 });
 
+// PUT /leave/allowance-settings — save leave allowance config; when enabling for the first time,
+// marks all existing approved-but-unprocessed leaves as 'Pre-enable Skip' so they're excluded from allowance payouts.
 exports.updateLeaveAllowanceSettings = asyncHandler(async (req, res) => {
   // Detect transition from disabled → enabled so we can protect existing leaves
   let beingEnabled = false;
@@ -541,10 +485,12 @@ async function getApprovalFlowSettings() {
   return map;
 }
 
+// GET /leave/approval-flow-settings — read the leave approval flow config (e.g. whether supervisor approval is required).
 exports.getApprovalFlowSettings = asyncHandler(async (req, res) => {
   respond.ok(res, 'Approval flow settings', await getApprovalFlowSettings());
 });
 
+// PUT /leave/approval-flow-settings — save leave approval flow settings (e.g. require supervisor sign-off).
 exports.updateApprovalFlowSettings = asyncHandler(async (req, res) => {
   for (const key of FLOW_KEYS) {
     if (req.body[key] === undefined) continue;
@@ -580,10 +526,12 @@ async function getThresholdSettings() {
   return map;
 }
 
+// GET /leave/threshold-settings — read financial approval threshold config (enabled, amount limit, approver list).
 exports.getThresholdSettings = asyncHandler(async (req, res) => {
   respond.ok(res, 'Threshold settings', await getThresholdSettings());
 });
 
+// PUT /leave/threshold-settings — save the financial approval threshold (above which allowance requires a financial approver).
 exports.updateThresholdSettings = asyncHandler(async (req, res) => {
   for (const key of THRESHOLD_KEYS) {
     if (req.body[key] === undefined) continue;
@@ -619,10 +567,12 @@ async function getCalendarSettings() {
   return map;
 }
 
+// GET /leave/calendar-settings — read whether the leave calendar shows all employees' leaves or only the user's own.
 exports.getCalendarSettings = asyncHandler(async (req, res) => {
   respond.ok(res, 'Calendar settings', await getCalendarSettings());
 });
 
+// PUT /leave/calendar-settings — save calendar visibility setting (show all vs own leaves only).
 exports.updateCalendarSettings = asyncHandler(async (req, res) => {
   for (const key of CAL_KEYS) {
     if (req.body[key] === undefined) continue;
@@ -644,6 +594,8 @@ exports.updateCalendarSettings = asyncHandler(async (req, res) => {
   respond.ok(res, 'Calendar settings saved');
 });
 
+// GET /leave/calendar?from=&to= — return approved/pending leaves for calendar display; non-admins see only their own
+// unless calendar_show_all is enabled in settings.
 exports.getCalendarLeaves = asyncHandler(async (req, res) => {
   const { from, to } = req.query;
   const isAdmin = req.user?.roles?.some(r => ['admin', 'super-admin'].includes(r));
@@ -753,6 +705,8 @@ async function notifyLeaveAction(leaveId, action, reason) {
 // LEAVE TYPES
 // ══════════════════════════════════════════════════════════════════════════════
 
+// GET /leave/types[?all=1] — list leave types; without ?all=1 filters by the requesting user's paygrade and gender.
+// Admin pages pass ?all=1 to skip filtering and show every type for configuration purposes.
 exports.getLeaveTypes = asyncHandler(async (req, res) => {
   // ?all=1 — skip paygrade filtering (used by admin management pages like LeaveSetup)
   const skipFilter = req.query.all === '1';
@@ -805,9 +759,9 @@ exports.getLeaveTypes = asyncHandler(async (req, res) => {
       // Paygrade group check
       const groupIds = (groupsByType[t.id.toString()] ?? []).map(g => g.id);
       if (groupIds.length > 0 && empPaygradeId !== null && !groupIds.includes(empPaygradeId)) return false;
-      // Gender check
+      // Gender check — restricted types are hidden when the employee's gender is unknown
       const tg = t.gender ?? 'All';
-      if (tg !== 'All' && empGenderCode !== null && empGenderCode !== tg) return false;
+      if (tg !== 'All' && empGenderCode !== tg) return false;
       return true;
     })
     .map(t => ({
@@ -819,6 +773,7 @@ exports.getLeaveTypes = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave types', result);
 });
 
+// POST /leave/types — create a leave type with accrual, carry-forward, gender, allowance, and paygrade group settings.
 exports.createLeaveType = asyncHandler(async (req, res) => {
   const {
     name, leave_gl, default_per_year, supervisor_leave_assign, employee_can_apply,
@@ -858,7 +813,7 @@ exports.createLeaveType = asyncHandler(async (req, res) => {
     leave_allowance_once === 'Yes' ? 'Yes' : 'No',
     accrual_frequency || 'Monthly',
     accrual_rate ? parseFloat(accrual_rate) : null,
-    ['M','F'].includes(gender) ? gender : 'All',
+    /^[A-Z]$/.test(String(gender ?? '')) ? gender : 'All',
     created.id
   ).catch(() => {});
   await syncLeaveTypeGroups(created.id, group_ids);
@@ -866,6 +821,7 @@ exports.createLeaveType = asyncHandler(async (req, res) => {
   respond.created(res, 'Leave type created', s(created));
 });
 
+// PUT /leave/types/:id — update leave type fields; raw SQL used for fields (accrual, gender) not yet in Prisma schema.
 exports.updateLeaveType = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   const {
@@ -920,7 +876,7 @@ exports.updateLeaveType = asyncHandler(async (req, res) => {
     const g = req.body.gender;
     await prisma.$executeRawUnsafe(
       `UPDATE leavetypes SET gender=? WHERE id=?`,
-      ['M','F'].includes(g) ? g : 'All', id
+      /^[A-Z]$/.test(String(g ?? '')) ? g : 'All', id
     ).catch(() => {});
   }
   if (req.body.group_ids !== undefined) await syncLeaveTypeGroups(id, req.body.group_ids);
@@ -928,6 +884,7 @@ exports.updateLeaveType = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave type updated', s(updated));
 });
 
+// DELETE /leave/types/:id — permanently delete a leave type.
 exports.deleteLeaveType = asyncHandler(async (req, res) => {
   const delType = await prisma.leavetypes.findUnique({ where: { id: toBigInt(req.params.id) } }).catch(() => null);
   await prisma.leavetypes.delete({ where: { id: toBigInt(req.params.id) } });
@@ -939,11 +896,13 @@ exports.deleteLeaveType = asyncHandler(async (req, res) => {
 // LEAVE PERIODS
 // ══════════════════════════════════════════════════════════════════════════════
 
+// GET /leave/periods — list all leave periods ordered by start date descending.
 exports.getLeavePeriods = asyncHandler(async (req, res) => {
   const rows = await prisma.leaveperiods.findMany({ orderBy: { date_start: 'desc' } });
   respond.ok(res, 'Leave periods', s(rows));
 });
 
+// POST /leave/periods — create a new leave period (Inactive by default until explicitly activated).
 exports.createLeavePeriod = asyncHandler(async (req, res) => {
   const { name, date_start, date_end } = req.body;
   if (!date_start || !date_end) return respond.badReq(res, 'Start and end dates are required');
@@ -954,6 +913,7 @@ exports.createLeavePeriod = asyncHandler(async (req, res) => {
   respond.created(res, 'Leave period created', s(created));
 });
 
+// PUT /leave/periods/:id — update a leave period's name or date range.
 exports.updateLeavePeriod = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   const { name, date_start, date_end } = req.body;
@@ -966,6 +926,7 @@ exports.updateLeavePeriod = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave period updated', s(updated));
 });
 
+// DELETE /leave/periods/:id — permanently delete a leave period.
 exports.deleteLeavePeriod = asyncHandler(async (req, res) => {
   const delPeriod = await prisma.leaveperiods.findUnique({ where: { id: toBigInt(req.params.id) } }).catch(() => null);
   await prisma.leaveperiods.delete({ where: { id: toBigInt(req.params.id) } });
@@ -1047,6 +1008,8 @@ async function processCarryForward(oldPeriod, newPeriodId) {
   }
 }
 
+// PUT /leave/periods/:id/activate — set this period as Active (deactivating all others) and run carry-forward
+// calculations if the new period chronologically follows an existing active period.
 exports.activateLeavePeriod = asyncHandler(async (req, res) => {
   const newPeriodId = toBigInt(req.params.id);
   const newPeriod   = await prisma.leaveperiods.findUnique({ where: { id: newPeriodId } });
@@ -1076,6 +1039,8 @@ exports.activateLeavePeriod = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave period activated');
 });
 
+// POST /leave/periods/:id/recalculate-carry-forward — manually re-run carry-forward from the preceding period
+// into this one; clears existing starting balances first so stale values don't persist.
 exports.recalculateCarryForward = asyncHandler(async (req, res) => {
   const targetPeriodId = toBigInt(req.params.id);
   const targetPeriod   = await prisma.leaveperiods.findUnique({ where: { id: targetPeriodId } });
@@ -1102,11 +1067,13 @@ exports.recalculateCarryForward = asyncHandler(async (req, res) => {
 // HOLIDAYS
 // ══════════════════════════════════════════════════════════════════════════════
 
+// GET /leave/holidays — list all public holidays ordered by date.
 exports.getHolidays = asyncHandler(async (req, res) => {
   const rows = await prisma.$queryRawUnsafe(`SELECT * FROM holidays ORDER BY dateh ASC`).catch(() => []);
   respond.ok(res, 'Holidays', s(rows));
 });
 
+// POST /leave/holidays — add a public holiday with full-day or half-day status.
 exports.createHoliday = asyncHandler(async (req, res) => {
   const { name, dateh, status } = req.body;
   if (!name || !dateh) return respond.badReq(res, 'Name and date are required');
@@ -1119,6 +1086,7 @@ exports.createHoliday = asyncHandler(async (req, res) => {
   respond.created(res, 'Holiday created', { id: id.toString(), name, dateh, status: status ?? 'Full_Day' });
 });
 
+// PUT /leave/holidays/:id — update a holiday's name, date, or full/half-day status.
 exports.updateHoliday = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   const { name, dateh, status } = req.body;
@@ -1133,6 +1101,7 @@ exports.updateHoliday = asyncHandler(async (req, res) => {
   respond.ok(res, 'Holiday updated');
 });
 
+// DELETE /leave/holidays/:id — permanently remove a public holiday.
 exports.deleteHoliday = asyncHandler(async (req, res) => {
   const delHol = await prisma.$queryRawUnsafe(`SELECT name FROM holidays WHERE id=?`, toBigInt(req.params.id)).catch(() => []);
   await prisma.$executeRawUnsafe(`DELETE FROM holidays WHERE id=?`, toBigInt(req.params.id));
@@ -1146,6 +1115,7 @@ exports.deleteHoliday = asyncHandler(async (req, res) => {
 
 const ALL_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
+// GET /leave/work-week — return the work-week schedule (Mon–Sun) with Full_Day/Half_Day/Non_working_Day status for each day.
 exports.getWorkWeek = asyncHandler(async (req, res) => {
   // Use Prisma model so enum @map values ('Full Day' etc.) are returned as Prisma names ('Full_Day' etc.)
   const rows = await prisma.workdays.findMany({ select: { name: true, status: true } }).catch(() => []);
@@ -1154,6 +1124,7 @@ exports.getWorkWeek = asyncHandler(async (req, res) => {
   respond.ok(res, 'Work week', result);
 });
 
+// PUT /leave/work-week — bulk-save the work-week schedule; upserts each day's status.
 exports.updateWorkWeek = asyncHandler(async (req, res) => {
   const entries = Array.isArray(req.body) ? req.body : [];
   for (const { name, status } of entries) {
@@ -1173,11 +1144,13 @@ exports.updateWorkWeek = asyncHandler(async (req, res) => {
 // LEAVE GROUPS
 // ══════════════════════════════════════════════════════════════════════════════
 
+// GET /leave/groups — list all leave groups (used to bundle leave types for a set of employees).
 exports.getLeaveGroups = asyncHandler(async (req, res) => {
   const rows = await prisma.leavegroups.findMany({ orderBy: { name: 'asc' } });
   respond.ok(res, 'Leave groups', s(rows));
 });
 
+// POST /leave/groups — create a named leave group.
 exports.createLeaveGroup = asyncHandler(async (req, res) => {
   const { name, details } = req.body;
   if (!name) return respond.badReq(res, 'Group name is required');
@@ -1188,6 +1161,7 @@ exports.createLeaveGroup = asyncHandler(async (req, res) => {
   respond.created(res, 'Leave group created', s(created));
 });
 
+// PUT /leave/groups/:id — update a leave group's name or description.
 exports.updateLeaveGroup = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   const { name, details } = req.body;
@@ -1199,6 +1173,7 @@ exports.updateLeaveGroup = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave group updated', s(updated));
 });
 
+// DELETE /leave/groups/:id — permanently delete a leave group.
 exports.deleteLeaveGroup = asyncHandler(async (req, res) => {
   const delGrp = await prisma.leavegroups.findUnique({ where: { id: toBigInt(req.params.id) } }).catch(() => null);
   await prisma.leavegroups.delete({ where: { id: toBigInt(req.params.id) } });
@@ -1206,6 +1181,7 @@ exports.deleteLeaveGroup = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave group deleted');
 });
 
+// GET /leave/groups/:id/employees — list all employees directly assigned to a leave group.
 exports.getLeaveGroupEmployees = asyncHandler(async (req, res) => {
   const groupId = toBigInt(req.params.id);
   const members = await prisma.$queryRawUnsafe(
@@ -1218,6 +1194,7 @@ exports.getLeaveGroupEmployees = asyncHandler(async (req, res) => {
   respond.ok(res, 'Group employees', s(members));
 });
 
+// POST /leave/groups/:id/employees — add an employee to a leave group; blocks duplicate membership.
 exports.addLeaveGroupEmployee = asyncHandler(async (req, res) => {
   const groupId    = toBigInt(req.params.id);
   const employeeId = toBigInt(req.body.employee_id);
@@ -1236,6 +1213,7 @@ exports.addLeaveGroupEmployee = asyncHandler(async (req, res) => {
   respond.created(res, 'Employee added to group');
 });
 
+// DELETE /leave/groups/:id/employees/:eid — remove an employee from a leave group.
 exports.removeLeaveGroupEmployee = asyncHandler(async (req, res) => {
   const groupId = toBigInt(req.params.id);
   const empId   = toBigInt(req.params.eid);
@@ -1247,6 +1225,7 @@ exports.removeLeaveGroupEmployee = asyncHandler(async (req, res) => {
 
 // ── Leave Group Paygrades (paygrade-based assignment) ─────────────────────────
 
+// GET /leave/groups/:id/paygrades — list paygrades assigned to a leave group, with employee count per paygrade.
 exports.getLeaveGroupPaygrades = asyncHandler(async (req, res) => {
   const groupId = toBigInt(req.params.id);
   const rows = await prisma.$queryRawUnsafe(`
@@ -1262,6 +1241,7 @@ exports.getLeaveGroupPaygrades = asyncHandler(async (req, res) => {
   respond.ok(res, 'Group paygrades', s(rows));
 });
 
+// POST /leave/groups/:id/paygrades — assign a paygrade to a leave group; blocks duplicates.
 exports.addLeaveGroupPaygrade = asyncHandler(async (req, res) => {
   const groupId   = toBigInt(req.params.id);
   const paygadeId = toBigInt(req.body.paygrade_id);
@@ -1279,6 +1259,7 @@ exports.addLeaveGroupPaygrade = asyncHandler(async (req, res) => {
   respond.created(res, 'Paygrade assigned to group');
 });
 
+// DELETE /leave/groups/:id/paygrades/:pgId — remove a paygrade assignment from a leave group.
 exports.removeLeaveGroupPaygrade = asyncHandler(async (req, res) => {
   const groupId   = toBigInt(req.params.id);
   const paygadeId = toBigInt(req.params.pgId);
@@ -1292,6 +1273,7 @@ exports.removeLeaveGroupPaygrade = asyncHandler(async (req, res) => {
 // LEAVE RULES
 // ══════════════════════════════════════════════════════════════════════════════
 
+// GET /leave/rules[?leave_type=] — list leave rules with type/job title/employment status labels; optionally filtered by leave type.
 exports.getLeaveRules = asyncHandler(async (req, res) => {
   const where = req.query.leave_type ? `WHERE lr.leave_type=${toBigInt(req.query.leave_type)}` : '';
   const rows = await prisma.$queryRawUnsafe(
@@ -1310,6 +1292,8 @@ exports.getLeaveRules = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave rules', s(rows));
 });
 
+// POST /leave/rules — create a leave rule that overrides leave type defaults for specific employees, job titles,
+// departments, employment status, or paygrade groups; accrual/allowance fields written via raw SQL due to Prisma schema lag.
 exports.createLeaveRule = asyncHandler(async (req, res) => {
   const {
     leave_type, job_title, employment_status, employee, supervisor_leave_assign,
@@ -1356,6 +1340,8 @@ exports.createLeaveRule = asyncHandler(async (req, res) => {
   respond.created(res, 'Leave rule created', s(created));
 });
 
+// PUT /leave/rules/:id — update a leave rule; handles string, int, decimal, and BigInt nullable fields separately
+// because Prisma client types for job_title/employment_status don't match the DB VARCHAR type yet.
 exports.updateLeaveRule = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   const data = {};
@@ -1423,6 +1409,7 @@ exports.updateLeaveRule = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave rule updated', s(updated));
 });
 
+// DELETE /leave/rules/:id — permanently delete a leave rule.
 exports.deleteLeaveRule = asyncHandler(async (req, res) => {
   await prisma.leaverules.delete({ where: { id: toBigInt(req.params.id) } });
   logActivity({ module: 'Leave Setup', action: 'delete_leave_rule', entityId: req.params.id, ...fromReq(req) });
@@ -1433,16 +1420,22 @@ exports.deleteLeaveRule = asyncHandler(async (req, res) => {
 // LEAVE MANAGEMENT
 // ══════════════════════════════════════════════════════════════════════════════
 
+// GET /leave/leaves — list the requesting employee's own leave applications; computes live allowance estimates
+// for allowance-enabled types when the global allowance control is on.
 exports.getLeaves = asyncHandler(async (req, res) => {
   const { status, date_start, date_end } = req.query;
 
-  // Always scope to the requesting user's own employee record
-  const userEmp = await prisma.$queryRawUnsafe(
-    `SELECT employeeId, employee FROM users WHERE id=?`, toBigInt(req.user.id)
-  ).catch(() => []);
-  const ownEmpId = userEmp[0]?.employeeId || userEmp[0]?.employee;
-  if (!ownEmpId) return respond.ok(res, 'Leaves', []);
-  const scopedEmployee = String(ownEmpId);
+  // Default: scope to the requesting user's own employee record.
+  // ?all=1 returns every employee's leaves (reports/admin views — screen access is the gate).
+  let scopedEmployee = null;
+  if (req.query.all !== '1') {
+    const userEmp = await prisma.$queryRawUnsafe(
+      `SELECT employeeId, employee FROM users WHERE id=?`, toBigInt(req.user.id)
+    ).catch(() => []);
+    const ownEmpId = userEmp[0]?.employeeId || userEmp[0]?.employee;
+    if (!ownEmpId) return respond.ok(res, 'Leaves', []);
+    scopedEmployee = String(ownEmpId);
+  }
 
   let where = '1=1';
   const params = [];
@@ -1520,6 +1513,7 @@ exports.getLeaves = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leaves', s(enriched));
 });
 
+// GET /leave/all-leaves[?status=&employee=] — admin view of all employee leave applications with allowance enrichment.
 exports.getAllEmployeeLeaves = asyncHandler(async (req, res) => {
   const { status, employee } = req.query;
   let sql = `
@@ -1588,6 +1582,8 @@ exports.getAllEmployeeLeaves = asyncHandler(async (req, res) => {
   respond.ok(res, 'All employee leaves', s(enriched));
 });
 
+// POST /leave/apply — submit a leave application; validates working days, leave balance, gender restrictions,
+// supervisor-assign permission, and allowance eligibility before creating the leave record and its day entries.
 exports.applyLeave = asyncHandler(async (req, res) => {
   const {
     employee: bodyEmployee, leave_type, leave_period, date_start, date_end,
@@ -1820,6 +1816,8 @@ exports.applyLeave = asyncHandler(async (req, res) => {
   respond.created(res, 'Leave application submitted', s(newLeave));
 });
 
+// PUT /leave/:id — update a draft or pending leave application; patches only provided fields.
+// Recalculates and replaces all day entries when dates change.
 exports.updateLeave = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   const rows = await prisma.$queryRawUnsafe(`SELECT id, status FROM employeeleaves WHERE id=?`, id).catch(() => []);
@@ -1861,6 +1859,7 @@ exports.updateLeave = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave updated');
 });
 
+// DELETE /leave/:id — permanently remove a draft or pending leave application, cascading to its day entries and log.
 exports.deleteLeave = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   const rows = await prisma.$queryRawUnsafe(`SELECT id, status FROM employeeleaves WHERE id=?`, id).catch(() => []);
@@ -1878,6 +1877,8 @@ exports.deleteLeave = asyncHandler(async (req, res) => {
 
 // ── Workflow ──────────────────────────────────────────────────────────────────
 
+// POST /leave/:id/submit — move a draft/pending leave into the approval queue.
+// Routes to 'Pending Approval' (supervisor tier) when supervisor approval is enabled, else directly to 'Pending HR Approval'.
 exports.submitLeave = asyncHandler(async (req, res) => {
   const id      = toBigInt(req.params.id);
   const rows    = await prisma.$queryRawUnsafe(`SELECT id, status FROM employeeleaves WHERE id=?`, id).catch(() => []);
@@ -1900,6 +1901,8 @@ exports.submitLeave = asyncHandler(async (req, res) => {
   respond.ok(res, supOn ? 'Leave submitted for approval' : 'Leave submitted — sent directly to HR approval');
 });
 
+// POST /leave/:id/approve — two-tier approval: supervisor (level 0 → Pending HR Approval) then HR (final → Approved).
+// Automatically triggers leave allowance GL posting on final approval.
 exports.approveLeave = asyncHandler(async (req, res) => {
   const id      = toBigInt(req.params.id);
   const rows    = await prisma.$queryRawUnsafe(`SELECT id, status, approval_level, allowance_status FROM employeeleaves WHERE id=?`, id).catch(() => []);
@@ -1937,6 +1940,8 @@ exports.approveLeave = asyncHandler(async (req, res) => {
   respond.ok(res, isFinalTier ? 'Leave approved' : 'Supervisor approval recorded — awaiting HR approval');
 });
 
+// POST /leave/:id/finalize — manually trigger GL posting for an already-approved leave whose allowance was not auto-posted.
+// Blocked if GL was already processed, is in-flight, or the leave predates allowance being enabled.
 exports.finalizeLeave = asyncHandler(async (req, res) => {
   const id      = toBigInt(req.params.id);
   const rows    = await prisma.$queryRawUnsafe(`SELECT id, status, allowance_status FROM employeeleaves WHERE id=?`, id).catch(() => []);
@@ -1956,6 +1961,8 @@ exports.finalizeLeave = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave finalized — GL posting in progress');
 });
 
+// POST /leave/:id/reject — reject a leave at any approval stage and release the once-per-period allowance slot
+// so the employee can apply again within the same period.
 exports.rejectLeave = asyncHandler(async (req, res) => {
   const id      = toBigInt(req.params.id);
   const rows    = await prisma.$queryRawUnsafe(`SELECT id, status FROM employeeleaves WHERE id=?`, id).catch(() => []);
@@ -1988,6 +1995,8 @@ exports.rejectLeave = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave rejected');
 });
 
+// POST /leave/:id/cancel — cancel an approved leave before it starts; releases the allowance slot.
+// Blocked once the leave start date has passed to prevent retroactive cancellation.
 exports.cancelLeave = asyncHandler(async (req, res) => {
   const id      = toBigInt(req.params.id);
   const rows    = await prisma.$queryRawUnsafe(`SELECT id, status, date_start, amount FROM employeeleaves WHERE id=?`, id).catch(() => []);
@@ -2021,6 +2030,9 @@ exports.cancelLeave = asyncHandler(async (req, res) => {
 
 // ── Balance & Entitlement ─────────────────────────────────────────────────────
 
+// GET /leave/balance/:employeeId — compute allocated / used / pending / balance for every leave type the employee is
+// eligible for in the active period. Lazily calculates and persists carry-forward from the previous period when needed.
+// Also returns allowance net/tax amounts per type when the allowance feature is enabled.
 exports.getLeaveBalance = asyncHandler(async (req, res) => {
   const employeeId = req.params.employeeId;
 
@@ -2179,6 +2191,8 @@ exports.getLeaveBalance = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave balance', result);
 });
 
+// GET /leave/subordinate — list all leave applications belonging to the current user's direct reports,
+// with optional ?status= filter. Returns day count, leave-type colour, and allowance figures per record.
 exports.getSubordinateLeaves = asyncHandler(async (req, res) => {
   const supervisorId = toBigInt(req.user.id);
   const statusFilter = req.query.status ? String(req.query.status) : null;
@@ -2215,6 +2229,8 @@ exports.getSubordinateLeaves = asyncHandler(async (req, res) => {
   respond.ok(res, 'Subordinate leaves', s(cleaned));
 });
 
+// GET /leave/subordinate/employees — list the current user's direct reports (id, name, employee code),
+// used to populate the supervisor's employee filter on the leave management view.
 exports.getSubordinateEmployees = asyncHandler(async (req, res) => {
   const supervisorId = toBigInt(req.user.id);
   const rows = await prisma.$queryRawUnsafe(
@@ -2229,6 +2245,11 @@ exports.getSubordinateEmployees = asyncHandler(async (req, res) => {
 
 // ── Leave Central Approval (role-based unified queue) ─────────────────────────
 
+// GET /leave/central-approval — unified approval inbox that merges three permission-gated queues into one response:
+//   • Supervisor tier: subordinates' leaves at 'Pending Approval'
+//   • HR tier (admin only): leaves at 'Pending HR Approval'
+//   • Financial approver tier: leaves at 'Pending Financial Approval' (allowance threshold holds)
+// Each caller only sees the rows their role permits.
 exports.getLeaveCentralApproval = asyncHandler(async (req, res) => {
   const userId    = toBigInt(req.user.id);
   const isAdmin   = req.user?.roles?.some(r => ['admin', 'super-admin'].includes(r));
@@ -2286,6 +2307,9 @@ exports.getLeaveCentralApproval = asyncHandler(async (req, res) => {
   respond.ok(res, 'Leave approvals', s(rows));
 });
 
+// POST /leave/:id/approve-allowance — financial approver action to release a held allowance payment.
+// Sets allowance_status to 'GL Scheduled' so the GL posts automatically on the leave start date.
+// Verifies the caller is in the configured threshold_approvers list before acting.
 exports.approveAllowanceLeave = asyncHandler(async (req, res) => {
   const id      = toBigInt(req.params.id);
   const rows    = await prisma.$queryRawUnsafe(`SELECT id, allowance_status FROM employeeleaves WHERE id=?`, id).catch(() => []);

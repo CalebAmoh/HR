@@ -22,6 +22,7 @@ model users {
   employeeId                 BigInt?
   posted_by                  BigInt?
   status                     String    @default("1") @db.Char(1)
+  theme                      String?   @db.VarChar(10)
 }
 
 model employee {
@@ -86,10 +87,12 @@ model employee {
   ssn_num             String?   @db.VarChar(20)
   staff_level         String?   @db.VarChar(36)
   staff_role          String?   @db.VarChar(36)
-  termination_date    DateTime? @db.Date
-  work_email          String?   @unique @db.VarChar(100)
-  sync_status         String?   @db.VarChar(20)
-  sync_error          String?   @db.VarChar(500)
+  termination_date         DateTime? @db.Date
+  work_email               String?   @unique @db.VarChar(100)
+  sync_status              String?   @db.VarChar(20)
+  sync_error               String?   @db.VarChar(500)
+  pending_lifecycle_action String?   @db.VarChar(20)
+  resignation_letter       String?   @db.VarChar(150)
 }
 
 model refresh_tokens {
@@ -233,6 +236,61 @@ model attendance {
   map_out_snapshot String?   @db.LongText
   in_ip            String?   @db.VarChar(25)
   out_ip           String?   @db.VarChar(25)
+  source_in           String?   @db.VarChar(20)
+  source_out          String?   @db.VarChar(20)
+  device_id           String?   @db.VarChar(50)
+  day_status          String?   @db.VarChar(20)
+  worked_minutes      Int?
+  late_minutes        Int?
+  early_leave_minutes Int?
+  overtime_minutes    Int?
+  edited_by           BigInt?
+  edited_at           DateTime? @db.DateTime(0)
+  edit_note           String?   @db.VarChar(500)
+  map_accuracy        Int?
+  map_out_accuracy    Int?
+
+  @@index([employee, date], map: "idx_att_emp_date")
+}
+
+model attendance_punches {
+  id           BigInt    @id @default(autoincrement())
+  employee     BigInt
+  punch_time   DateTime  @db.DateTime(0)
+  direction    String?   @db.VarChar(10)
+  source       String    @db.VarChar(20)
+  device_id    String?   @db.VarChar(50)
+  lat          Decimal?  @db.Decimal(10, 8)
+  lng          Decimal?  @db.Decimal(11, 8)
+  accuracy     Int?
+  ip           String?   @db.VarChar(45)
+  photo        String?   @db.LongText
+  import_batch BigInt?
+  created_by   BigInt?
+  created_at   DateTime  @default(now()) @db.Timestamp(0)
+  dedup_key    String?   @unique(map: "uq_punch_dedup") @db.VarChar(80)
+
+  @@index([employee, punch_time], map: "idx_punch_emp_time")
+}
+
+model attendance_night_shift {
+  employee    BigInt   @id
+  assigned_by BigInt?
+  assigned_at DateTime @default(now()) @db.Timestamp(0)
+}
+
+model attendance_import_batches {
+  id          BigInt   @id @default(autoincrement())
+  file_name   String?  @db.VarChar(255)
+  source      String?  @default("csv") @db.VarChar(20)
+  device_id   String?  @db.VarChar(50)
+  total_rows  Int?     @default(0)
+  inserted    Int?     @default(0)
+  duplicates  Int?     @default(0)
+  failed      Int?     @default(0)
+  errors      String?  @db.Text
+  imported_by BigInt?
+  imported_at DateTime @default(now()) @db.Timestamp(0)
 }
 
 model auditlog {
@@ -329,6 +387,7 @@ model candidates {
   offer_amount            Decimal?                   @db.Decimal(12, 2)
   offer_date              DateTime?                  @db.Date
   cv_file                 String?                    @db.VarChar(500)
+  hired_employee_id       BigInt?
 }
 
 model certifications {
@@ -740,7 +799,15 @@ model employeeexpenses {
   created          DateTime?                @db.DateTime(0)
   updated          DateTime?                @db.DateTime(0)
   documentRef      String?                  @db.VarChar(50)
-  status           employeeexpenses_status? @default(Pending)
+  status                 employeeexpenses_status? @default(Pending)
+  submitted_by           BigInt?
+  supervisor_approved_by BigInt?
+  supervisor_approved_at DateTime?                @db.DateTime(0)
+  hr_approved_by         BigInt?
+  hr_approved_at         DateTime?                @db.DateTime(0)
+  rejection_reason       String?                  @db.Text
+  expense_gl             String?                  @db.VarChar(50)
+  contra_gl              String?                  @db.VarChar(50)
 }
 
 model employeeexperience {
@@ -840,29 +907,35 @@ model employeeleavelog {
 }
 
 model employeeleaves {
-  id               BigInt                 @id @default(autoincrement())
+  id               BigInt    @id @default(autoincrement())
   employee         BigInt
   leave_type       BigInt
-  posted_date      DateTime               @default(now()) @db.Timestamp(0)
+  posted_date      DateTime  @default(now()) @db.Timestamp(0)
   leave_period     BigInt
-  date_start       DateTime?              @db.Date
-  date_end         DateTime?              @db.Date
-  req_allowance    String?                @db.VarChar(20)
-  notice_date      DateTime               @db.Date
-  details          String?                @db.Text
-  position         String?                @db.VarChar(50)
-  emp_acc_no       String?                @db.VarChar(50)
-  allowance_rate   String?                @db.VarChar(10)
-  emp_notch        String?                @db.VarChar(10)
-  leave_gl         String?                @db.VarChar(50)
-  leave_name       String?                @db.VarChar(50)
-  department       String?                @db.VarChar(50)
-  status           employeeleaves_status? @default(Draft)
-  allowance_status String?                @db.VarChar(20)
-  amount           String?                @db.VarChar(30)
-  documentref      String?                @db.VarChar(20)
-  attachment       String?                @db.VarChar(100)
+  date_start       DateTime? @db.Date
+  date_end         DateTime? @db.Date
+  req_allowance    String?   @db.VarChar(20)
+  notice_date      DateTime  @db.Date
+  details          String?   @db.Text
+  position         String?   @db.VarChar(50)
+  emp_acc_no       String?   @db.VarChar(50)
+  allowance_rate   String?   @db.VarChar(10)
+  emp_notch        String?   @db.VarChar(10)
+  leave_gl         String?   @db.VarChar(50)
+  leave_name       String?   @db.VarChar(50)
+  department       String?   @db.VarChar(50)
+  status           String?   @default("Draft") @db.VarChar(50)
+  allowance_status String?   @db.VarChar(50)
+  amount           String?   @db.VarChar(30)
+  documentref      String?   @db.VarChar(20)
+  attachment       String?   @db.VarChar(100)
   approval_level   Int?
+  submitted_by     BigInt?
+  approved_by      BigInt?
+  rejection_reason String?   @db.Text
+  leave_tax        String?   @db.VarChar(30)
+  api_response     String?   @db.Text
+  branch           String?   @db.VarChar(50)
 }
 
 /// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
@@ -1115,7 +1188,13 @@ model employeetravelrecords {
   beneficiary_acc String?                       @db.VarChar(50)
   app_type        String                        @default("IMP") @db.VarChar(10)
   posting_date    DateTime?                     @default(now()) @db.DateTime(0)
-  status          employeetravelrecords_status? @default(Pending)
+  status                 employeetravelrecords_status? @default(Pending)
+  submitted_by           BigInt?
+  supervisor_approved_by BigInt?
+  supervisor_approved_at DateTime?                     @db.DateTime(0)
+  hr_approved_by         BigInt?
+  hr_approved_at         DateTime?                     @db.DateTime(0)
+  rejection_reason       String?                       @db.Text
 }
 
 model employementtype {
@@ -1229,24 +1308,27 @@ model industry {
 }
 
 model interviews {
-  id               BigInt    @id @default(autoincrement())
-  job              BigInt
-  candidate        BigInt?
-  level            String?   @db.VarChar(100)
-  created          DateTime? @db.DateTime(0)
-  updated          DateTime? @db.DateTime(0)
-  scheduled        DateTime? @db.DateTime(0)
-  location         String?   @db.VarChar(500)
-  mapId            BigInt?
-  status           String?   @db.VarChar(100)
-  notes            String?   @db.Text
-  scheduleUpdated  Int?      @default(0)
-  interviewers     String?   @db.Text
-  feedback         String?   @db.Text
-  outcome          String?   @db.VarChar(20)
-  schedule_token   String?   @db.VarChar(100)
-  schedule_options String?   @db.Text
-  schedule_expires DateTime? @db.DateTime(0)
+  id                    BigInt    @id @default(autoincrement())
+  job                   BigInt
+  candidate             BigInt?
+  level                 String?   @db.VarChar(100)
+  created               DateTime? @db.DateTime(0)
+  updated               DateTime? @db.DateTime(0)
+  scheduled             DateTime? @db.DateTime(0)
+  location              String?   @db.VarChar(500)
+  mapId                 BigInt?
+  status                String?   @db.VarChar(100)
+  notes                 String?   @db.Text
+  scheduleUpdated       Int?      @default(0)
+  interviewers          String?   @db.Text
+  feedback              String?   @db.Text
+  outcome               String?   @db.VarChar(20)
+  schedule_token        String?   @db.VarChar(100)
+  schedule_options      String?   @db.Text
+  schedule_expires      DateTime? @db.DateTime(0)
+  scheduled_end         DateTime? @db.DateTime(0)
+  schedule_link_sent_at DateTime? @db.DateTime(0)
+  invite_sent_at        DateTime? @db.DateTime(0)
 }
 
 model job {
@@ -1314,6 +1396,23 @@ model leavegroupemployees {
   updated     DateTime? @db.DateTime(0)
 }
 
+model leavegrouppaygrades {
+  id          BigInt    @id
+  leave_group BigInt
+  paygrade_id BigInt
+  created     DateTime? @default(now()) @db.DateTime(0)
+
+  @@unique([leave_group, paygrade_id], map: "uq_lg_pg")
+}
+
+model leavetype_groups {
+  id             BigInt @id
+  leave_type_id  BigInt
+  leave_group_id BigInt
+
+  @@unique([leave_type_id, leave_group_id], map: "uq_ltg")
+}
+
 model leavegroups {
   id      BigInt    @id @default(autoincrement())
   name    String    @db.VarChar(100)
@@ -1354,6 +1453,8 @@ model leaverules {
   employee_leave_period              leaverules_employee_leave_period?       @default(No)
   accrual_frequency                  String?                                 @default("Monthly") @db.VarChar(20)
   accrual_rate                       Decimal?                                @db.Decimal(10, 3)
+  leave_allowance                    String                                  @default("No") @db.VarChar(3)
+  leave_allowance_once               String                                  @default("No") @db.VarChar(3)
 }
 
 model leavestartingbalance {
@@ -1387,6 +1488,9 @@ model leavetypes {
   employee_leave_period              leavetypes_employee_leave_period?       @default(No)
   accrual_frequency                  String?                                 @default("Monthly") @db.VarChar(20)
   accrual_rate                       Decimal?                                @db.Decimal(10, 3)
+  gender                             String                                  @default("All") @db.VarChar(5)
+  leave_allowance                    String                                  @default("No") @db.VarChar(3)
+  leave_allowance_once               String                                  @default("No") @db.VarChar(3)
 
   @@unique([id, name], map: "leavetypes_id_name")
 }
@@ -1698,7 +1802,30 @@ model settings {
   value       String? @db.Text
   description String? @db.Text
   meta        String? @db.Text
-  category    String  @db.VarChar(15)
+  category    String  @db.VarChar(64)
+}
+
+model app_settings {
+  id            BigInt  @id @default(autoincrement())
+  setting_key   String  @unique @db.VarChar(100)
+  setting_value String? @db.Text
+}
+
+model onboarding_submission {
+  id          BigInt   @id @default(autoincrement())
+  data        String   @db.LongText
+  files       String?  @db.Text
+  status      String   @default("New") @db.VarChar(20)
+  employee_id BigInt?
+  created     DateTime @default(now())
+  updated     DateTime @default(now()) @updatedAt
+}
+
+model module_settings {
+  id         BigInt   @id @default(autoincrement())
+  module_id  String   @unique @db.VarChar(50)
+  enabled    Boolean  @default(true)
+  updated_at DateTime @default(now()) @updatedAt @db.DateTime(0)
 }
 
 /// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
@@ -2845,6 +2972,24 @@ model savedcalculations {
   updated_at           DateTime? @default(now()) @db.DateTime(0)
 }
 
+model employee_disciplinary {
+  id             BigInt    @id @default(autoincrement())
+  employee       BigInt
+  incident_date  DateTime  @db.Date
+  incident_type  String    @db.VarChar(100)
+  description    String    @db.Text
+  severity       String    @default("Medium") @db.VarChar(20)
+  action_taken   String?   @db.Text
+  witnesses      String?   @db.Text
+  status         String    @default("Open") @db.VarChar(30)
+  resolution     String?   @db.Text
+  resolved_date  DateTime? @db.Date
+  raised_by      BigInt?
+  raised_by_name String?   @db.VarChar(200)
+  created_at     DateTime? @default(now()) @db.DateTime(0)
+  updated_at     DateTime? @default(now()) @db.DateTime(0)
+}
+
 enum leavetypes_supervisor_leave_assign {
   Yes
   No
@@ -3295,6 +3440,8 @@ enum employeetravelrecords_status {
   Cancellation_Requested @map("Cancellation Requested")
   Cancelled
   Processing
+  Supervisor_Approved    @map("Supervisor Approved")
+  GL_Failed              @map("GL Failed")
 }
 
 enum employeeexpenses_status {
@@ -3304,6 +3451,8 @@ enum employeeexpenses_status {
   Cancellation_Requested @map("Cancellation Requested")
   Cancelled
   Processing
+  Supervisor_Approved    @map("Supervisor Approved")
+  GL_Failed              @map("GL Failed")
 }
 
 enum job_status {
@@ -3444,4 +3593,145 @@ enum payrollruns_status {
   Rejected
   Approved
   Completed
+}
+
+model performance_cycle {
+  id             BigInt    @id @default(autoincrement())
+  name           String    @db.VarChar(150)
+  type           String    @default("Annual") @db.VarChar(30)
+  period_start   DateTime  @db.Date
+  period_end     DateTime  @db.Date
+  self_due       DateTime? @db.Date
+  supervisor_due DateTime? @db.Date
+  hr_due         DateTime? @db.Date
+  status         String    @default("Draft") @db.VarChar(20)
+  notes          String?   @db.Text
+  created_by     BigInt?
+  created_at     DateTime? @default(now()) @db.DateTime(0)
+  updated_at     DateTime? @default(now()) @db.DateTime(0)
+}
+
+model performance_review {
+  id                   BigInt    @id @default(autoincrement())
+  cycle_id             BigInt
+  employee             BigInt
+  supervisor           BigInt?
+  hr_reviewer          BigInt?
+  status               String    @default("Not Started") @db.VarChar(30)
+  self_score           Decimal?  @db.Decimal(4, 2)
+  self_comments        String?   @db.Text
+  self_submitted       DateTime? @db.DateTime(0)
+  supervisor_score     Decimal?  @db.Decimal(4, 2)
+  supervisor_comments  String?   @db.Text
+  supervisor_reviewed  DateTime? @db.DateTime(0)
+  strengths            String?   @db.Text
+  improvements         String?   @db.Text
+  hr_score             Decimal?  @db.Decimal(4, 2)
+  hr_comments          String?   @db.Text
+  hr_reviewed          DateTime? @db.DateTime(0)
+  overall_score        Decimal?  @db.Decimal(4, 2)
+  development_plan     String?   @db.Text
+  created_at           DateTime? @default(now()) @db.DateTime(0)
+  updated_at           DateTime? @default(now()) @db.DateTime(0)
+}
+
+model performance_goal {
+  id            BigInt    @id @default(autoincrement())
+  employee      BigInt
+  cycle_id      BigInt?
+  title         String    @db.VarChar(200)
+  description   String?   @db.Text
+  weight        Int?
+  target        String?   @db.VarChar(300)
+  progress_note String?   @db.Text
+  status        String    @default("Active") @db.VarChar(20)
+  due_date      DateTime? @db.Date
+  achievement            String?  @db.VarChar(30)
+  actual_result          String?  @db.Text
+  employee_score         Decimal? @db.Decimal(5, 2)
+  supervisor_score       Decimal? @db.Decimal(5, 2)
+  hr_score               Decimal? @db.Decimal(5, 2)
+  source                 String   @default("hr") @db.VarChar(20)
+  comment                String?  @db.Text
+  document_ref           String?  @db.VarChar(150)
+  created_at             DateTime? @default(now()) @db.DateTime(0)
+  updated_at             DateTime? @default(now()) @db.DateTime(0)
+}
+
+model performance_competency {
+  id          BigInt  @id @default(autoincrement())
+  name        String  @db.VarChar(150)
+  category    String  @db.VarChar(100)
+  description String? @db.Text
+  is_active   Boolean @default(true)
+}
+
+model performance_comp_rating {
+  id                BigInt  @id @default(autoincrement())
+  review_id         BigInt
+  competency_id     BigInt
+  self_rating       Int?
+  supervisor_rating Int?
+  hr_rating         Int?
+  self_comment      String? @db.Text
+  supervisor_comment String? @db.Text
+  hr_comment        String? @db.Text
+}
+
+// ── Training & Development ────────────────────────────────────────────────────
+
+model trainingcatalog {
+  id          BigInt   @id @default(autoincrement())
+  code        String   @db.VarChar(50)
+  name        String   @db.VarChar(255)
+  category    String   @db.VarChar(50)
+  type        String   @db.VarChar(50)
+  provider    String?  @db.VarChar(255)
+  description String?  @db.Text
+  cost        Decimal  @default(0) @db.Decimal(30, 2)
+  currency    String?  @db.VarChar(50)
+  max_seats   Int?
+  is_active   Boolean  @default(true)
+  created_by  String?  @db.VarChar(100)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @default(now()) @updatedAt
+}
+
+model trainingcatalogslot {
+  id         BigInt    @id @default(autoincrement())
+  catalog_id BigInt
+  start_date DateTime  @db.Date
+  end_date   DateTime? @db.Date
+  venue      String?   @db.VarChar(255)
+  max_seats  Int?
+  created_at DateTime  @default(now())
+  updated_at DateTime  @default(now()) @updatedAt
+}
+
+model trainingnomination {
+  id                  BigInt    @id @default(autoincrement())
+  employee            BigInt
+  employee_id         String    @db.VarChar(20)
+  training_catalog_id BigInt?
+  training_name       String    @db.VarChar(255)
+  provider            String?   @db.VarChar(255)
+  category            String?   @db.VarChar(50)
+  type                String?   @db.VarChar(50)
+  start_date          DateTime  @db.Date
+  end_date            DateTime? @db.Date
+  venue               String?   @db.VarChar(255)
+  cost                Decimal?  @db.Decimal(30, 2)
+  currency            String?   @db.VarChar(50)
+  nomination_type     String    @default("Self") @db.VarChar(20)
+  status              String    @default("Draft") @db.VarChar(30)
+  notes               String?   @db.Text
+  certificate         String?   @db.VarChar(255)
+  score               Decimal?  @db.Decimal(5, 2)
+  rejection_reason    String?   @db.Text
+  nominated_by        String?   @db.VarChar(100)
+  approved_by         String?   @db.VarChar(100)
+  approved_at         DateTime?
+  completed_at        DateTime?
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @default(now()) @updatedAt
 }

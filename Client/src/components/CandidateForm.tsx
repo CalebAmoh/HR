@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useFormState } from '../hooks/useFormState';
 import { FormModal } from './ui/FormModal';
 import { FormField, inputClass } from './ui/FormField';
+import { CountedTextarea } from './ui/CountedTextarea';
 import { DocUploadField } from './ui/DocUploadField';
 
 export function CandidateForm({ onClose, initialData, onSave, jobs = [] }: any) {
@@ -100,7 +101,7 @@ export function CandidateForm({ onClose, initialData, onSave, jobs = [] }: any) 
           <input type="text" name="country" value={formData.country} onChange={handleChange} className={inputClass} placeholder="e.g. GH" />
         </FormField>
 
-        <FormField label="CV / Position Title">
+        <FormField label="Position Title">
           <input type="text" name="cv_title" value={formData.cv_title} onChange={handleChange} className={inputClass} />
         </FormField>
 
@@ -146,7 +147,7 @@ export function CandidateForm({ onClose, initialData, onSave, jobs = [] }: any) 
 
         <div className="sm:col-span-2">
           <FormField label="Notes">
-            <textarea name="notes" value={formData.notes} onChange={handleChange} rows={3} className={inputClass} />
+            <CountedTextarea name="notes" value={formData.notes} onChange={handleChange} rows={3} maxChars={1000} className={inputClass} />
           </FormField>
         </div>
       </div>

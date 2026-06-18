@@ -2,23 +2,7 @@ const { prisma } = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 
-function serialize(obj) {
-  if (typeof obj === 'bigint') return obj.toString();
-  if (obj && typeof obj === 'object' && typeof obj.toString === 'function' && obj.constructor?.name === 'Decimal') return obj.toString();
-  if (obj instanceof Date) return obj.toISOString();
-  if (Array.isArray(obj)) return obj.map(serialize);
-  if (obj !== null && typeof obj === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) out[k] = serialize(v);
-    return out;
-  }
-  return obj;
-}
-
-function toBigInt(val) {
-  if (!val && val !== 0) return null;
-  try { return BigInt(val); } catch { return null; }
-}
+const { serialize, toBigInt } = require('../helpers/controllerHelpers');
 
 function toDecimalString(val) {
   if (val === undefined || val === null || val === '') return null;
@@ -35,94 +19,9 @@ async function exec(sql, ...params) {
   return prisma.$executeRawUnsafe(sql, ...params);
 }
 
-// Auto-create tables on startup
-(async () => {
-  try {
-    await exec(`CREATE TABLE IF NOT EXISTS calculationgroups (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      name VARCHAR(200) NOT NULL,
-      details TEXT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
-
-    await exec(`CREATE TABLE IF NOT EXISTS savedcalculations (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      name VARCHAR(200) NOT NULL,
-      target_type VARCHAR(20) NOT NULL DEFAULT 'component',
-      target_id BIGINT NULL,
-      target_name VARCHAR(200) NULL,
-      calculation_group_id BIGINT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
-
-    await exec(`CREATE TABLE IF NOT EXISTS calculationprocessitems (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      saved_calculation_id BIGINT NOT NULL,
-      lower_limit_condition VARCHAR(50) NOT NULL DEFAULT 'NO_LOWER_LIMIT',
-      lower_limit DECIMAL(18,4) NULL,
-      upper_limit_condition VARCHAR(50) NOT NULL DEFAULT 'NO_UPPER_LIMIT',
-      upper_limit DECIMAL(18,4) NULL,
-      value VARCHAR(200) NOT NULL DEFAULT '0',
-      sort_order INT DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
-
-    // Migrate existing installations: widen value column to VARCHAR so formulas like X*0.05 can be stored
-    await exec(`ALTER TABLE calculationprocessitems MODIFY COLUMN value VARCHAR(200) NOT NULL DEFAULT '0'`).catch(() => {});
-
-    // Migrate payrollemployees.currency from BIGINT to VARCHAR (store code string like 'USD')
-    await exec(`ALTER TABLE payrollemployees MODIFY COLUMN currency VARCHAR(20) NULL`).catch(() => {});
-
-    // Add pay_frequency filter to payrollcolumns so each column can be restricted to a specific frequency
-    await exec(`ALTER TABLE payrollcolumns ADD COLUMN pay_frequency INT NULL`).catch(() => {});
-
-    // Add direct calculation rule assignment to payroll columns
-    await exec(`ALTER TABLE payrollcolumns ADD COLUMN calculation_rule INT NULL`).catch(() => {});
-
-    // Allow columns to be hidden from the report while still participating in calculations
-    await exec(`ALTER TABLE payrollcolumns ADD COLUMN visible TINYINT(1) NOT NULL DEFAULT 1`).catch(() => {});
-
-    // Control whether a column's value is included in the Net Pay calculation
-    await exec(`ALTER TABLE payrollcolumns ADD COLUMN include_in_net TINYINT(1) NOT NULL DEFAULT 1`).catch(() => {});
-
-    // GL posting branch code for this column (used during payroll finalization)
-    await exec(`ALTER TABLE payrollcolumns ADD COLUMN posting_branch VARCHAR(20) NULL`).catch(() => {});
-
-    // Short display name shown on payslips instead of the full column name
-    await exec(`ALTER TABLE payrollcolumns ADD COLUMN payslip_label VARCHAR(100) NULL`).catch(() => {});
-
-    await exec(`CREATE TABLE IF NOT EXISTS payfrequencies (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      name VARCHAR(100) NOT NULL,
-      description VARCHAR(200) NULL,
-      sort_order INT NOT NULL DEFAULT 99,
-      is_active TINYINT(1) NOT NULL DEFAULT 1
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
-
-    // Seed default pay frequencies if the table is empty
-    const [{ cnt }] = await query('SELECT COUNT(*) AS cnt FROM payfrequencies');
-    if (!Number(cnt)) {
-      const defaults = [
-        ['Weekly',       'Pay every week',          1],
-        ['Bi-Weekly',    'Pay every two weeks',     2],
-        ['Semi-Monthly', 'Pay twice per month',     3],
-        ['Monthly',      'Pay once per month',      4],
-        ['Quarterly',    'Pay every quarter',       5],
-        ['Yearly',       'Pay once per year',       6],
-      ];
-      for (const [name, desc, sort] of defaults) {
-        await exec('INSERT INTO payfrequencies (name, description, sort_order) VALUES (?, ?, ?)', name, desc, sort);
-      }
-    }
-  } catch (e) {
-    console.error('[calculationController] table init error:', e.message);
-  }
-})();
-
 // ─── Payroll Columns ──────────────────────────────────────────────────────────
 
+// GET /calculation/payroll-columns — list all payroll columns ordered by colorder, with all display/calculation config.
 const getPayrollColumns = asyncHandler(async (_req, res) => {
   const rows = await query(`
     SELECT id, name,
@@ -141,6 +40,8 @@ const getPayrollColumns = asyncHandler(async (_req, res) => {
   respond.ok(res, 'Payroll columns retrieved', rows);
 });
 
+// POST /calculation/payroll-columns — create a new payroll column; auto-assigns next colorder if not provided.
+// Blocks duplicate names. Supports salary_components, add/sub columns, formula, and calculation rule linking.
 const createPayrollColumn = asyncHandler(async (req, res) => {
   const {
     name, function_type = 'Simple', enabled = 'Yes', editable = 'Yes', colorder, default_value, payment_deduction,
@@ -196,6 +97,7 @@ const createPayrollColumn = asyncHandler(async (req, res) => {
   respond.created(res, 'Payroll column created', created);
 });
 
+// PUT /calculation/payroll-columns/:id — update all fields on a payroll column; blocks duplicate names.
 const updatePayrollColumn = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -253,6 +155,7 @@ const updatePayrollColumn = asyncHandler(async (req, res) => {
   respond.ok(res, 'Payroll column updated', updated);
 });
 
+// DELETE /calculation/payroll-columns/:id — permanently delete a payroll column by ID.
 const deletePayrollColumn = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -264,6 +167,7 @@ const deletePayrollColumn = asyncHandler(async (req, res) => {
   respond.ok(res, 'Payroll column deleted');
 });
 
+// PUT /calculation/payroll-columns/reorder — bulk-update colorder for multiple columns; used by drag-and-drop UI.
 const reorderPayrollColumns = asyncHandler(async (req, res) => {
   const updates = req.body;
   if (!Array.isArray(updates) || !updates.length) return respond.badReq(res, 'Array of {id, colorder} required');
@@ -276,11 +180,13 @@ const reorderPayrollColumns = asyncHandler(async (req, res) => {
 
 // ─── Calculation Groups ───────────────────────────────────────────────────────
 
+// GET /calculation/groups — list all calculation groups used to organise saved calculation rules.
 const getCalcGroups = asyncHandler(async (_req, res) => {
   const rows = await query('SELECT id, name, details, created_at FROM calculationgroups ORDER BY name ASC');
   respond.ok(res, 'Calculation groups retrieved', rows);
 });
 
+// POST /calculation/groups — create a calculation group; blocks duplicate names.
 const createCalcGroup = asyncHandler(async (req, res) => {
   const { name, details } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
@@ -297,6 +203,7 @@ const createCalcGroup = asyncHandler(async (req, res) => {
   respond.created(res, 'Calculation group created', created);
 });
 
+// PUT /calculation/groups/:id — update a calculation group's name or description; blocks duplicate names.
 const updateCalcGroup = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -314,6 +221,7 @@ const updateCalcGroup = asyncHandler(async (req, res) => {
   respond.ok(res, 'Calculation group updated', updated);
 });
 
+// DELETE /calculation/groups/:id — delete a calculation group; blocked if any saved calculations still reference it.
 const deleteCalcGroup = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -330,6 +238,7 @@ const deleteCalcGroup = asyncHandler(async (req, res) => {
 
 // ─── Saved Calculations ───────────────────────────────────────────────────────
 
+// GET /calculation/saved — list all saved calculation rules with their group name (no bracket items for speed).
 const getSavedCalculations = asyncHandler(async (_req, res) => {
   const rows = await query(`
     SELECT sc.id, sc.name, sc.target_type, sc.target_id, sc.target_name, sc.calculation_group_id,
@@ -341,6 +250,7 @@ const getSavedCalculations = asyncHandler(async (_req, res) => {
   respond.ok(res, 'Saved calculations retrieved', rows);
 });
 
+// GET /calculation/saved/:id — get a single saved calculation with its full bracket item list.
 const getSavedCalculationById = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -367,6 +277,8 @@ const getSavedCalculationById = asyncHandler(async (req, res) => {
   respond.ok(res, 'Saved calculation retrieved', { ...rows[0], items });
 });
 
+// POST /calculation/saved — create a saved calculation with its bracket process items in one request.
+// Target_type is either 'component' (salary component base) or 'column' (payroll column base).
 const createSavedCalculation = asyncHandler(async (req, res) => {
   const { name, target_type, target_id, target_name, calculation_group_id, items = [] } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
@@ -408,6 +320,7 @@ const createSavedCalculation = asyncHandler(async (req, res) => {
   respond.created(res, 'Saved calculation created', created);
 });
 
+// PUT /calculation/saved/:id — replace a saved calculation's metadata and bracket items (full replace, not patch).
 const updateSavedCalculation = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -454,6 +367,7 @@ const updateSavedCalculation = asyncHandler(async (req, res) => {
   respond.ok(res, 'Saved calculation updated', updated);
 });
 
+// DELETE /calculation/saved/:id — delete a saved calculation and all its bracket process items.
 const deleteSavedCalculation = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -468,11 +382,13 @@ const deleteSavedCalculation = asyncHandler(async (req, res) => {
 
 // ─── Pay Frequencies ─────────────────────────────────────────────────────────
 
+// GET /calculation/pay-frequencies — list all pay frequencies (Weekly, Monthly, etc.) ordered by sort_order.
 const getPayFrequencies = asyncHandler(async (_req, res) => {
   const rows = await query('SELECT id, name, description, is_active, sort_order FROM payfrequencies ORDER BY sort_order ASC, name ASC');
   respond.ok(res, 'Pay frequencies retrieved', rows);
 });
 
+// POST /calculation/pay-frequencies — create a pay frequency; blocks duplicates.
 const createPayFrequency = asyncHandler(async (req, res) => {
   const { name, description, sort_order } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
@@ -486,6 +402,7 @@ const createPayFrequency = asyncHandler(async (req, res) => {
   respond.created(res, 'Pay frequency created', created);
 });
 
+// PUT /calculation/pay-frequencies/:id — update a pay frequency's name, description, sort order, or active flag.
 const updatePayFrequency = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -506,6 +423,7 @@ const updatePayFrequency = asyncHandler(async (req, res) => {
   respond.ok(res, 'Pay frequency updated', updated);
 });
 
+// DELETE /calculation/pay-frequencies/:id — delete a pay frequency; blocked if assigned to any payroll employees.
 const deletePayFrequency = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -518,6 +436,8 @@ const deletePayFrequency = asyncHandler(async (req, res) => {
 });
 
 // ─── Payroll Employees ────────────────────────────────────────────────────────
+// Payroll employee records link an employee to their pay frequency, currency, deduction group,
+// and any component exemptions. One record per employee — duplicate employee is blocked.
 
 const PE_SELECT = `
   SELECT pe.id, pe.employee,
@@ -532,11 +452,13 @@ const PE_SELECT = `
   LEFT JOIN calculationgroups cg ON cg.id = pe.deduction_group
 `;
 
+// GET /calculation/payroll-employees — list all payroll employee setup records with employee name, frequency, and group.
 const getPayrollEmployees = asyncHandler(async (_req, res) => {
   const rows = await query(`${PE_SELECT} ORDER BY emp_name ASC`);
   respond.ok(res, 'Payroll employees retrieved', rows);
 });
 
+// POST /calculation/payroll-employees — enrol an employee in the payroll system with their frequency, currency, and group.
 const createPayrollEmployee = asyncHandler(async (req, res) => {
   const { employee, pay_frequency, currency, deduction_group, deduction_exemptions } = req.body;
   if (!employee)      return respond.badReq(res, 'Employee is required');
@@ -558,6 +480,7 @@ const createPayrollEmployee = asyncHandler(async (req, res) => {
   respond.created(res, 'Payroll employee created', created);
 });
 
+// PUT /calculation/payroll-employees/:id — update an employee's payroll settings (frequency, currency, group, exemptions).
 const updatePayrollEmployee = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -584,6 +507,7 @@ const updatePayrollEmployee = asyncHandler(async (req, res) => {
   respond.ok(res, 'Payroll employee updated', updated);
 });
 
+// DELETE /calculation/payroll-employees/:id — remove an employee from the payroll system.
 const deletePayrollEmployee = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -594,37 +518,6 @@ const deletePayrollEmployee = asyncHandler(async (req, res) => {
 });
 
 // ── Payslip templates ─────────────────────────────────────────────────────────
-(async () => {
-  await exec(`
-    CREATE TABLE IF NOT EXISTS payslip_settings (
-      id                 INT AUTO_INCREMENT PRIMARY KEY,
-      template_name      VARCHAR(100) NOT NULL DEFAULT 'Default',
-      deduction_group_id BIGINT NULL,
-      company_name       VARCHAR(200) NULL,
-      company_address    TEXT NULL,
-      company_logo_url   VARCHAR(500) NULL,
-      header_note        TEXT NULL,
-      footer_note        TEXT NULL,
-      accent_color       VARCHAR(20) NOT NULL DEFAULT '#3B82F6',
-      show_emp_id        TINYINT(1) NOT NULL DEFAULT 1,
-      show_department    TINYINT(1) NOT NULL DEFAULT 1,
-      show_position      TINYINT(1) NOT NULL DEFAULT 1,
-      show_bank_account  TINYINT(1) NOT NULL DEFAULT 0,
-      visible_columns    TEXT NULL,
-      net_columns        TEXT NULL,
-      payment_type_id    BIGINT NULL,
-      updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    )
-  `).catch(() => {});
-  // Add new columns to existing installs that have the old single-row table
-  await exec(`ALTER TABLE payslip_settings ADD COLUMN template_name VARCHAR(100) NOT NULL DEFAULT 'Default'`).catch(() => {});
-  await exec(`ALTER TABLE payslip_settings ADD COLUMN deduction_group_id BIGINT NULL`).catch(() => {});
-  await exec(`ALTER TABLE payslip_settings ADD COLUMN visible_columns TEXT NULL`).catch(() => {});
-  await exec(`ALTER TABLE payslip_settings ADD COLUMN net_columns TEXT NULL`).catch(() => {});
-  await exec(`ALTER TABLE payslip_settings ADD COLUMN payment_type_id BIGINT NULL`).catch(() => {});
-  // Rename the fixed-id seed row to 'Default' if it exists
-  await exec(`UPDATE payslip_settings SET template_name='Default' WHERE id=1 AND template_name=''`).catch(() => {});
-})();
 
 const PAYSLIP_SELECT = `
   SELECT ps.*, cg.name AS group_name, pt.name AS type_name
@@ -634,11 +527,13 @@ const PAYSLIP_SELECT = `
   ORDER BY ps.id ASC
 `;
 
+// GET /calculation/payslip-templates — list all payslip templates with their deduction group and payment type names.
 const getPayslipTemplates = asyncHandler(async (_req, res) => {
   const rows = await query(PAYSLIP_SELECT);
   respond.ok(res, 'Payslip templates retrieved', rows);
 });
 
+// POST /calculation/payslip-templates — create a payslip template with branding, visible column list, and display flags.
 const createPayslipTemplate = asyncHandler(async (req, res) => {
   const { template_name, deduction_group_id, payment_type_id, company_name, company_address, company_logo_url,
           header_note, footer_note, accent_color, show_emp_id, show_department,
@@ -664,6 +559,7 @@ const createPayslipTemplate = asyncHandler(async (req, res) => {
   respond.created(res, 'Template created', rows[rows.length - 1] ?? null);
 });
 
+// PUT /calculation/payslip-templates/:id — update a payslip template's branding, column visibility, or display flags.
 const updatePayslipTemplate = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -693,6 +589,7 @@ const updatePayslipTemplate = asyncHandler(async (req, res) => {
   respond.ok(res, 'Template updated', row ?? null);
 });
 
+// DELETE /calculation/payslip-templates/:id — permanently delete a payslip template.
 const deletePayslipTemplate = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');

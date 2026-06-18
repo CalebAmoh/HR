@@ -31,7 +31,8 @@ export function TableToolbar({
         <div className={`search-wrap w-full sm:w-auto ${searchWidth}`}>
           <Search size={14} />
           <input
-            type="text"
+            type="search"
+            autoComplete="off"
             placeholder={searchPlaceholder}
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}

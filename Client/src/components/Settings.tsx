@@ -4,11 +4,14 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   LayoutGrid, CalendarRange, Bell, SlidersHorizontal,
   Building2, Users, ShieldCheck, Stethoscope, Banknote, Network, CalendarClock, FileText, Briefcase,
-  Mail, Server, AtSign, Eye, EyeOff, Send, Loader2,
+  Mail, Server, AtSign, Eye, EyeOff, Send, Loader2, GraduationCap,
+  Clock, MapPin, Tablet, KeyRound, Copy, RefreshCw, Lock,
 } from 'lucide-react';
 import { Modules } from './Modules';
 import { getSettings, saveSetting } from '../../lib/settings';
+import { useCan } from '@/hooks/useCan';
 import { inputClass } from './ui/FormField';
+import { CountedTextarea } from './ui/CountedTextarea';
 import { MultiSearchSelect } from './ui/SearchSelect';
 import api from '../../lib/api';
 import { toast } from 'sonner';
@@ -52,8 +55,8 @@ function ControlRow({ label, description, checked, onChange }: {
 
 function SectionCard({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
   return (
-    <div className="border border-[var(--border)] rounded-[12px] overflow-hidden">
-      <div className="flex items-center gap-2.5 px-5 py-3 bg-[var(--bg)] border-b border-[var(--border)]">
+    <div className="border border-[var(--border)] rounded-[12px] overflow-visible">
+      <div className="flex items-center gap-2.5 px-5 py-3 bg-[var(--bg)] border-b border-[var(--border)] rounded-t-[12px]">
         <span className="text-[var(--accent)]">{icon}</span>
         <span className="text-[11px] font-bold syne uppercase tracking-widest text-[var(--text-primary)]">{title}</span>
       </div>
@@ -188,32 +191,43 @@ function GeneralSection({
 }: any) {
   return (
     <div className="space-y-4">
-      <SectionCard icon={<Building2 size={13} />} title="Company Structure">
-        <ControlRow
-          label="Auto Generate Code"
-          description="Automatically generate a 4-character code when creating structures. Branches are always entered manually."
-          checked={autoGenCode}
-          onChange={(v) => { setAutoGenCode(v); saveSetting('companyStructure', { autoGenerateCode: v }); }}
-        />
-      </SectionCard>
+      <div className="grid grid-cols-2 gap-4">
+        <SectionCard icon={<Building2 size={13} />} title="Company Structure">
+          <ControlRow
+            label="Auto Generate Code"
+            description="Automatically generate a 4-character code when creating structures. Branches are always entered manually."
+            checked={autoGenCode}
+            onChange={(v) => { setAutoGenCode(v); saveSetting('companyStructure', { autoGenerateCode: v }); }}
+          />
+        </SectionCard>
 
-      <SectionCard icon={<Users size={13} />} title="Employees">
-        <ControlRow
-          label="Auto Generate Employee Number"
-          description="Automatically assign an employee number on creation using the format EMP-YEAR-0001. When off, you can enter the number manually."
-          checked={autoGenEmpNum}
-          onChange={(v) => { setAutoGenEmpNum(v); saveSetting('employees', { autoGenerateNumber: v }); }}
-        />
-      </SectionCard>
+        <SectionCard icon={<Users size={13} />} title="Employees">
+          <ControlRow
+            label="Auto Generate Employee Number"
+            description="Automatically assign an employee number on creation using the format EMP-YEAR-0001. When off, you can enter the number manually."
+            checked={autoGenEmpNum}
+            onChange={(v) => { setAutoGenEmpNum(v); saveSetting('employees', { autoGenerateNumber: v }); }}
+          />
+        </SectionCard>
 
-      <SectionCard icon={<Briefcase size={13} />} title="Recruitment">
-        <ControlRow
-          label="Auto Generate Job Code"
-          description="Automatically generate a unique job code (e.g. JOB-A1B2) when creating a new job posting. When off, you can enter the code manually."
-          checked={autoGenJobCode}
-          onChange={(v) => { setAutoGenJobCode(v); saveSetting('recruitment', { autoGenerateCode: v }); }}
-        />
-      </SectionCard>
+        <SectionCard icon={<Briefcase size={13} />} title="Recruitment">
+          <ControlRow
+            label="Auto Generate Job Code"
+            description="Automatically generate a unique job code (e.g. JOB-A1B2) when creating a new job posting. When off, you can enter the code manually."
+            checked={autoGenJobCode}
+            onChange={(v) => { setAutoGenJobCode(v); saveSetting('recruitment', { autoGenerateCode: v }); }}
+          />
+        </SectionCard>
+
+        <SectionCard icon={<FileText size={13} />} title="Documents">
+          <ControlRow
+            label="Allow Document Downloads"
+            description="When enabled, employees can download documents from their Personal Documents view. When off, documents are view-only in the browser — no download prompt is shown."
+            checked={allowDocumentDownload}
+            onChange={(v) => { setAllowDocumentDownload(v); saveDocumentSetting(v ? 'Yes' : 'No'); }}
+          />
+        </SectionCard>
+      </div>
 
       <SectionCard icon={<Banknote size={13} />} title="General">
         <div className="flex items-center gap-4 px-5 py-4">
@@ -226,15 +240,6 @@ function GeneralSection({
           <CurrencySelect value={currency} onChange={v => { setCurrency(v); saveSetting('general', { currency: v }); }} />
         </div>
       </SectionCard>
-
-      <SectionCard icon={<FileText size={13} />} title="Documents">
-        <ControlRow
-          label="Allow Document Downloads"
-          description="When enabled, employees can download documents from their Personal Documents view. When off, documents are view-only in the browser — no download prompt is shown."
-          checked={allowDocumentDownload}
-          onChange={(v) => { setAllowDocumentDownload(v); saveDocumentSetting(v ? 'Yes' : 'No'); }}
-        />
-      </SectionCard>
     </div>
   );
 }
@@ -244,11 +249,12 @@ function ApprovalsSection({
   employeeSelfApproval, setEmployeeSelfApproval,
   payrollApproval, setPayrollApproval,
   selfApproval, setSelfApproval,
-  medicalApproval, setMedicalApproval,
   medicalSelfApproval, setMedicalSelfApproval,
+  supervisorApproval, setSupervisorApproval, saveFlowSettings,
+  trainingApprovalFlow, setTrainingApprovalFlow, saveTrainingFlowSettings,
 }: any) {
   return (
-    <div className="space-y-4">
+    <div className="grid grid-cols-3 gap-4 auto-rows-min">
       <SectionCard icon={<ShieldCheck size={13} />} title="Employee Approval">
         <ControlRow
           label="Employee Approval Workflow"
@@ -262,7 +268,7 @@ function ApprovalsSection({
           }}
         />
         <ControlRow
-          label="Allow Employee Self-Approval"
+          label="Allow Self-Approval"
           description="Allow the same user who created an employee record to also approve it. When off, a different user must perform the approval."
           checked={employeeSelfApproval}
           onChange={(v) => { setEmployeeSelfApproval(v); saveSetting('approvals', { employeeSelfApproval: v }); }}
@@ -282,7 +288,7 @@ function ApprovalsSection({
           }}
         />
         <ControlRow
-          label="Allow Payroll Self-Approval"
+          label="Allow Self-Approval"
           description="Allow the same user who submitted a payroll run for approval to also approve it. When off, a different user must approve."
           checked={selfApproval}
           onChange={(v) => { setSelfApproval(v); saveSetting('approvals', { selfApproval: v }); }}
@@ -291,21 +297,52 @@ function ApprovalsSection({
 
       <SectionCard icon={<Stethoscope size={13} />} title="Medical Approval">
         <ControlRow
-          label="Medical Request Approval Workflow"
-          description="Require medical requests (staff and dependent) to be submitted and approved before they are finalised. When off, records are saved directly as approved."
-          checked={medicalApproval}
-          onChange={(v) => {
-            setMedicalApproval(v);
-            const updates: any = { medicalApproval: v };
-            if (!v) { setMedicalSelfApproval(false); updates.medicalSelfApproval = false; }
-            saveSetting('approvals', updates);
-          }}
-        />
-        <ControlRow
-          label="Allow Medical Self-Approval"
-          description="Allow admins to approve medical requests they created themselves. When off, a different admin must review and approve the request."
+          label="Allow Self-Approval"
+          description="Allow a user with both Create Medical and Approve Medical permissions to approve a medical request they originated themselves. When off, a different approver must review and approve the request."
           checked={medicalSelfApproval}
           onChange={(v) => { setMedicalSelfApproval(v); saveSetting('approvals', { medicalSelfApproval: v }); }}
+        />
+      </SectionCard>
+
+      <SectionCard icon={<CalendarClock size={13} />} title="Leave Approval Flow">
+        <div className="px-5 py-3 border-b border-[var(--border)]">
+          <p className="text-[12px] text-[var(--text-muted)] leading-relaxed">
+            HR admin is always the final approver. Toggle supervisor approval to add an extra sign-off tier before the leave reaches HR.
+          </p>
+          <div className="mt-2 grid grid-cols-2 gap-1 text-[11px] text-[var(--text-muted)]">
+            <span className="font-semibold text-[var(--text-primary)]">Config</span><span className="font-semibold text-[var(--text-primary)]">Behaviour</span>
+            <span>Supervisor Off</span><span>Employee → HR → GL</span>
+            <span>Supervisor On</span><span>Employee → Supervisor → HR → GL</span>
+          </div>
+        </div>
+        <ControlRow
+          label="Supervisor Approval"
+          description="When enabled, a supervisor must approve the leave application first before it reaches HR. The leave moves to 'Pending HR Approval' after supervisor sign-off."
+          checked={supervisorApproval}
+          onChange={(v) => { setSupervisorApproval(v); saveFlowSettings(v); }}
+        />
+      </SectionCard>
+
+      <SectionCard icon={<GraduationCap size={13} />} title="Training Approval Flow">
+        <div className="px-5 py-3 border-b border-[var(--border)]">
+          <p className="text-[12px] text-[var(--text-muted)] leading-relaxed">
+            Controls how employee training nominations are routed after submission. HR/Admin is always the final approver.
+          </p>
+          <div className="mt-2 grid grid-cols-2 gap-1 text-[11px] text-[var(--text-muted)]">
+            <span className="font-semibold text-[var(--text-primary)]">Config</span><span className="font-semibold text-[var(--text-primary)]">Behaviour</span>
+            <span>Supervisor Off</span><span>Employee → HR</span>
+            <span>Supervisor On</span><span>Employee → Supervisor → HR</span>
+          </div>
+        </div>
+        <ControlRow
+          label="Supervisor Approval"
+          description="When enabled, a supervisor must approve a training nomination first before it reaches HR. Nominations assigned by supervisors skip this step."
+          checked={trainingApprovalFlow === 'supervisor_first'}
+          onChange={(v) => {
+            const flow = v ? 'supervisor_first' : 'direct';
+            setTrainingApprovalFlow(flow);
+            saveTrainingFlowSettings(flow);
+          }}
         />
       </SectionCard>
     </div>
@@ -313,18 +350,14 @@ function ApprovalsSection({
 }
 
 function LeaveSection({
-  supervisorApproval, setSupervisorApproval,
   allowSettings, setAllowSettings,
-  saveFlowSettings, saveAllowSetting,
+  saveAllowSetting,
   thresholdEnabled, setThresholdEnabled,
   thresholdAmount, setThresholdAmount,
   thresholdApprovers, setThresholdApprovers,
   saveThresholdSetting, saveAllThresholdSettings, allUsers,
   calendarShowAll, setCalendarShowAll, saveCalendarSetting,
 }: any) {
-  const flowRows = [
-    [supervisorApproval, 'Supervisor Approval', 'When enabled, a supervisor must approve the leave application first before it reaches HR. The leave moves to "Pending HR Approval" after supervisor sign-off.'],
-  ] as [boolean, string, string][];
 
   // Allowance input fields
   const glFields = [
@@ -336,24 +369,12 @@ function LeaveSection({
 
   return (
     <div className="space-y-4">
-      {/* Approval flow */}
-      <SectionCard icon={<CalendarClock size={13} />} title="Leave Approval Flow">
-        {/* Info row */}
-        <div className="px-5 py-3 border-b border-[var(--border)]">
-          <p className="text-[12px] text-[var(--text-muted)] leading-relaxed">
-            HR admin is always the final approver and GL posts automatically on their approval. Toggle supervisor approval to add an extra sign-off tier before the leave reaches HR.
-          </p>
-          <div className="mt-2 grid grid-cols-2 gap-1 text-[11px] text-[var(--text-muted)]">
-            <span className="font-semibold text-[var(--text-primary)]">Config</span><span className="font-semibold text-[var(--text-primary)]">Behaviour</span>
-            <span>Supervisor Off</span><span>Employee submits → HR approves → Approved + GL</span>
-            <span>Supervisor On</span><span>Employee submits → Supervisor approves → Pending HR Approval → HR approves → Approved + GL</span>
-          </div>
-        </div>
+      <SectionCard icon={<CalendarRange size={13} />} title="Leave Calendar Visibility">
         <ControlRow
-          label="Supervisor Approval"
-          description={flowRows[0][2]}
-          checked={supervisorApproval}
-          onChange={(v) => { setSupervisorApproval(v); saveFlowSettings(v); }}
+          label="Show all employees' leaves"
+          description="When on, all employees can see everyone's approved leaves on the calendar. When off, each employee only sees their own leaves."
+          checked={calendarShowAll}
+          onChange={v => { setCalendarShowAll(v); saveCalendarSetting(v); }}
         />
       </SectionCard>
 
@@ -440,16 +461,186 @@ function LeaveSection({
         </div>
       </SectionCard>
 
-      <SectionCard icon={<CalendarRange size={13} />} title="Leave Calendar Visibility">
-        <div className="flex items-center gap-4 px-5 py-4">
-          <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-semibold text-[var(--text-primary)] leading-snug">Show all employees' leaves</p>
-            <p className="text-[12px] text-[var(--text-muted)] mt-0.5">When on, all employees can see everyone's approved leaves on the calendar. When off, each employee only sees their own leaves.</p>
+    </div>
+  );
+}
+
+function AttendanceSection() {
+  const [cfg, setCfg] = useState<any>(null);
+
+  const load = () => api.get('/attendance/settings').then(r => setCfg(r.data?.data ?? {})).catch(() => {});
+  useEffect(() => { load(); }, []);
+
+  // Toggles save immediately; text/time inputs update locally and persist on blur
+  const save = (key: string, value: string) => {
+    setCfg((p: any) => ({ ...p, [key]: value }));
+    api.put('/attendance/settings', { [key]: value }).catch(() => toast.error('Failed to save setting'));
+  };
+  const set     = (key: string, value: string) => setCfg((p: any) => ({ ...p, [key]: value }));
+  const persist = (key: string) => api.put('/attendance/settings', { [key]: cfg[key] }).catch(() => toast.error('Failed to save setting'));
+
+  const regenerate = async (target: 'device' | 'kiosk') => {
+    try {
+      const r = await api.post('/attendance/settings/regenerate-key', { target });
+      const key = r.data?.data?.key;
+      await navigator.clipboard.writeText(key).catch(() => {});
+      toast.success(`New ${target === 'kiosk' ? 'kiosk link' : 'API key'} generated and copied`);
+      load();
+    } catch { toast.error('Failed to regenerate'); }
+  };
+
+  if (!cfg) {
+    return <p className="text-[13px] text-[var(--text-muted)] text-center py-10">Loading…</p>;
+  }
+
+  const kioskUrl = cfg.attendance_kiosk_token ? `${window.location.origin}/kiosk/${cfg.attendance_kiosk_token}` : '';
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-4 auto-rows-min">
+        <SectionCard icon={<Clock size={13} />} title="Work Schedule">
+          <div className="px-5 py-3 border-b border-[var(--border)]">
+            <p className="text-[12px] text-[var(--text-muted)] leading-relaxed">
+              Lateness, early leave, and overtime are measured against these times. Changes apply to future punches.
+            </p>
           </div>
-          <Toggle
-            checked={calendarShowAll}
-            onChange={v => { setCalendarShowAll(v); saveCalendarSetting(v); }}
+          <div className="px-5 py-4 grid grid-cols-2 gap-x-6 gap-y-4 border-b border-[var(--border-light)]">
+            {([
+              { key: 'attendance_work_start', label: 'Work Start Time', type: 'time' },
+              { key: 'attendance_work_end',   label: 'Work End Time',   type: 'time' },
+              { key: 'attendance_grace_minutes', label: 'Grace Period (min)', type: 'number' },
+              { key: 'attendance_half_day_threshold_minutes', label: 'Half-Day Threshold (min)', type: 'number' },
+            ] as { key: string; label: string; type: string }[]).map(f => (
+              <div key={f.key} className="space-y-1.5">
+                <p className="text-[12px] font-semibold text-[var(--text-primary)]">{f.label}</p>
+                <input
+                  type={f.type} min="0"
+                  className={`${inputClass} w-full`}
+                  value={cfg[f.key] ?? ''}
+                  onChange={e => set(f.key, e.target.value)}
+                  onBlur={() => persist(f.key)}
+                  onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                />
+              </div>
+            ))}
+          </div>
+          <ControlRow
+            label="Auto-mark Absentees"
+            description="Once the closing time passes, anyone who has not clocked in is marked Absent (night workers are checked after the night closing time the next morning). Weekends, holidays, and approved leave are skipped; a late punch overrides the Absent mark."
+            checked={cfg.attendance_auto_absent_enabled === '1'}
+            onChange={v => save('attendance_auto_absent_enabled', v ? '1' : '0')}
           />
+        </SectionCard>
+
+        <SectionCard icon={<Clock size={13} />} title="Night Shift Hours">
+          <div className="px-5 py-3 border-b border-[var(--border)]">
+            <p className="text-[12px] text-[var(--text-muted)] leading-relaxed">
+              Schedule for employees assigned to the night shift (Manage Attendance → Night Shift). A shift that
+              crosses midnight counts toward the day it started — a 02:00 clock-out belongs to the previous day's record.
+            </p>
+          </div>
+          <div className="px-5 py-4 grid grid-cols-2 gap-x-6 gap-y-4">
+            {([
+              { key: 'attendance_night_start', label: 'Night Start Time' },
+              { key: 'attendance_night_end',   label: 'Night Closing Time' },
+            ] as { key: string; label: string }[]).map(f => (
+              <div key={f.key} className="space-y-1.5">
+                <p className="text-[12px] font-semibold text-[var(--text-primary)]">{f.label}</p>
+                <input
+                  type="time"
+                  className={`${inputClass} w-full`}
+                  value={cfg[f.key] ?? ''}
+                  onChange={e => set(f.key, e.target.value)}
+                  onBlur={() => persist(f.key)}
+                  onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                />
+              </div>
+            ))}
+          </div>
+        </SectionCard>
+
+        <SectionCard icon={<MapPin size={13} />} title="Web Clock In/Out">
+          <ControlRow
+            label="Require Location"
+            description="Employees cannot clock in/out from the app until the browser shares their location — punches without coordinates are rejected. When off, location is captured when available but never blocks."
+            checked={cfg.attendance_web_require_location === '1'}
+            onChange={v => save('attendance_web_require_location', v ? '1' : '0')}
+          />
+          <ControlRow
+            label="Require Photo (In-App)"
+            description="Captures a webcam photo with every clock in/out from the app, just like the kiosk. The photo appears in the Daily Log record details."
+            checked={cfg.attendance_web_require_photo === '1'}
+            onChange={v => save('attendance_web_require_photo', v ? '1' : '0')}
+          />
+        </SectionCard>
+
+        <SectionCard icon={<Tablet size={13} />} title="Kiosk Mode">
+          <ControlRow
+            label="Kiosk Enabled"
+            description="A shared tablet page where staff punch in/out with their staff ID or a badge scan. Takes effect immediately — the link below only works while enabled."
+            checked={cfg.attendance_kiosk_enabled === '1'}
+            onChange={v => save('attendance_kiosk_enabled', v ? '1' : '0')}
+          />
+          <ControlRow
+            label="Require Photo at Kiosk"
+            description="Captures a webcam photo with each kiosk punch — deters staff punching for absent colleagues."
+            checked={cfg.attendance_kiosk_require_photo === '1'}
+            onChange={v => save('attendance_kiosk_require_photo', v ? '1' : '0')}
+          />
+          <div className="px-5 py-4 space-y-2">
+            <p className="text-[12px] font-semibold text-[var(--text-primary)]">Kiosk Link</p>
+            <div className="flex items-center gap-2">
+              <input className={`${inputClass} flex-1 font-mono text-[11px]`} readOnly value={kioskUrl} />
+              <button className="secondary-btn shrink-0" onClick={() => { navigator.clipboard.writeText(kioskUrl); toast.success('Kiosk URL copied'); }}>
+                <Copy size={13} />
+              </button>
+              <button className="secondary-btn shrink-0" title="Invalidate the old link and generate a new one" onClick={() => regenerate('kiosk')}>
+                <RefreshCw size={13} />
+              </button>
+            </div>
+            {cfg.attendance_kiosk_enabled !== '1' && (
+              <p className="text-[11.5px] text-amber-600">Kiosk is disabled — this link returns "not available" until you enable it above.</p>
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard icon={<Network size={13} />} title="Biometric Device API">
+          <div className="px-5 py-3 border-b border-[var(--border)]">
+            <p className="text-[12px] text-[var(--text-muted)] leading-relaxed">
+              Device integrations push punches to <span className="font-mono text-[11px]">POST /v1/api/hr/public/attendance/device-sync</span> with
+              the <span className="font-mono text-[11px]">x-api-key</span> header. Punch logs can also be imported as CSV from Manage Attendance → Imports.
+            </p>
+          </div>
+          <div className="px-5 py-4 space-y-2">
+            <p className="text-[12px] font-semibold text-[var(--text-primary)]">API Key</p>
+            <div className="flex items-center gap-2">
+              <input className={`${inputClass} flex-1 font-mono text-[12px]`} readOnly value={cfg.attendance_device_api_key ?? ''} />
+              <button className="secondary-btn shrink-0" onClick={() => regenerate('device')}>
+                <KeyRound size={13} className="inline mr-1.5" />Regenerate
+              </button>
+            </div>
+            <p className="text-[11.5px] text-[var(--text-muted)]">Regenerating revokes the old key immediately — the new key is copied to your clipboard once.</p>
+          </div>
+        </SectionCard>
+      </div>
+
+      <SectionCard icon={<Mail size={13} />} title="Daily Email Digest">
+        <ControlRow
+          label="Digest Enabled"
+          description="Emails yesterday's attendance summary to the recipients below every morning at 08:00. Uses the SMTP configuration from the Email Setup tab."
+          checked={cfg.attendance_digest_enabled === '1'}
+          onChange={v => save('attendance_digest_enabled', v ? '1' : '0')}
+        />
+        <div className="px-5 py-4 space-y-1.5">
+          <p className="text-[12px] font-semibold text-[var(--text-primary)]">Recipients</p>
+          <input
+            className={`${inputClass} w-full`}
+            placeholder="hr@company.com, ops@company.com"
+            value={cfg.attendance_digest_recipients ?? ''}
+            onChange={e => set('attendance_digest_recipients', e.target.value)}
+            onBlur={() => persist('attendance_digest_recipients')}
+          />
+          <p className="text-[11.5px] text-[var(--text-muted)]">Comma-separated email addresses.</p>
         </div>
       </SectionCard>
     </div>
@@ -468,31 +659,23 @@ function MedicalGlSection({
             Applied to hospital claims on save. Formula: <span className="font-mono">withholding_tax = total × (rate ÷ 100)</span>
           </p>
         </div>
-        <div className="border-b border-[var(--border)] px-5 py-4">
-          <div className="flex items-center justify-between">
-            <p className="text-[13px] font-semibold text-[var(--text-primary)]">Hospital WHT Rate</p>
-            <div className="flex items-center gap-2">
-              <input type="number" min="0" max="100" step="0.01"
-                className={`${inputClass} w-28 text-right`}
-                value={whtHosp}
-                onChange={e => setWhtHosp(e.target.value)}
-                onBlur={() => saveWhtRates(whtHosp, whtPharm)} />
-              <span className="text-[13px] text-[var(--text-muted)] w-4 shrink-0">%</span>
+        <div className="px-5 py-4 grid grid-cols-2 gap-6">
+          {([
+            { label: 'Hospital WHT Rate', val: whtHosp, set: setWhtHosp },
+            { label: 'Pharmacy WHT Rate', val: whtPharm, set: setWhtPharm },
+          ] as { label: string; val: string; set: (v: string) => void }[]).map(({ label, val, set }) => (
+            <div key={label} className="space-y-1.5">
+              <p className="text-[12px] font-semibold text-[var(--text-primary)]">{label}</p>
+              <div className="flex items-center gap-2">
+                <input type="number" min="0" max="100" step="0.01"
+                  className={`${inputClass} flex-1 text-right`}
+                  value={val}
+                  onChange={e => set(e.target.value)}
+                  onBlur={() => saveWhtRates(whtHosp, whtPharm)} />
+                <span className="text-[13px] text-[var(--text-muted)] w-4 shrink-0">%</span>
+              </div>
             </div>
-          </div>
-        </div>
-        <div className="px-5 py-4">
-          <div className="flex items-center justify-between">
-            <p className="text-[13px] font-semibold text-[var(--text-primary)]">Pharmacy WHT Rate</p>
-            <div className="flex items-center gap-2">
-              <input type="number" min="0" max="100" step="0.01"
-                className={`${inputClass} w-28 text-right`}
-                value={whtPharm}
-                onChange={e => setWhtPharm(e.target.value)}
-                onBlur={() => saveWhtRates(whtHosp, whtPharm)} />
-              <span className="text-[13px] text-[var(--text-muted)] w-4 shrink-0">%</span>
-            </div>
-          </div>
+          ))}
         </div>
       </SectionCard>
 
@@ -502,39 +685,195 @@ function MedicalGlSection({
             GL accounts used when medical records are approved or finalised. Leave a field blank to skip that leg of the posting.
           </p>
         </div>
-        {([
-          { label: 'Medical Expense GL', desc: 'Debit — medical expense on all approvals',   val: glExpense, set: setGlExpense, mono: true  },
-          { label: 'WHT Payable GL',     desc: 'Credit — withheld tax on hospital claims',   val: glWht,     set: setGlWht,     mono: true  },
-          { label: 'Posting Branch',     desc: 'Branch code (uses env default if blank)',     val: glBranch,  set: setGlBranch,  mono: false },
-        ] as { label: string; desc: string; val: string; set: (v: string) => void; mono: boolean }[]).map(({ label, desc, val, set, mono }, idx, arr) => (
-          <div key={label} className={`px-5 py-4 space-y-2 ${idx < arr.length - 1 ? 'border-b border-[var(--border)]' : ''}`}>
-            <div>
-              <p className="text-[13px] font-semibold text-[var(--text-primary)] leading-snug">{label}</p>
-              <p className="text-[12px] text-[var(--text-muted)] mt-0.5">{desc}</p>
+        <div className="px-5 py-4 grid grid-cols-3 gap-4">
+          {([
+            { label: 'Medical Expense GL', desc: 'Debit — medical expense',        val: glExpense, set: setGlExpense, mono: true  },
+            { label: 'WHT Payable GL',     desc: 'Credit — withheld tax',           val: glWht,     set: setGlWht,     mono: true  },
+            { label: 'Posting Branch',     desc: 'Branch code (env default if blank)', val: glBranch, set: setGlBranch, mono: false },
+          ] as { label: string; desc: string; val: string; set: (v: string) => void; mono: boolean }[]).map(({ label, desc, val, set, mono }) => (
+            <div key={label} className="space-y-1.5">
+              <div>
+                <p className="text-[12px] font-semibold text-[var(--text-primary)] leading-snug">{label}</p>
+                <p className="text-[11px] text-[var(--text-muted)] mt-0.5">{desc}</p>
+              </div>
+              <input
+                className={`${inputClass} w-full ${mono ? 'font-mono text-[12px]' : ''}`}
+                value={val}
+                placeholder="Enter account code…"
+                onChange={e => set(e.target.value)}
+                onBlur={saveGlSettings}
+              />
             </div>
-            <input
-              className={`${inputClass} w-full ${mono ? 'font-mono text-[12px]' : ''}`}
-              value={val}
-              placeholder="Enter account code…"
-              onChange={e => set(e.target.value)}
-              onBlur={saveGlSettings}
-            />
-          </div>
-        ))}
+          ))}
+        </div>
       </SectionCard>
+    </div>
+  );
+}
+
+// ─── Integrations section ─────────────────────────────────────────────────────
+
+function IntegrationsSection({ glUrl, setGlUrl, glApiKey, setGlApiKey, glApiSecret, setGlApiSecret,
+  glBearerToken, setGlBearerToken, glBasicUser, setGlBasicUser, glBasicPass, setGlBasicPass,
+  glTimeout, setGlTimeout, glExtra, setGlExtra,
+  empSyncUrl, setEmpSyncUrl, empSyncTimeout, setEmpSyncTimeout,
+  empSyncApiKey, setEmpSyncApiKey, empSyncApiSecret, setEmpSyncApiSecret,
+  empSyncBearerToken, setEmpSyncBearerToken,
+  empSyncBasicUser, setEmpSyncBasicUser, empSyncBasicPass, setEmpSyncBasicPass,
+  empSyncExtra, setEmpSyncExtra,
+  onSave, saving }: any) {
+  const [showKey,        setShowKey]        = useState(false);
+  const [showSecret,     setShowSecret]     = useState(false);
+  const [showPass,       setShowPass]       = useState(false);
+  const [showEmpKey,     setShowEmpKey]     = useState(false);
+  const [showEmpSecret,  setShowEmpSecret]  = useState(false);
+  const [showEmpPass,    setShowEmpPass]    = useState(false);
+
+  const pw = (show: boolean, toggle: () => void, val: string, set: (v: string) => void, ph: string) => (
+    <div className="relative">
+      <input className={`${inputClass} w-full font-mono text-[12px] pr-9`} type={show ? 'text' : 'password'} value={val} onChange={e => set(e.target.value)} placeholder={ph} />
+      <button type="button" onClick={toggle} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+        {show ? <EyeOff size={14} /> : <Eye size={14} />}
+      </button>
+    </div>
+  );
+
+  const lbl = (text: string) => <p className="text-[13px] font-semibold text-[var(--text-primary)] mb-1.5">{text}</p>;
+  const row  = (extra?: string) => `px-5 py-3.5 border-b border-[var(--border-light)] ${extra ?? ''}`;
+
+  return (
+    <div className="space-y-5">
+      <SectionCard icon={<Network size={14} />} title="GL / Payments API">
+        <p className="px-5 py-2 text-[11px] text-[var(--text-muted)] bg-[var(--bg)] border-b border-[var(--border-light)]">
+          Used by: Medical Claims · Payroll · Leave Allowance
+        </p>
+
+        {/* URL + Timeout */}
+        <div className={`${row()} flex gap-4 items-end`}>
+          <div className="flex-1">
+            {lbl('Endpoint URL')}
+            <input className={`${inputClass} w-full font-mono text-[12px]`} value={glUrl} onChange={e => setGlUrl(e.target.value)} placeholder="https://…" />
+          </div>
+          <div className="w-32 shrink-0">
+            {lbl('Timeout (ms)')}
+            <input className={`${inputClass} w-full font-mono text-[12px]`} type="number" min="0" value={glTimeout} onChange={e => setGlTimeout(e.target.value)} />
+          </div>
+        </div>
+
+        {/* API Key + Secret */}
+        <div className={`${row()} grid grid-cols-2 gap-4`}>
+          <div>
+            {lbl('API Key')}
+            {pw(showKey, () => setShowKey(v => !v), glApiKey, setGlApiKey, 'Not configured')}
+          </div>
+          <div>
+            {lbl('API Secret')}
+            {pw(showSecret, () => setShowSecret(v => !v), glApiSecret, setGlApiSecret, 'Not configured')}
+          </div>
+        </div>
+
+        {/* Bearer Token + Basic Auth side by side */}
+        <div className={`${row()} grid grid-cols-2 gap-4`}>
+          <div>
+            {lbl('Bearer Token')}
+            <input className={`${inputClass} w-full font-mono text-[12px]`} value={glBearerToken} onChange={e => setGlBearerToken(e.target.value)} placeholder="Not set" />
+            <p className="text-[11px] text-[var(--text-muted)] mt-1">OAuth / JWT — overrides Key & Secret</p>
+          </div>
+          <div>
+            {lbl('Basic Auth')}
+            <div className="grid grid-cols-2 gap-2">
+              <input className={`${inputClass} font-mono text-[12px]`} value={glBasicUser} onChange={e => setGlBasicUser(e.target.value)} placeholder="Username" />
+              {pw(showPass, () => setShowPass(v => !v), glBasicPass, setGlBasicPass, 'Password')}
+            </div>
+            <p className="text-[11px] text-[var(--text-muted)] mt-1">Used when Bearer Token is empty</p>
+          </div>
+        </div>
+
+        {/* Extra Parameters */}
+        <div className="px-5 py-3.5">
+          {lbl('Extra Parameters')}
+          <p className="text-[12px] text-[var(--text-muted)] mb-1.5">JSON object for provider-specific fields (channel code, transaction type, currency, branch, etc.).</p>
+          <CountedTextarea className={`${inputClass} w-full font-mono text-[12px] resize-none`} rows={3} value={glExtra} onChange={e => setGlExtra(e.target.value)} placeholder="{}" />
+        </div>
+      </SectionCard>
+
+      <SectionCard icon={<Users size={14} />} title="Employee Sync API">
+        {/* URL + Timeout */}
+        <div className={`${row()} flex gap-4 items-end`}>
+          <div className="flex-1">
+            {lbl('Endpoint URL')}
+            <input className={`${inputClass} w-full font-mono text-[12px]`} value={empSyncUrl} onChange={e => setEmpSyncUrl(e.target.value)} placeholder="https://…" />
+          </div>
+          <div className="w-32 shrink-0">
+            {lbl('Timeout (ms)')}
+            <input className={`${inputClass} w-full font-mono text-[12px]`} type="number" min="0" value={empSyncTimeout} onChange={e => setEmpSyncTimeout(e.target.value)} />
+          </div>
+        </div>
+
+        {/* Credentials header */}
+        <div className="flex items-center justify-between px-5 py-2 bg-[var(--bg)] border-b border-[var(--border-light)]">
+          <div className="flex items-center gap-1.5">
+            <ShieldCheck size={12} className="text-[var(--accent)] shrink-0" />
+            <span className="text-[11px] font-bold syne uppercase tracking-widest text-[var(--text-muted)]">Credentials</span>
+          </div>
+          <span className="text-[11px] text-[var(--text-muted)] italic">Leave blank to use GL / Payments values</span>
+        </div>
+
+        {/* API Key + Secret */}
+        <div className={`${row()} grid grid-cols-2 gap-4`}>
+          <div>
+            {lbl('API Key')}
+            {pw(showEmpKey, () => setShowEmpKey(v => !v), empSyncApiKey, setEmpSyncApiKey, glApiKey ? 'Using GL / Payments value' : 'Not configured')}
+          </div>
+          <div>
+            {lbl('API Secret')}
+            {pw(showEmpSecret, () => setShowEmpSecret(v => !v), empSyncApiSecret, setEmpSyncApiSecret, glApiSecret ? 'Using GL / Payments value' : 'Not configured')}
+          </div>
+        </div>
+
+        {/* Bearer Token + Basic Auth */}
+        <div className="px-5 py-3.5 grid grid-cols-2 gap-4">
+          <div>
+            {lbl('Bearer Token')}
+            <input className={`${inputClass} w-full font-mono text-[12px]`} value={empSyncBearerToken} onChange={e => setEmpSyncBearerToken(e.target.value)} placeholder={glBearerToken ? 'Using GL / Payments value' : 'Not set'} />
+          </div>
+          <div>
+            {lbl('Basic Auth')}
+            <div className="grid grid-cols-2 gap-2">
+              <input className={`${inputClass} font-mono text-[12px]`} value={empSyncBasicUser} onChange={e => setEmpSyncBasicUser(e.target.value)} placeholder={glBasicUser ? 'Using GL value' : 'Username'} />
+              {pw(showEmpPass, () => setShowEmpPass(v => !v), empSyncBasicPass, setEmpSyncBasicPass, glBasicPass ? 'Using GL value' : 'Password')}
+            </div>
+          </div>
+        </div>
+        <div className={row()}>
+          {lbl('Extra Parameters')}
+          <p className="text-[12px] text-[var(--text-muted)] mb-1.5">JSON object for provider-specific fields.</p>
+          <CountedTextarea className={`${inputClass} w-full font-mono text-[12px] resize-none`} rows={3} value={empSyncExtra} onChange={e => setEmpSyncExtra(e.target.value)} placeholder="{}" />
+        </div>
+      </SectionCard>
+
+      <div className="flex justify-end">
+        <button onClick={onSave} disabled={saving}
+          className="flex items-center gap-2 px-4 py-2 rounded-[8px] text-[13px] font-semibold text-white bg-[var(--accent)] hover:opacity-90 disabled:opacity-60 transition-opacity">
+          {saving && <Loader2 size={14} className="animate-spin" />}
+          {saving ? 'Saving…' : 'Save Integrations'}
+        </button>
+      </div>
     </div>
   );
 }
 
 // ─── Controls tab ─────────────────────────────────────────────────────────────
 
-type ControlsSubTab = 'General' | 'Approvals' | 'Leave' | 'Medical & GL';
-const CONTROLS_SUBTABS: ControlsSubTab[] = ['General', 'Approvals', 'Leave', 'Medical & GL'];
+type ControlsSubTab = 'General' | 'Approvals' | 'Leave' | 'Attendance' | 'Medical & GL' | 'Integrations';
+const CONTROLS_SUBTABS: ControlsSubTab[] = ['General', 'Approvals', 'Leave', 'Attendance', 'Medical & GL', 'Integrations'];
 
 function ControlsTab() {
+  const { can } = useCan();
+  const canManage = can('manage_settings');   // view_settings = read-only; manage_settings = edit
   const [subTab, setSubTab] = useState<ControlsSubTab>('General');
 
-  // ── General / Approvals state (localStorage) ──────────────────────────────
+  // ── General / Approvals state (server-backed, in-memory cache) ────────────
   const [autoGenCode,          setAutoGenCode]          = useState(() => getSettings().companyStructure.autoGenerateCode);
   const [autoGenEmpNum,        setAutoGenEmpNum]        = useState(() => getSettings().employees.autoGenerateNumber);
   const [autoGenJobCode,       setAutoGenJobCode]       = useState(() => getSettings().recruitment.autoGenerateCode);
@@ -542,7 +881,6 @@ function ControlsTab() {
   const [employeeSelfApproval, setEmployeeSelfApproval] = useState(() => getSettings().approvals.employeeSelfApproval);
   const [payrollApproval,      setPayrollApproval]      = useState(() => getSettings().approvals.payrollApproval);
   const [selfApproval,         setSelfApproval]         = useState(() => getSettings().approvals.selfApproval);
-  const [medicalApproval,      setMedicalApproval]      = useState(() => getSettings().approvals.medicalApproval);
   const [medicalSelfApproval,  setMedicalSelfApproval]  = useState(() => getSettings().approvals.medicalSelfApproval);
   const [currency,             setCurrency]             = useState(() => getSettings().general.currency);
 
@@ -552,6 +890,9 @@ function ControlsTab() {
   const [glExpense, setGlExpense] = useState('');
   const [glWht,     setGlWht]     = useState('');
   const [glBranch,  setGlBranch]  = useState('');
+
+  // ── Training approval flow state (backend) ───────────────────────────────
+  const [trainingApprovalFlow, setTrainingApprovalFlow] = useState<'direct' | 'supervisor_first'>('direct');
 
   // ── Leave settings state (backend) ───────────────────────────────────────
   const [supervisorApproval, setSupervisorApproval] = useState(false);
@@ -575,6 +916,25 @@ function ControlsTab() {
   // ── Document settings state (backend) ────────────────────────────────────
   const [allowDocumentDownload, setAllowDocumentDownload] = useState(false);
 
+  // ── API Integrations state (backend) ─────────────────────────────────────
+  const [glUrl,          setGlUrl]          = useState('');
+  const [glApiKey,       setGlApiKey]       = useState('');
+  const [glApiSecret,    setGlApiSecret]    = useState('');
+  const [glBearerToken,  setGlBearerToken]  = useState('');
+  const [glBasicUser,    setGlBasicUser]    = useState('');
+  const [glBasicPass,    setGlBasicPass]    = useState('');
+  const [glTimeout,      setGlTimeout]      = useState('30000');
+  const [glExtra,        setGlExtra]        = useState('{}');
+  const [empSyncUrl,          setEmpSyncUrl]          = useState('');
+  const [empSyncTimeout,      setEmpSyncTimeout]      = useState('10000');
+  const [empSyncApiKey,       setEmpSyncApiKey]       = useState('');
+  const [empSyncApiSecret,    setEmpSyncApiSecret]    = useState('');
+  const [empSyncBearerToken,  setEmpSyncBearerToken]  = useState('');
+  const [empSyncBasicUser,    setEmpSyncBasicUser]    = useState('');
+  const [empSyncBasicPass,    setEmpSyncBasicPass]    = useState('');
+  const [empSyncExtra,        setEmpSyncExtra]        = useState('{}');
+  const [apiSaving,           setApiSaving]           = useState(false);
+
   // ── Load from backend on mount ────────────────────────────────────────────
   useEffect(() => {
     api.get('/medical/settings').then(r => {
@@ -597,6 +957,11 @@ function ControlsTab() {
     api.get('/leave/approval-settings').then(r => {
       const d = r.data.data ?? {};
       setSupervisorApproval(d.leave_supervisor_approval === 'Yes');
+    }).catch(() => {});
+
+    api.get('/training/settings').then(r => {
+      const d = r.data.data ?? {};
+      setTrainingApprovalFlow(d.approval_flow === 'supervisor_first' ? 'supervisor_first' : 'direct');
     }).catch(() => {});
 
     api.get('/leave/allowance-settings').then(r => {
@@ -628,6 +993,26 @@ function ControlsTab() {
         label: u.name || u.username || `User ${u.id}`,
       })));
     }).catch(() => {});
+
+    api.get('/settings/api-integrations').then(r => {
+      const d = r.data.data ?? {};
+      setGlUrl(d.gl_url                ?? '');
+      setGlApiKey(d.gl_api_key         ?? '');
+      setGlApiSecret(d.gl_api_secret   ?? '');
+      setGlBearerToken(d.gl_bearer_token ?? '');
+      setGlBasicUser(d.gl_basic_user   ?? '');
+      setGlBasicPass(d.gl_basic_pass   ?? '');
+      setGlTimeout(d.gl_timeout        ?? '30000');
+      setGlExtra(d.gl_extra            ?? '{}');
+      setEmpSyncUrl(d.employee_sync_url                 ?? '');
+      setEmpSyncTimeout(d.employee_sync_timeout         ?? '10000');
+      setEmpSyncApiKey(d.employee_sync_api_key          ?? '');
+      setEmpSyncApiSecret(d.employee_sync_api_secret    ?? '');
+      setEmpSyncBearerToken(d.employee_sync_bearer_token ?? '');
+      setEmpSyncBasicUser(d.employee_sync_basic_user    ?? '');
+      setEmpSyncBasicPass(d.employee_sync_basic_pass    ?? '');
+      setEmpSyncExtra(d.employee_sync_extra              ?? '{}');
+    }).catch(() => {});
   }, []);
 
   // ── Save helpers ──────────────────────────────────────────────────────────
@@ -655,6 +1040,12 @@ function ControlsTab() {
     api.put('/leave/approval-settings', {
       leave_supervisor_approval: sv ? 'Yes' : 'No',
     }).catch(() => {});
+  }
+
+  function saveTrainingFlowSettings(flow: string) {
+    api.put('/training/settings', { approval_flow: flow })
+      .then(() => toast.success('Training approval flow saved'))
+      .catch(() => toast.error('Failed to save training settings'));
   }
 
   function saveAllowSetting(key: string, val: string) {
@@ -687,6 +1078,27 @@ function ControlsTab() {
       .catch(() => toast.error('Failed to save document settings'));
   }
 
+  async function saveApiIntegrations() {
+    setApiSaving(true);
+    try {
+      await api.put('/settings/api-integrations', {
+        gl_url: glUrl, gl_api_key: glApiKey, gl_api_secret: glApiSecret,
+        gl_bearer_token: glBearerToken, gl_basic_user: glBasicUser, gl_basic_pass: glBasicPass,
+        gl_timeout: glTimeout, gl_extra: glExtra,
+        employee_sync_url: empSyncUrl, employee_sync_timeout: empSyncTimeout,
+        employee_sync_api_key: empSyncApiKey, employee_sync_api_secret: empSyncApiSecret,
+        employee_sync_bearer_token: empSyncBearerToken,
+        employee_sync_basic_user: empSyncBasicUser, employee_sync_basic_pass: empSyncBasicPass,
+        employee_sync_extra: empSyncExtra,
+      });
+      toast.success('Integration settings saved');
+    } catch {
+      toast.error('Failed to save integration settings');
+    } finally {
+      setApiSaving(false);
+    }
+  }
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Sub-tab strip */}
@@ -707,8 +1119,8 @@ function ControlsTab() {
         ))}
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-5">
+      {/* Content — disabled (read-only) without manage_settings */}
+      <fieldset disabled={!canManage} className={`flex-1 overflow-y-auto p-5 min-w-0 border-0 m-0 ${!canManage ? 'readonly-section' : ''}`}>
         {subTab === 'General' && (
           <GeneralSection
             autoGenCode={autoGenCode} setAutoGenCode={setAutoGenCode}
@@ -725,15 +1137,17 @@ function ControlsTab() {
             employeeSelfApproval={employeeSelfApproval} setEmployeeSelfApproval={setEmployeeSelfApproval}
             payrollApproval={payrollApproval}         setPayrollApproval={setPayrollApproval}
             selfApproval={selfApproval}               setSelfApproval={setSelfApproval}
-            medicalApproval={medicalApproval}         setMedicalApproval={setMedicalApproval}
             medicalSelfApproval={medicalSelfApproval} setMedicalSelfApproval={setMedicalSelfApproval}
+            supervisorApproval={supervisorApproval}         setSupervisorApproval={setSupervisorApproval}
+            saveFlowSettings={saveFlowSettings}
+            trainingApprovalFlow={trainingApprovalFlow}   setTrainingApprovalFlow={setTrainingApprovalFlow}
+            saveTrainingFlowSettings={saveTrainingFlowSettings}
           />
         )}
         {subTab === 'Leave' && (
           <LeaveSection
-            supervisorApproval={supervisorApproval} setSupervisorApproval={setSupervisorApproval}
             allowSettings={allowSettings}           setAllowSettings={setAllowSettings}
-            saveFlowSettings={saveFlowSettings}     saveAllowSetting={saveAllowSetting}
+            saveAllowSetting={saveAllowSetting}
             thresholdEnabled={thresholdEnabled}     setThresholdEnabled={setThresholdEnabled}
             thresholdAmount={thresholdAmount}       setThresholdAmount={setThresholdAmount}
             thresholdApprovers={thresholdApprovers} setThresholdApprovers={setThresholdApprovers}
@@ -744,6 +1158,7 @@ function ControlsTab() {
             saveCalendarSetting={saveCalendarSetting}
           />
         )}
+        {subTab === 'Attendance' && <AttendanceSection />}
         {subTab === 'Medical & GL' && (
           <MedicalGlSection
             whtHosp={whtHosp}   setWhtHosp={setWhtHosp}
@@ -755,7 +1170,28 @@ function ControlsTab() {
             saveGlSettings={saveGlSettings}
           />
         )}
-      </div>
+        {subTab === 'Integrations' && (
+          <IntegrationsSection
+            glUrl={glUrl} setGlUrl={setGlUrl}
+            glApiKey={glApiKey} setGlApiKey={setGlApiKey}
+            glApiSecret={glApiSecret} setGlApiSecret={setGlApiSecret}
+            glBearerToken={glBearerToken} setGlBearerToken={setGlBearerToken}
+            glBasicUser={glBasicUser} setGlBasicUser={setGlBasicUser}
+            glBasicPass={glBasicPass} setGlBasicPass={setGlBasicPass}
+            glTimeout={glTimeout} setGlTimeout={setGlTimeout}
+            glExtra={glExtra} setGlExtra={setGlExtra}
+            empSyncUrl={empSyncUrl} setEmpSyncUrl={setEmpSyncUrl}
+            empSyncTimeout={empSyncTimeout} setEmpSyncTimeout={setEmpSyncTimeout}
+            empSyncApiKey={empSyncApiKey} setEmpSyncApiKey={setEmpSyncApiKey}
+            empSyncApiSecret={empSyncApiSecret} setEmpSyncApiSecret={setEmpSyncApiSecret}
+            empSyncBearerToken={empSyncBearerToken} setEmpSyncBearerToken={setEmpSyncBearerToken}
+            empSyncBasicUser={empSyncBasicUser} setEmpSyncBasicUser={setEmpSyncBasicUser}
+            empSyncBasicPass={empSyncBasicPass} setEmpSyncBasicPass={setEmpSyncBasicPass}
+            empSyncExtra={empSyncExtra} setEmpSyncExtra={setEmpSyncExtra}
+            onSave={saveApiIntegrations} saving={apiSaving}
+          />
+        )}
+      </fieldset>
     </div>
   );
 }
@@ -954,15 +1390,6 @@ function EmailSetupTab() {
 
 // ─── Placeholder tabs ──────────────────────────────────────────────────────────
 
-function LeaveSettingsTab() {
-  return (
-    <div className="p-6">
-      <h3 className="text-lg font-bold mb-4 syne">Leave Policies</h3>
-      <p className="text-sm text-[var(--text-muted)]">Configure leave types and constraints here.</p>
-    </div>
-  );
-}
-
 function NotificationSettingsTab() {
   return (
     <div className="p-6">
@@ -974,10 +1401,12 @@ function NotificationSettingsTab() {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-const TABS = ['Modules', 'Leave Settings', 'Notification Settings', 'Controls', 'Email Setup'] as const;
+const TABS = ['Modules', 'Notification Settings', 'Controls', 'Email Setup'] as const;
 type Tab = (typeof TABS)[number];
 
 export function Settings() {
+  const { can } = useCan();
+  const canManage = can('manage_settings');   // view_settings = read-only; manage_settings = edit
   const [activeTab, setActiveTab] = useState<Tab>('Modules');
 
   return (
@@ -994,6 +1423,14 @@ export function Settings() {
         </p>
       </motion.div>
 
+      {!canManage && (
+        <div className="mb-4 px-4 py-2.5 rounded-xl text-[12.5px] font-medium flex items-center gap-2"
+          style={{ background: 'color-mix(in srgb, var(--warning) 12%, transparent)', color: 'var(--warning)', border: '1px solid color-mix(in srgb, var(--warning) 35%, transparent)' }}>
+          <Lock size={14} className="shrink-0" />
+          View-only — you need the “Manage Settings” permission to make changes.
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {TABS.map((tab) => (
@@ -1002,11 +1439,10 @@ export function Settings() {
             onClick={() => setActiveTab(tab)}
             className={`tab-btn flex flex-row items-center justify-center gap-2 ${tab === activeTab ? 'active' : ''}`}
           >
-            {tab === 'Modules'                && <LayoutGrid          size={13} />}
-            {tab === 'Leave Settings'         && <CalendarRange       size={13} />}
-            {tab === 'Notification Settings'  && <Bell                size={13} />}
-            {tab === 'Controls'               && <SlidersHorizontal   size={13} />}
-            {tab === 'Email Setup'            && <Mail                size={13} />}
+            {tab === 'Modules'               && <LayoutGrid          size={13} />}
+            {tab === 'Notification Settings' && <Bell                size={13} />}
+            {tab === 'Controls'              && <SlidersHorizontal   size={13} />}
+            {tab === 'Email Setup'           && <Mail                size={13} />}
             {tab}
           </button>
         ))}
@@ -1028,17 +1464,21 @@ export function Settings() {
             className="flex flex-col flex-1 h-full"
           >
             {activeTab === 'Modules' && (
-              <div className="bg-[var(--bg)] -mx-4 sm:-mx-6 md:-mx-8">
+              <fieldset disabled={!canManage} className={`bg-[var(--bg)] -mx-4 sm:-mx-6 md:-mx-8 border-0 m-0 p-0 ${!canManage ? 'readonly-section' : ''}`}>
                 <Modules isSettings />
-              </div>
+              </fieldset>
             )}
 
             {activeTab !== 'Modules' && (
               <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] flex-1 overflow-hidden drop-shadow-sm h-full">
-                {activeTab === 'Leave Settings'        && <LeaveSettingsTab />}
-                {activeTab === 'Notification Settings' && <NotificationSettingsTab />}
+                {/* Notification & Email tabs are read-only without manage_settings; Controls self-gates (keeps its subtab nav). */}
+                {activeTab === 'Notification Settings' && (
+                  <fieldset disabled={!canManage} className={`border-0 m-0 p-0 h-full ${!canManage ? 'readonly-section' : ''}`}><NotificationSettingsTab /></fieldset>
+                )}
                 {activeTab === 'Controls'              && <ControlsTab />}
-                {activeTab === 'Email Setup'           && <EmailSetupTab />}
+                {activeTab === 'Email Setup'           && (
+                  <fieldset disabled={!canManage} className={`border-0 m-0 p-0 h-full ${!canManage ? 'readonly-section' : ''}`}><EmailSetupTab /></fieldset>
+                )}
               </div>
             )}
           </motion.div>

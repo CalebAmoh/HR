@@ -7,62 +7,60 @@ const { sendSchedulingInvite, sendInterviewConfirmation, buildIcs, sendCandidate
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function toBigInt(val) {
-  if (!val && val !== 0) return null;
-  try { return BigInt(val); } catch { return null; }
+const { toBigInt, s } = require('../helpers/controllerHelpers');
+
+// job_status enum: Prisma client value is 'On_hold' (DB stores "On hold"); the UI uses 'On Hold'.
+// Normalise between the two so the client can keep using the spaced label everywhere.
+function jobStatusToDb(v) {
+  if (!v) return null;
+  const k = String(v).toLowerCase().replace(/[\s_]+/g, ' ').trim();
+  if (k === 'on hold') return 'On_hold';
+  if (k === 'active')  return 'Active';
+  if (k === 'closed')  return 'Closed';
+  return null;
+}
+function jobStatusToUi(v) {
+  return v === 'On_hold' ? 'On Hold' : (v ?? null);
 }
 
-function s(obj) {
-  if (typeof obj === 'bigint')                return obj.toString();
-  if (obj instanceof Date)                    return obj.toISOString();
-  if (Array.isArray(obj))                     return obj.map(s);
-  if (obj !== null && typeof obj === 'object') {
-    if (typeof obj.toFixed === 'function')    return obj.toString();
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) out[k] = s(v);
-    return out;
+// Resolve a stored value (name or email) to an actual email address
+async function resolveEmail(nameOrEmail) {
+  if (!nameOrEmail) return null;
+  if (nameOrEmail.includes('@')) return nameOrEmail;
+  try {
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT work_email, email FROM employee WHERE CONCAT(firstName, ' ', lastName) = ? LIMIT 1`,
+      nameOrEmail
+    );
+    const row = rows[0];
+    return row?.work_email || row?.email || null;
+  } catch { return null; }
+}
+
+// Build the recipient list for an interview, resolving names to emails
+async function buildInterviewRecipients(interview, candidate, job) {
+  const recipients = [];
+  if (candidate?.email) {
+    recipients.push({ to: candidate.email, name: `${candidate.first_name ?? ''} ${candidate.last_name ?? ''}`.trim() });
   }
-  return obj;
+  if (job?.hiringManager) {
+    const email = await resolveEmail(job.hiringManager);
+    if (email) recipients.push({ to: email, name: job.hiringManager });
+  }
+  if (interview.interviewers) {
+    for (const entry of interview.interviewers.split(',').map(x => x.trim()).filter(Boolean)) {
+      const email = await resolveEmail(entry);
+      if (email) recipients.push({ to: email, name: entry });
+    }
+  }
+  return recipients;
 }
 
-async function safeAlter(sql) {
-  try { await prisma.$executeRawUnsafe(sql); } catch {}
-}
-
-// ── One-time schema patches ───────────────────────────────────────────────────
+// ── Seed default hiring pipeline stages if table is empty ────────────────────
 
 (async () => {
-  await safeAlter(`ALTER TABLE interviews  ADD COLUMN feedback TEXT NULL`);
-  await safeAlter(`ALTER TABLE interviews  ADD COLUMN outcome  VARCHAR(20) NULL`);
-  await safeAlter(`ALTER TABLE candidates  ADD COLUMN rejection_reason VARCHAR(500) NULL`);
-  await safeAlter(`ALTER TABLE candidates  ADD COLUMN offer_amount DECIMAL(12,2) NULL`);
-  await safeAlter(`ALTER TABLE candidates  ADD COLUMN offer_date DATE NULL`);
-  await safeAlter(`ALTER TABLE job ADD COLUMN code VARCHAR(50) NULL`);
-  await safeAlter(`ALTER TABLE job ADD COLUMN companyName VARCHAR(255) NULL`);
-  await safeAlter(`ALTER TABLE job ADD COLUMN showHiringManager VARCHAR(10) NULL`);
-  await safeAlter(`ALTER TABLE job ADD COLUMN postalCode VARCHAR(20) NULL`);
-  await safeAlter(`ALTER TABLE job ADD COLUMN attachment VARCHAR(500) NULL`);
-  // Convert BigInt reference columns to VARCHAR so we can store plain string values
-  await safeAlter(`ALTER TABLE job MODIFY COLUMN country        VARCHAR(100) NULL`);
-  await safeAlter(`ALTER TABLE job MODIFY COLUMN location       VARCHAR(255) NULL`);
-  await safeAlter(`ALTER TABLE job MODIFY COLUMN employementType VARCHAR(100) NULL`);
-  await safeAlter(`ALTER TABLE job MODIFY COLUMN hiringManager  VARCHAR(200) NULL`);
-  await safeAlter(`ALTER TABLE job MODIFY COLUMN experienceLevel VARCHAR(100) NULL`);
-  await safeAlter(`ALTER TABLE job MODIFY COLUMN jobFunction    VARCHAR(100) NULL`);
-  await safeAlter(`ALTER TABLE job MODIFY COLUMN educationLevel VARCHAR(100) NULL`);
-  await safeAlter(`ALTER TABLE job MODIFY COLUMN currency       VARCHAR(20)  NULL`);
-  // Convert candidates.source from ENUM to VARCHAR so it's always updatable
-  await safeAlter(`ALTER TABLE candidates MODIFY COLUMN source VARCHAR(20) NULL`);
-  // Self-scheduling columns
-  await safeAlter(`ALTER TABLE interviews ADD COLUMN schedule_token   VARCHAR(100) NULL`);
-  await safeAlter(`ALTER TABLE interviews ADD COLUMN schedule_options TEXT        NULL`);
-  await safeAlter(`ALTER TABLE interviews ADD COLUMN schedule_expires DATETIME    NULL`);
-  // CV file attachment
-  await safeAlter(`ALTER TABLE candidates ADD COLUMN cv_file VARCHAR(500) NULL`);
-  // Interview end time
-  await safeAlter(`ALTER TABLE interviews ADD COLUMN scheduled_end DATETIME NULL`);
+  await prisma.$executeRawUnsafe(`DELETE FROM hiringpipeline WHERE type = 'Offer'`).catch(() => {});
 
-  // Seed default pipeline stages if none exist
   const pipelineCount = await prisma.hiringpipeline.count().catch(() => 0);
   if (pipelineCount === 0) {
     await prisma.hiringpipeline.createMany({
@@ -71,7 +69,6 @@ async function safeAlter(sql) {
         { name: 'Phone Screen', type: 'Phone_Screen' },
         { name: 'Assessment',   type: 'Assessment' },
         { name: 'Interview',    type: 'Interview' },
-        { name: 'Offer',        type: 'Offer' },
         { name: 'Hired',        type: 'Hired' },
         { name: 'Rejected',     type: 'Rejected' },
         { name: 'Archived',     type: 'Archived' },
@@ -82,18 +79,21 @@ async function safeAlter(sql) {
 
 // ── Jobs ─────────────────────────────────────────────────────────────────────
 
+// GET /recruitment/jobs — list all job postings, optionally filtered by ?status=.
 const getJobs = asyncHandler(async (req, res) => {
   const { status } = req.query;
   const where = {};
-  if (status) where.status = status;
+  if (status) where.status = jobStatusToDb(status) ?? undefined;
 
   const jobs = await prisma.job.findMany({
     where,
     orderBy: { id: 'desc' },
   });
-  return respond.ok(res, 'Jobs', s(jobs));
+  return respond.ok(res, 'Jobs', s(jobs).map(j => ({ ...j, status: jobStatusToUi(j.status) })));
 });
 
+// POST /recruitment/jobs — create a job posting; auto-fills companyName from payslip_settings so the
+// public portal always shows the current company name without manual entry.
 const createJob = asyncHandler(async (req, res) => {
   const {
     title, positionReason, shortDescription, description, requirements, benefits,
@@ -124,7 +124,7 @@ const createJob = asyncHandler(async (req, res) => {
       salaryMax:          toBigInt(salaryMax),
       showSalary:         showSalary || null,
       keywords:           keywords || null,
-      status:             status || 'Active',
+      status:             jobStatusToDb(status) || 'Active',
       closingDate:        closingDate ? new Date(closingDate) : null,
       display:            display || title || '',
       postedBy:           toBigInt(req.user?.id),
@@ -146,6 +146,7 @@ const createJob = asyncHandler(async (req, res) => {
   return respond.created(res, 'Job created', s(job));
 });
 
+// PUT /recruitment/jobs/:id — update a job posting; keeps companyName in sync with payslip_settings.
 const updateJob = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   const {
@@ -178,7 +179,7 @@ const updateJob = asyncHandler(async (req, res) => {
       salaryMax:          toBigInt(salaryMax),
       showSalary:         showSalary || null,
       keywords:           keywords || null,
-      status:             status,
+      status:             jobStatusToDb(status),
       closingDate:        closingDate ? new Date(closingDate) : null,
       display:            display || title || '',
       code:               code || null,
@@ -199,6 +200,7 @@ const updateJob = asyncHandler(async (req, res) => {
   return respond.ok(res, 'Job updated', s(job));
 });
 
+// DELETE /recruitment/jobs/:id — permanently remove a job posting.
 const deleteJob = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   await prisma.job.delete({ where: { id } });
@@ -208,6 +210,7 @@ const deleteJob = asyncHandler(async (req, res) => {
 
 // ── Candidates ────────────────────────────────────────────────────────────────
 
+// GET /recruitment/candidates — list candidates filterable by job, stage, or source.
 const getCandidates = asyncHandler(async (req, res) => {
   const { job, stage, source } = req.query;
   const where = {};
@@ -219,9 +222,11 @@ const getCandidates = asyncHandler(async (req, res) => {
     where,
     orderBy: { id: 'desc' },
   });
+
   return respond.ok(res, 'Candidates', s(candidates));
 });
 
+// GET /recruitment/candidates/:id — retrieve a single candidate with their applications, interviews, and full pipeline.
 const getCandidateById = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   const candidate = await prisma.candidates.findUnique({ where: { id } });
@@ -236,6 +241,8 @@ const getCandidateById = asyncHandler(async (req, res) => {
   return respond.ok(res, 'Candidate', s({ ...candidate, applications, interviews, pipeline }));
 });
 
+// POST /recruitment/candidates — create a candidate profile; automatically creates an application record
+// when a jobId is provided.
 const createCandidate = asyncHandler(async (req, res) => {
   const {
     first_name, last_name, middle_name, email, mobile_phone, gender,
@@ -284,6 +291,7 @@ const createCandidate = asyncHandler(async (req, res) => {
   return respond.created(res, 'Candidate created', s(candidate));
 });
 
+// PUT /recruitment/candidates/:id — update candidate profile fields and optionally replace cv_file.
 const updateCandidate = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   const {
@@ -326,6 +334,7 @@ const updateCandidate = asyncHandler(async (req, res) => {
   return respond.ok(res, 'Candidate updated', s(candidate));
 });
 
+// DELETE /recruitment/candidates/:id — remove a candidate and cascade-delete their application records.
 const deleteCandidate = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   await prisma.applications.deleteMany({ where: { candidate: id } });
@@ -334,30 +343,49 @@ const deleteCandidate = asyncHandler(async (req, res) => {
   return respond.ok(res, 'Candidate deleted');
 });
 
+// PUT /recruitment/candidates/:id/stage — move a candidate to a new hiring pipeline stage and email them
+// the stage transition notification. If the email send fails, the stage is reverted to prevent silent failures.
 const moveCandidateStage = asyncHandler(async (req, res) => {
   const id      = toBigInt(req.params.id);
   const stageId = toBigInt(req.body.stageId);
+
+  // Capture current stage so we can revert if the email fails
+  const before = await prisma.candidates.findUnique({ where: { id }, select: { hiringStage: true } });
+  const previousStageId = before?.hiringStage ?? null;
 
   const candidate = await prisma.candidates.update({
     where: { id },
     data:  { hiringStage: stageId, updated: new Date() },
   });
 
-  // Fire-and-forget stage notification email
+  // Send notification email — if it fails, revert the stage change
   if (candidate.email) {
-    Promise.all([
-      prisma.hiringpipeline.findUnique({ where: { id: stageId } }).catch(() => null),
-      candidate.jobId ? prisma.job.findUnique({ where: { id: candidate.jobId } }).catch(() => null) : Promise.resolve(null),
-    ]).then(([stage, job]) => {
+    try {
+      const [stage, job] = await Promise.all([
+        prisma.hiringpipeline.findUnique({ where: { id: stageId } }).catch(() => null),
+        candidate.jobId ? prisma.job.findUnique({ where: { id: candidate.jobId } }).catch(() => null) : Promise.resolve(null),
+      ]);
       if (stage) {
-        sendCandidateStageEmail({
+        await sendCandidateStageEmail({
           to:            candidate.email,
           candidateName: `${candidate.first_name} ${candidate.last_name}`,
           stageName:     stage.name || stage.type,
           jobTitle:      job?.title || null,
+        });
+      }
+    } catch {
+      // Revert the stage to what it was before
+      if (previousStageId !== null) {
+        await prisma.candidates.update({
+          where: { id },
+          data:  { hiringStage: previousStageId, updated: new Date() },
         }).catch(() => {});
       }
-    }).catch(() => {});
+      return res.status(502).json({
+        status: '502',
+        message: 'Stage reverted — the notification email failed to send. Check your email settings and try again.',
+      });
+    }
   }
 
   logActivity({ module: 'Recruitment', action: 'move_candidate_stage', entityId: String(id), details: { stageId: String(stageId) }, ...fromReq(req) });
@@ -366,6 +394,7 @@ const moveCandidateStage = asyncHandler(async (req, res) => {
 
 // ── Applications ──────────────────────────────────────────────────────────────
 
+// GET /recruitment/applications — list applications, optionally filtered by ?job=.
 const getApplications = asyncHandler(async (req, res) => {
   const { job } = req.query;
   const where = {};
@@ -378,6 +407,7 @@ const getApplications = asyncHandler(async (req, res) => {
   return respond.ok(res, 'Applications', s(applications));
 });
 
+// POST /recruitment/applications — create an application linking a candidate to a job.
 const createApplication = asyncHandler(async (req, res) => {
   const { job, candidate, notes, referredByEmail } = req.body;
 
@@ -395,6 +425,7 @@ const createApplication = asyncHandler(async (req, res) => {
   return respond.created(res, 'Application created', s(application));
 });
 
+// DELETE /recruitment/applications/:id — remove a single application record.
 const deleteApplication = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   await prisma.applications.delete({ where: { id } });
@@ -404,6 +435,7 @@ const deleteApplication = asyncHandler(async (req, res) => {
 
 // ── Interviews ────────────────────────────────────────────────────────────────
 
+// GET /recruitment/interviews — list interviews, optionally filtered by ?candidate= and/or ?job=.
 const getInterviews = asyncHandler(async (req, res) => {
   const { candidate, job } = req.query;
 
@@ -419,8 +451,10 @@ const getInterviews = asyncHandler(async (req, res) => {
   return respond.ok(res, 'Interviews', s(interviews));
 });
 
+// POST /recruitment/interviews — schedule a new interview; stores available slots as JSON in schedule_options
+// for the self-scheduling flow.
 const createInterview = asyncHandler(async (req, res) => {
-  const { job, candidate, level, scheduled, location, notes, interviewers, status, schedule_options } = req.body;
+  const { job, candidate, level, scheduled, scheduled_end, location, notes, interviewers, status, schedule_options } = req.body;
 
   const interview = await prisma.interviews.create({
     data: {
@@ -438,13 +472,21 @@ const createInterview = asyncHandler(async (req, res) => {
     },
   });
 
+  if (scheduled_end) {
+    await prisma.$executeRawUnsafe(
+      'UPDATE interviews SET scheduled_end = ? WHERE id = ?',
+      new Date(scheduled_end), interview.id
+    );
+  }
+
   logActivity({ module: 'Recruitment', action: 'create_interview', entityId: String(interview.id), ...fromReq(req) });
   return respond.created(res, 'Interview created', s(interview));
 });
 
+// PUT /recruitment/interviews/:id — patch interview fields including outcome and interviewer feedback.
 const updateInterview = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
-  const { job, candidate, level, scheduled, location, notes, interviewers, status, outcome, feedback, schedule_options } = req.body;
+  const { job, candidate, level, scheduled, scheduled_end, location, notes, interviewers, status, outcome, feedback, schedule_options } = req.body;
 
   const data = { updated: new Date() };
   if (job              !== undefined) data.job              = toBigInt(job);
@@ -461,10 +503,18 @@ const updateInterview = asyncHandler(async (req, res) => {
 
   const interview = await prisma.interviews.update({ where: { id }, data });
 
+  if (scheduled_end !== undefined) {
+    await prisma.$executeRawUnsafe(
+      'UPDATE interviews SET scheduled_end = ? WHERE id = ?',
+      scheduled_end ? new Date(scheduled_end) : null, id
+    );
+  }
+
   logActivity({ module: 'Recruitment', action: 'update_interview', entityId: String(id), ...fromReq(req) });
   return respond.ok(res, 'Interview updated', s(interview));
 });
 
+// DELETE /recruitment/interviews/:id — permanently remove an interview record.
 const deleteInterview = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   await prisma.interviews.delete({ where: { id } });
@@ -474,6 +524,7 @@ const deleteInterview = asyncHandler(async (req, res) => {
 
 // ── Pipeline stages ───────────────────────────────────────────────────────────
 
+// GET /recruitment/pipeline — list all hiring pipeline stages in their display order.
 const getPipeline = asyncHandler(async (req, res) => {
   const stages = await prisma.hiringpipeline.findMany({ orderBy: { id: 'asc' } });
   return respond.ok(res, 'Pipeline', s(stages));
@@ -481,30 +532,47 @@ const getPipeline = asyncHandler(async (req, res) => {
 
 // ── Hire conversion ───────────────────────────────────────────────────────────
 
+// POST /recruitment/candidates/:id/hire — convert a candidate into a new employee record; checks for email
+// conflicts to prevent duplicate employee creation, marks candidate as 'Hired' in the pipeline, and
+// links the new employee back to the candidate via hired_employee_id.
 const hireCandidate = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   const candidate = await prisma.candidates.findUnique({ where: { id } });
   if (!candidate) return respond.notFound(res, 'Candidate not found');
+
+  // Check unique constraint violations before creating the employee record
+  if (candidate.email) {
+    const conflict = await prisma.employee.findFirst({
+      where: { OR: [{ email: candidate.email }, { work_email: candidate.email }, { personal_email: candidate.email }] },
+    });
+    if (conflict) {
+      return respond.conflict(res, `An employee record already exists with the email address "${candidate.email}". This candidate may have already been converted.`);
+    }
+  }
 
   // Split full name parts
   const firstName  = candidate.first_name  || '';
   const lastName   = candidate.last_name   || '';
   const middleName = candidate.middle_name || null;
 
+  const today = new Date();
+
   const employee = await prisma.employee.create({
     data: {
       firstName,
       lastName,
       middleName,
-      email:          candidate.email || null,
-      work_email:     candidate.email || null,
-      mobilePhone:    candidate.mobile_phone || null,
-      address1:       candidate.address1 || null,
-      city:           candidate.city || null,
-      country:        candidate.country || null,
-      approvalStatus: 'PENDING',
-      lifecycleStatus:'PENDING',
-      posted_by:      toBigInt(req.user?.id),
+      email:            candidate.email || null,
+      work_email:       candidate.email || null,
+      mobilePhone:      candidate.mobile_phone || null,
+      address1:         candidate.address1 || null,
+      city:             candidate.city || null,
+      country:          candidate.country || null,
+      hireDate:         today,
+      confirmationDate: today,
+      approvalStatus:   'PENDING',
+      lifecycleStatus:  'PENDING',
+      posted_by:        toBigInt(req.user?.id),
     },
   });
 
@@ -519,12 +587,20 @@ const hireCandidate = asyncHandler(async (req, res) => {
     });
   }
 
+  // Record which employee record this candidate was converted to
+  await prisma.$executeRawUnsafe(
+    `UPDATE candidates SET hired_employee_id = ? WHERE id = ?`,
+    employee.id, id
+  ).catch(() => {});
+
   logActivity({ module: 'Recruitment', action: 'hire_candidate', entityId: String(employee.id), entityName: `${employee.firstName} ${employee.lastName}`, details: { candidateId: id.toString() }, ...fromReq(req) });
   return respond.created(res, 'Employee record created', s({ employee }));
 });
 
 // ── Public (no-auth) endpoints ────────────────────────────────────────────────
 
+// GET /public/recruitment/settings — return branding info (company name, logo, address, accent colour)
+// for the public career portal, sourced from payslip_settings.
 const getPublicSettings = asyncHandler(async (req, res) => {
   const rows = await prisma.$queryRawUnsafe(
     `SELECT company_name, company_logo_url, company_address, accent_color FROM payslip_settings LIMIT 1`
@@ -532,6 +608,8 @@ const getPublicSettings = asyncHandler(async (req, res) => {
   return respond.ok(res, 'Settings', s(rows[0] ?? {}));
 });
 
+// GET /public/recruitment/jobs — list Active job postings for the public career portal, with optional
+// search/department/type filters applied in-memory.
 const getPublicJobs = asyncHandler(async (req, res) => {
   const { search, department, type } = req.query;
 
@@ -555,6 +633,8 @@ const getPublicJobs = asyncHandler(async (req, res) => {
   return respond.ok(res, 'Jobs', s(result));
 });
 
+// GET /public/recruitment/jobs/:code — retrieve a single Active job by its code slug; falls back to numeric ID
+// so existing numeric-URL links continue to work after a code is assigned.
 const getPublicJobByCode = asyncHandler(async (req, res) => {
   const { code } = req.params;
 
@@ -568,6 +648,8 @@ const getPublicJobByCode = asyncHandler(async (req, res) => {
   return respond.ok(res, 'Job', s(job));
 });
 
+// POST /public/recruitment/jobs/:code/apply — public job application endpoint (no auth required);
+// creates the candidate and application records. Blocks duplicate applications by the same email or phone for the same job.
 const applyForJob = asyncHandler(async (req, res) => {
   const { code } = req.params;
 
@@ -622,6 +704,8 @@ const applyForJob = asyncHandler(async (req, res) => {
 
 // ── Self-scheduling ───────────────────────────────────────────────────────────
 
+// POST /recruitment/interviews/:id/schedule-link — generate a time-limited (7-day) tokenised scheduling link
+// and email it to the candidate so they can self-select an available interview slot.
 const sendScheduleLink = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
 
@@ -647,8 +731,10 @@ const sendScheduleLink = asyncHandler(async (req, res) => {
   });
 
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3002';
-  const link  = `${frontendUrl}/schedule/${token}`;
-  const slots = JSON.parse(interview.schedule_options || '[]');
+  const link     = `${frontendUrl}/schedule/${token}`;
+  const rawSlots = JSON.parse(interview.schedule_options || '[]');
+  // Normalize to start strings for the email list
+  const slots = rawSlots.map(s => (typeof s === 'string' ? s : s.start)).filter(Boolean);
 
   await sendSchedulingInvite({
     to: candidate.email,
@@ -659,9 +745,15 @@ const sendScheduleLink = asyncHandler(async (req, res) => {
     expiresAt: expires,
   });
 
+  await prisma.$executeRawUnsafe(
+    'UPDATE interviews SET schedule_link_sent_at = NOW() WHERE id = ?', id
+  ).catch(() => {});
+
   return respond.ok(res, 'Scheduling link sent');
 });
 
+// GET /public/schedule/:token — public endpoint (no auth) that returns interview slot options for the
+// candidate self-scheduling page; validates token and expiry before returning.
 const getSchedulePage = asyncHandler(async (req, res) => {
   const { token } = req.params;
 
@@ -690,6 +782,8 @@ const getSchedulePage = asyncHandler(async (req, res) => {
   }));
 });
 
+// POST /public/schedule/:token — candidate confirms their chosen slot; books the interview, builds an ICS
+// calendar attachment, and sends confirmation emails to the candidate, hiring manager, and all interviewers.
 const confirmSchedule = asyncHandler(async (req, res) => {
   const { token } = req.params;
   const { slot }  = req.body;
@@ -706,7 +800,14 @@ const confirmSchedule = asyncHandler(async (req, res) => {
   if (interview.scheduled) return respond.badReq(res, 'Interview already confirmed');
 
   const slots = JSON.parse(interview.schedule_options || '[]');
-  if (!slots.includes(slot)) return respond.badReq(res, 'Invalid slot selected');
+  // Normalize to handle both old string format and new { start, end } object format
+  const slotStarts = slots.map(s => (typeof s === 'string' ? s : s.start)).filter(Boolean);
+  if (!slotStarts.includes(slot)) return respond.badReq(res, 'Invalid slot selected');
+
+  const matchedSlot = slots.find(s => (typeof s === 'string' ? s : s.start) === slot);
+  const slotEndTime = matchedSlot && typeof matchedSlot === 'object' && matchedSlot.end
+    ? new Date(matchedSlot.end)
+    : null;
 
   await prisma.interviews.update({
     where: { id: interview.id },
@@ -718,6 +819,13 @@ const confirmSchedule = asyncHandler(async (req, res) => {
     },
   });
 
+  if (slotEndTime) {
+    await prisma.$executeRawUnsafe(
+      'UPDATE interviews SET scheduled_end = ? WHERE id = ?',
+      slotEndTime, interview.id
+    );
+  }
+
   const candidate = interview.candidate
     ? await prisma.candidates.findUnique({ where: { id: interview.candidate } })
     : null;
@@ -726,30 +834,20 @@ const confirmSchedule = asyncHandler(async (req, res) => {
     : null;
 
   const slotDate = new Date(slot);
-  const slotEnd  = new Date(slotDate.getTime() + 60 * 60 * 1000);
+  const slotEnd  = slotEndTime ?? (interview.scheduled_end ? new Date(interview.scheduled_end) : new Date(slotDate.getTime() + 60 * 60 * 1000));
 
+  const hmEmail = job?.hiringManager ? await resolveEmail(job.hiringManager) : null;
   const icsContent = buildIcs({
     uid:            `interview-${s(interview.id)}-${Date.now()}`,
     summary:        `Interview: ${job?.title ?? 'Position'}${interview.level ? ` - ${interview.level}` : ''}`,
     dtstart:        slotDate,
     dtend:          slotEnd,
     location:       interview.location ?? '',
-    organizerEmail: job?.hiringManager?.includes('@') ? job.hiringManager : null,
+    organizerEmail: hmEmail,
     attendeeEmail:  candidate?.email ?? null,
   });
 
-  const recipients = [];
-  if (candidate?.email) {
-    recipients.push({ to: candidate.email, name: `${candidate.first_name ?? ''} ${candidate.last_name ?? ''}`.trim() });
-  }
-  if (job?.hiringManager?.includes('@')) {
-    recipients.push({ to: job.hiringManager, name: 'Hiring Manager' });
-  }
-  if (interview.interviewers) {
-    for (const entry of interview.interviewers.split(',').map(x => x.trim()).filter(Boolean)) {
-      if (entry.includes('@')) recipients.push({ to: entry, name: entry });
-    }
-  }
+  const recipients = await buildInterviewRecipients(interview, candidate, job);
 
   await Promise.allSettled(
     recipients.map(({ to, name }) =>
@@ -758,7 +856,7 @@ const confirmSchedule = asyncHandler(async (req, res) => {
         name,
         jobTitle:     job?.title ?? 'Position',
         level:        interview.level ?? '',
-        datetime:     slotDate.toLocaleString(),
+        datetime:     slotDate.toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
         location:     interview.location ?? '',
         interviewers: interview.interviewers ?? '',
         icsContent,
@@ -769,6 +867,66 @@ const confirmSchedule = asyncHandler(async (req, res) => {
   return respond.ok(res, 'Interview confirmed');
 });
 
+// POST /recruitment/interviews/:id/invite — manually send an ICS calendar invite to the candidate,
+// hiring manager, and all interviewers for an already-scheduled interview.
+const sendInterviewInvite = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+
+  const [row] = await prisma.$queryRawUnsafe('SELECT * FROM interviews WHERE id = ?', id);
+  if (!row) return respond.notFound(res, 'Interview not found');
+  if (!row.scheduled) return respond.badReq(res, 'No interview date set. Set a date on the interview before sending an invite.');
+
+  const candidate = row.candidate
+    ? await prisma.candidates.findUnique({ where: { id: row.candidate } })
+    : null;
+  const job = row.job
+    ? await prisma.job.findUnique({ where: { id: row.job } })
+    : null;
+
+  const slotDate = new Date(row.scheduled);
+  const slotEnd  = row.scheduled_end
+    ? new Date(row.scheduled_end)
+    : new Date(slotDate.getTime() + 60 * 60 * 1000);
+
+  const hmEmail = job?.hiringManager ? await resolveEmail(job.hiringManager) : null;
+  const icsContent = buildIcs({
+    uid:            `interview-${s(row.id)}-${Date.now()}`,
+    summary:        `Interview: ${job?.title ?? 'Position'}${row.level ? ` - ${row.level}` : ''}`,
+    dtstart:        slotDate,
+    dtend:          slotEnd,
+    location:       row.location ?? '',
+    organizerEmail: hmEmail,
+    attendeeEmail:  candidate?.email ?? null,
+  });
+
+  const recipients = await buildInterviewRecipients(row, candidate, job);
+
+  if (recipients.length === 0) {
+    return respond.badReq(res, 'No recipients found. Add an email to the candidate or interviewers.');
+  }
+
+  await Promise.allSettled(
+    recipients.map(({ to, name }) =>
+      sendInterviewConfirmation({
+        to, name,
+        jobTitle:     job?.title ?? 'Position',
+        level:        row.level ?? '',
+        datetime:     slotDate.toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+        location:     row.location ?? '',
+        interviewers: row.interviewers ?? '',
+        icsContent,
+      })
+    )
+  );
+
+  await prisma.$executeRawUnsafe(
+    'UPDATE interviews SET invite_sent_at = NOW() WHERE id = ?', id
+  ).catch(() => {});
+
+  logActivity({ module: 'Recruitment', action: 'send_interview_invite', entityId: String(id), ...fromReq(req) });
+  return respond.ok(res, 'Interview invite sent');
+});
+
 module.exports = {
   getJobs, createJob, updateJob, deleteJob,
   getCandidates, getCandidateById, createCandidate, updateCandidate, deleteCandidate, moveCandidateStage,
@@ -777,5 +935,5 @@ module.exports = {
   getPipeline,
   hireCandidate,
   getPublicSettings, getPublicJobs, getPublicJobByCode, applyForJob,
-  sendScheduleLink, getSchedulePage, confirmSchedule,
+  sendScheduleLink, getSchedulePage, confirmSchedule, sendInterviewInvite,
 };

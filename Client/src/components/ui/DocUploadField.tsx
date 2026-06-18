@@ -27,7 +27,7 @@ export function DocPreviewModal({ url, filename, onClose }: { url: string; filen
         initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
         className="relative z-10 bg-[var(--surface)] rounded-2xl shadow-2xl flex flex-col w-full max-w-3xl max-h-[90vh] overflow-hidden border border-[var(--border)]"
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)] shrink-0 bg-slate-50/60">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)] shrink-0 bg-[var(--bg)]">
           <p className="text-[13px] font-semibold text-[var(--text-primary)] truncate max-w-[80%]">{filename}</p>
           <div className="flex items-center gap-1">
             <a href={url} download={filename} className="action-btn text-[var(--accent)]" title="Download">

@@ -11,13 +11,12 @@ import { TablePagination } from './ui/TablePagination';
 import { FormModal } from './ui/FormModal';
 import { DetailSlideOver } from './ui/DetailSlideOver';
 import { FormField, inputClass } from './ui/FormField';
+import { CountedTextarea } from './ui/CountedTextarea';
 import api from '../../lib/api';
 import { toast } from 'sonner';
 import { getCurrentUser } from '../../lib/auth';
-import { PERMISSIONS } from '../../lib/permissionKeys';
 
-const ALL_TABS = ['All my Leave', 'Leave Entitlement', 'Approved Leave', 'Pending Leave', 'Subordinate Leave', 'Cancellation Request', 'Approval Request'] as const;
-const SUBORDINATE_TABS = new Set(['Subordinate Leave', 'Cancellation Request', 'Approval Request']);
+const ALL_TABS = ['All my Leave', 'Leave Entitlement', 'Approved Leave', 'Pending Leave', 'Subordinate Leave', 'Cancellation Request'] as const;
 
 const SortableHeader = ({ children }: { children: ReactNode }) => (
   <th scope="col" className="th">
@@ -52,6 +51,7 @@ export function LeaveManagement() {
   const [searchQuery, setSearchQuery] = useState('');
   const [leaves, setLeaves]         = useState<any[]>([]);
   const [balance, setBalance]       = useState<any[]>([]);
+  const [balanceDetail, setBalanceDetail] = useState<any>(null);
   const [loading, setLoading]       = useState(false);
 
   // Apply leave form
@@ -89,8 +89,8 @@ export function LeaveManagement() {
 
   const currentUser = getCurrentUser();
   const isAdmin = currentUser?.allRoles?.some(r => ['admin', 'super-admin', 'hr'].includes(r.name));
-  const can = (perm: string) => currentUser?.resolvedPermissions.has(perm) ?? false;
-  const TABS = ALL_TABS.filter(tab => SUBORDINATE_TABS.has(tab) ? can(PERMISSIONS.VIEW_SUBORDINATE_LEAVE) : true);
+  // Personal leave (incl. subordinate / approval-request tabs and approving) is open to all by default
+  const TABS = [...ALL_TABS];
 
   // ── Confirm dialog ────────────────────────────────────────────────────────────
   const [confirmState, setConfirmState] = useState<{
@@ -142,7 +142,6 @@ const fetchSubordinateEmployees = useCallback(() => {
     if (activeTab === 'Pending Leave')      fetchLeaves('Draft');
     if (activeTab === 'Subordinate Leave')    { fetchSubordinate(); fetchSubordinateEmployees(); }
     if (activeTab === 'Cancellation Request') fetchSubordinate('Cancelled');
-    if (activeTab === 'Approval Request')     fetchSubordinate('Pending Approval');
     if (activeTab === 'Leave Entitlement')  fetchBalance();
   }, [activeTab, fetchLeaves, fetchSubordinate, fetchBalance]);
 
@@ -353,8 +352,7 @@ const fetchSubordinateEmployees = useCallback(() => {
       toast.success('Leave approved');
       setViewRow(null);
       fetchBalance();
-      if (activeTab === 'Approval Request') fetchSubordinate('Pending Approval');
-      else if (activeTab === 'Subordinate Leave') fetchSubordinate();
+      if (activeTab === 'Subordinate Leave') fetchSubordinate();
       else fetchLeaves();
     } catch (e: any) { toast.error(e.response?.data?.message ?? 'Failed to approve'); }
   };
@@ -367,8 +365,7 @@ const fetchSubordinateEmployees = useCallback(() => {
       toast.success('Leave rejected');
       setRejectId(null);
       fetchBalance();
-      if (activeTab === 'Approval Request') fetchSubordinate('Pending Approval');
-      else if (activeTab === 'Subordinate Leave') fetchSubordinate();
+      if (activeTab === 'Subordinate Leave') fetchSubordinate();
       else fetchLeaves();
     } catch (e: any) { toast.error(e.response?.data?.message ?? 'Failed to reject'); }
   };
@@ -433,137 +430,261 @@ const fetchSubordinateEmployees = useCallback(() => {
             <div className="flex-1 min-h-0 overflow-y-auto">
             <div className="p-4 sm:p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {balance.map((b: any, i: number) => {
-  const color    = b.leave_color || '#185FA5';
-  const al       = b.allocated || 1;
-  const usedPct  = Math.min(100, Math.round((b.used ?? 0) / al * 100));
-  const pendPct  = Math.min(100, Math.round((b.pending ?? 0) / al * 100));
-  const remPct   = Math.max(0, 100 - usedPct - pendPct);
-  const isNeg    = b.balance < 0;
+                const color = b.leave_color || '#185FA5';
+                const allocated = Number(b.allocated ?? 0);
+                const used = Number(b.used ?? 0);
+                const pending = Number(b.pending ?? 0);
+                const remaining = Number(b.balance ?? 0);
+                const consumed = Math.max(0, used + pending);
+                const consumedPct = allocated > 0 ? Math.min(100, (consumed / allocated) * 100) : 0;
+                const usedPct    = allocated > 0 ? Math.min(100, (used / allocated) * 100) : 0;
+                const progressLabel = `${consumedPct.toFixed(consumedPct % 1 ? 1 : 0)}%`;
+                const radius = 46;
+                const circumference = 2 * Math.PI * radius;
+                const dashOffset     = circumference - (consumedPct / 100) * circumference;
+                const usedDashOffset = circumference - (usedPct    / 100) * circumference;
+                const isNeg = remaining < 0;
+                const dayLabel = (value: number) => `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}d`;
+                const chips = [
+                  b.leave_accrue === 'Yes' ? 'Accrual' : null,
+                  b.carried_forward === 'Yes'
+                    ? `CF ${b.carried_forward_percentage ?? 100}%${Number(b.max_carried_forward_amount ?? 0) > 0 ? ` / max ${b.max_carried_forward_amount}d` : ''}`
+                    : null,
+                  b.propotionate_on_joined_date === 'Yes' ? 'Prorated' : null,
+                  b.apply_beyond_current === 'Yes' ? 'Beyond balance' : null,
+                  b.supervisor_leave_assign === 'Yes' ? 'Supervisor assign' : null,
+                  b.has_rule ? 'Rule applied' : null,
+                ].filter(Boolean);
 
-  return (
-    <div key={i} className="rounded-[14px] border overflow-hidden flex flex-col"
-      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}>
+                return (
+                  <motion.div
+                    key={i}
+                    className="relative flex flex-col rounded-[14px] border p-4 shadow-sm cursor-pointer transition-all hover:-translate-y-0.5 hover:shadow-md hover:border-[var(--accent)]/30"
+                    style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+                    initial={{ opacity: 0, y: 16 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.35, delay: i * 0.06 }}
+                    onClick={() => setBalanceDetail(b)}
+                  >
+                    {/* Decorative accents in the leave type color — kept subtle for a professional look */}
+                    <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden rounded-[14px]">
+                      {/* Faint diagonal wash from the top-right corner */}
+                      <span className="absolute inset-0" style={{ background: `linear-gradient(225deg, color-mix(in srgb, ${color} 7%, transparent), transparent 45%)` }} />
+                      {/* Fine concentric hairline arcs in the top-right corner */}
+                      <svg className="absolute -top-12 -right-12 h-36 w-36" viewBox="0 0 144 144">
+                        <circle cx="72" cy="72" r="52" fill="none" strokeWidth="1" style={{ stroke: `color-mix(in srgb, ${color} 22%, transparent)` }} />
+                        <circle cx="72" cy="72" r="64" fill="none" strokeWidth="1" style={{ stroke: `color-mix(in srgb, ${color} 14%, transparent)` }} />
+                      </svg>
+                    </div>
 
-      {/* Top section: accent bar + content */}
-      <div className="flex" style={{ minHeight: 90 }}>
-        <div className="w-1 shrink-0" style={{ background: color }} />
-        <div className="flex-1 p-3.5 flex flex-col gap-2">
+                    {/* 1. Header row */}
+                    <div className="flex items-center gap-2 min-w-0 mb-0.5">
+                      <span className="h-2 w-2 rounded-full shrink-0" style={{ background: color }} />
+                      <p className="truncate text-[13px] font-medium text-[var(--text-primary)]">{b.name}</p>
+                    </div>
 
-          {/* Name row + balance */}
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <p className="text-[13px] font-bold text-[var(--text-primary)] leading-snug">{b.name}</p>
-              {b.period_name && <p className="text-[11px] text-[var(--text-muted)] mt-0.5">{b.period_name}</p>}
+                    {/* 2. Sub-header — always reserves space */}
+                    <div className="mb-3 min-h-[16px]">
+                      {b.period_name && (
+                        <p className="truncate text-[11px] text-[var(--text-muted)] ml-4">{b.period_name}</p>
+                      )}
+                    </div>
+
+                    {/* 3. Chart zone — fixed height */}
+                    <div className="flex justify-center mb-3">
+                      <div className="relative h-[116px] w-[116px]">
+                        <svg className="-rotate-90" width="116" height="116" viewBox="0 0 116 116" aria-hidden="true">
+                          {/* Layer 1 — full circle in light gray = remaining/unused */}
+                          <circle cx="58" cy="58" r={radius} fill="none" stroke="#cbd5e1" strokeWidth="10" />
+                          {/* Layer 2 — arc (0 → consumed) in lighter tint of leave color = pending zone */}
+                          {consumedPct > 0 && (
+                            <motion.circle
+                              cx="58" cy="58" r={radius} fill="none"
+                              stroke={`color-mix(in srgb, ${color} 35%, #ffffff)`}
+                              strokeWidth="10" strokeLinecap="round"
+                              strokeDasharray={circumference}
+                              initial={{ strokeDashoffset: circumference }}
+                              animate={{ strokeDashoffset: dashOffset }}
+                              transition={{ duration: 1.1, ease: [0.4, 0, 0.2, 1], delay: i * 0.06 }}
+                            />
+                          )}
+                          {/* Layer 3 — arc (0 → used) in full leave type color = used/approved zone */}
+                          {usedPct > 0 && (
+                            <motion.circle
+                              cx="58" cy="58" r={radius} fill="none"
+                              stroke={color}
+                              strokeWidth="10" strokeLinecap="round"
+                              strokeDasharray={circumference}
+                              initial={{ strokeDashoffset: circumference }}
+                              animate={{ strokeDashoffset: usedDashOffset }}
+                              transition={{ duration: 1.1, ease: [0.4, 0, 0.2, 1], delay: i * 0.06 }}
+                            />
+                          )}
+                        </svg>
+                        <motion.div
+                          className="absolute inset-0 flex flex-col items-center justify-center"
+                          initial={{ opacity: 0, scale: 0.8 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          transition={{ duration: 0.35, delay: i * 0.06 + 0.25 }}
+                        >
+                          <span className="text-[19px] font-semibold tabular-nums leading-none" style={{ color: isNeg ? 'var(--danger)' : color }}>
+                            {dayLabel(remaining)}
+                          </span>
+                          <span className="mt-1 text-[10px] text-[var(--text-muted)]">{progressLabel} used</span>
+                        </motion.div>
+                      </div>
+                    </div>
+
+                    {/* 4. Stats row */}
+                    <div className="w-full grid grid-cols-4 overflow-hidden rounded-[10px] border border-[var(--border)]">
+                      {[
+                        { label: 'Left',      value: dayLabel(remaining), tint: isNeg ? 'var(--danger)' : color },
+                        { label: 'Allocated', value: dayLabel(allocated),  tint: 'var(--text-primary)' },
+                        { label: 'Approved',  value: dayLabel(used),       tint: 'var(--text-primary)' },
+                        { label: 'Pending',   value: dayLabel(pending),    tint: pending > 0 ? `color-mix(in srgb, ${color} 65%, #92400e)` : 'var(--text-muted)' },
+                      ].map((stat, si) => (
+                        <div key={stat.label} className={`min-w-0 overflow-hidden px-2.5 py-2${si > 0 ? ' border-l border-[var(--border)]' : ''}`}>
+                          <p className="text-[13px] font-semibold tabular-nums leading-none truncate" style={{ color: stat.tint }}>{stat.value}</p>
+                          <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)] truncate">{stat.label}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </motion.div>
+                );
+              })}
             </div>
-            <div className="text-right shrink-0">
-              <p className="text-[30px] font-bold tabular-nums leading-none tracking-tight"
-                style={{ color: isNeg ? 'var(--danger)' : color }}>
-                {b.balance ?? 0}
-              </p>
-              <p className="text-[10px] text-[var(--text-muted)] tracking-wide mt-0.5">days left</p>
-            </div>
-          </div>
-
-          {/* Pills */}
-          {(b.leave_accrue === 'Yes' || b.carried_forward === 'Yes' || b.apply_beyond_current === 'Yes' || b.propotionate_on_joined_date === 'Yes' || b.has_rule) && (
-            <div className="flex flex-wrap gap-1">
-              {b.leave_accrue === 'Yes' && <span className="pill text-[10px] bg-blue-50 text-blue-700 border border-blue-200">Accrual</span>}
-              {b.carried_forward === 'Yes' && (
-                <span className="pill text-[10px] bg-amber-50 text-amber-700 border border-amber-200">
-                  CF {b.carried_forward_percentage ?? 100}%{b.max_carried_forward_amount > 0 ? ` · max ${b.max_carried_forward_amount}d` : ''}
-                </span>
-              )}
-              {b.propotionate_on_joined_date === 'Yes' && <span className="pill text-[10px] bg-violet-50 text-violet-700 border border-violet-200">Prorated</span>}
-              {b.apply_beyond_current === 'Yes' && <span className="pill text-[10px] bg-blue-50 text-blue-700 border border-blue-200">Beyond balance</span>}
-              {b.has_rule && (
-                <span className="pill text-[10px]" style={{
-                  background: `color-mix(in srgb, ${color} 10%, transparent)`,
-                  color, border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
-                }}>✦ Rule</span>
-              )}
             </div>
           )}
+        </div>
+      )}
 
-          {/* Usage bar */}
-          <div>
-            <div className="h-1 rounded-full overflow-hidden flex" style={{ background: 'var(--surface-hover)' }}>
-              <div style={{ width: `${usedPct}%`, background: color, height: '100%' }} />
-              <div style={{ width: `${pendPct}%`, background: color, opacity: 0.35, height: '100%' }} />
+      {/* ── Leave Entitlement Detail ── */}
+      <DetailSlideOver
+        open={!!balanceDetail}
+        title={balanceDetail?.name ?? ''}
+        subtitle={balanceDetail?.period_name}
+        onClose={() => setBalanceDetail(null)}
+      >
+        {balanceDetail && (() => {
+          const b = balanceDetail;
+          const color = b.leave_color || '#185FA5';
+          const allocated = Number(b.allocated ?? 0);
+          const used = Number(b.used ?? 0);
+          const pending = Number(b.pending ?? 0);
+          const remaining = Number(b.balance ?? 0);
+          const consumed = Math.max(0, used + pending);
+          const consumedPct = allocated > 0 ? Math.min(100, (consumed / allocated) * 100) : 0;
+          const usedPct     = allocated > 0 ? Math.min(100, (used    / allocated) * 100) : 0;
+          const isNeg = remaining < 0;
+          const fmt = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 1 });
+          const row = (label: string, value: React.ReactNode) => (
+            <div key={label} className="flex items-center justify-between py-2.5 border-b border-[var(--border)] last:border-0 text-[13px]">
+              <span className="text-[var(--text-muted)]">{label}</span>
+              <span className="font-medium text-[var(--text-primary)] text-right">{value}</span>
             </div>
-            <div className="flex items-center gap-2.5 mt-1.5">
-              {[
-                { label: 'Approved',  bg: color,                       opacity: 1   },
-                { label: 'Pending',   bg: color,                       opacity: 0.4 },
-                { label: 'Remaining', bg: 'var(--border)',              opacity: 1   },
-              ].map(({ label, bg, opacity }) => (
-                <div key={label} className="flex items-center gap-1">
-                  <div className="w-1.5 h-1.5 rounded-full" style={{ background: bg, opacity }} />
-                  <span className="text-[10px] text-[var(--text-muted)]">{label}</span>
+          );
+          return (
+            <div className="space-y-5">
+              {/* Progress bar — three zones matching the donut */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5 text-[12px]">
+                  <span className="text-[var(--text-muted)]">Usage</span>
+                  <span className="font-semibold" style={{ color }}>{consumedPct.toFixed(consumedPct % 1 ? 1 : 0)}% used</span>
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
+                <div className="h-2.5 rounded-full overflow-hidden flex" style={{ background: '#cbd5e1' }}>
+                  {/* Used/approved — full leave color */}
+                  {usedPct > 0 && (
+                    <div className="h-full rounded-l-full" style={{ width: `${usedPct}%`, background: color, flexShrink: 0 }} />
+                  )}
+                  {/* Pending — lighter tint */}
+                  {(consumedPct - usedPct) > 0 && (
+                    <div className="h-full" style={{ width: `${consumedPct - usedPct}%`, background: `color-mix(in srgb, ${color} 35%, #ffffff)`, flexShrink: 0 }} />
+                  )}
+                  {/* Remaining — gray background shows through */}
+                </div>
+                <div className="flex items-center gap-3 mt-2 text-[11px] text-[var(--text-muted)]">
+                  <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full" style={{ background: color }} />Approved</span>
+                  <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full" style={{ background: `color-mix(in srgb, ${color} 35%, #ffffff)` }} />Pending</span>
+                  <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-[#cbd5e1]" />Remaining</span>
+                </div>
+              </div>
 
-      {/* Stats footer */}
-      <div className="grid grid-cols-3 border-t" style={{ borderColor: 'var(--border)' }}>
-        {[
-          { label: 'Allocated', value: b.allocated ?? 0, color: 'var(--text-secondary)' },
-          { label: 'Approved',  value: b.used ?? 0,      color: 'var(--success)'        },
-          { label: 'Pending',   value: b.pending ?? 0,   color: '#d97706'               },
-        ].map(({ label, value, color: clr }, si) => (
-          <div key={label} className={`py-2.5 text-center${si > 0 ? ' border-l' : ''}`}
-            style={{ borderColor: 'var(--border)' }}>
-            <p className="text-[18px] font-bold tabular-nums leading-none" style={{ color: clr }}>{value}</p>
-            <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mt-1">{label}</p>
-          </div>
-        ))}
-      </div>
+              {/* Balance stats */}
+              <div className="rounded-[12px] border border-[var(--border)] overflow-hidden">
+                <div className="px-4 py-2 bg-[var(--bg)] border-b border-[var(--border)]">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Balance</p>
+                </div>
+                <div className="px-4 divide-y divide-[var(--border)]">
+                  {row('Allocated', `${fmt(allocated)} days`)}
+                  {row('Approved', `${fmt(used)} days`)}
+                  {row('Pending', `${fmt(pending)} days`)}
+                  {row('Remaining', <span style={{ color: isNeg ? 'var(--danger)' : color, fontWeight: 600 }}>{fmt(remaining)} days</span>)}
+                  {Number(b.carry_forward_days ?? 0) > 0 && row('Carried forward', `${fmt(Number(b.carry_forward_days))} days`)}
+                </div>
+              </div>
 
-      {/* Carry-forward */}
-      {b.carry_forward_days > 0 && (
-        <div className="flex items-center justify-between px-3.5 py-2 border-t text-[11px]"
-          style={{ borderColor: 'var(--border)' }}>
-          <span className="text-[var(--text-muted)]">Carried forward</span>
-          <span className="font-semibold text-[var(--text-primary)]">
-            {b.carry_forward_days} day{b.carry_forward_days !== 1 ? 's' : ''}
-          </span>
-        </div>
-      )}
+              {/* Tags / feature pills */}
+              {(() => {
+                const tags = [
+                  b.leave_accrue === 'Yes' ? 'Accrual' : null,
+                  b.carried_forward === 'Yes'
+                    ? `CF ${b.carried_forward_percentage ?? 100}%${Number(b.max_carried_forward_amount ?? 0) > 0 ? ` / max ${b.max_carried_forward_amount}d` : ''}`
+                    : null,
+                  b.propotionate_on_joined_date === 'Yes' ? 'Prorated' : null,
+                  b.apply_beyond_current === 'Yes' ? 'Beyond balance' : null,
+                  b.supervisor_leave_assign === 'Yes' ? 'Supervisor assign' : null,
+                  b.has_rule ? 'Rule applied' : null,
+                ].filter(Boolean);
+                if (!tags.length) return null;
+                return (
+                  <div className="flex flex-wrap gap-1.5">
+                    {tags.map(tag => (
+                      <span
+                        key={String(tag)}
+                        className="rounded-full px-2.5 py-[3px] text-[11px] font-medium"
+                        style={{ border: `2px solid color-mix(in srgb, ${color} 40%, transparent)`, color }}
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                );
+              })()}
 
-      {/* Allowance block */}
-      {b.allowance_enabled && (b.allowance_amount ?? 0) > 0 ? (
-        <div className="mx-3.5 mb-3.5 mt-1 rounded-[10px] border border-emerald-200/60 bg-emerald-50/50 px-3 py-2.5">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 mb-2">Leave allowance</p>
-          <div className="flex justify-between text-[12px]">
-            <span className="text-[var(--text-muted)]">Gross</span>
-            <span className="tabular-nums">{Number(b.allowance_gross ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-          </div>
-          {(b.allowance_tax ?? 0) > 0 && (
-            <div className="flex justify-between text-[12px]">
-              <span className="text-red-500">Tax deducted</span>
-              <span className="tabular-nums text-red-600">({Number(b.allowance_tax).toLocaleString(undefined, { minimumFractionDigits: 2 })})</span>
+              {/* Policy */}
+              <div className="rounded-[12px] border border-[var(--border)] overflow-hidden">
+                <div className="px-4 py-2 bg-[var(--bg)] border-b border-[var(--border)]">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Policy</p>
+                </div>
+                <div className="px-4 divide-y divide-[var(--border)]">
+                  {row('Carry-forward', b.carried_forward === 'Yes'
+                    ? `${b.carried_forward_percentage ?? 100}%${Number(b.max_carried_forward_amount ?? 0) > 0 ? ` / max ${b.max_carried_forward_amount}d` : ''}`
+                    : 'No')}
+                  {row('Accrual', b.leave_accrue === 'Yes' ? 'Yes' : 'No')}
+                  {row('Prorated on join date', b.propotionate_on_joined_date === 'Yes' ? 'Yes' : 'No')}
+                  {row('Can go beyond balance', b.apply_beyond_current === 'Yes' ? 'Yes' : 'No')}
+                  {row('Supervisor can assign', b.supervisor_leave_assign === 'Yes' ? 'Yes' : 'No')}
+                  {b.has_rule && row('Rule applied', 'Yes')}
+                </div>
+              </div>
+
+              {/* Allowance */}
+              {b.allowance_enabled && (
+                <div className="rounded-[12px] border border-[var(--border)] overflow-hidden">
+                  <div className="px-4 py-2 bg-[var(--bg)] border-b border-[var(--border)]">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Leave Allowance</p>
+                  </div>
+                  <div className="px-4 divide-y divide-[var(--border)]">
+                    {row('Gross', Number(b.allowance_gross ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 }))}
+                    {Number(b.allowance_tax ?? 0) > 0 && row('Tax deducted', `(${Number(b.allowance_tax).toLocaleString(undefined, { minimumFractionDigits: 2 })})`)}
+                    {row('Net payout', <span style={{ fontWeight: 600 }}>{Number(b.allowance_amount ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>)}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-          <div className="flex justify-between text-[13px] font-bold border-t border-emerald-200/60 pt-2 mt-1.5">
-            <span className="text-emerald-700">Net payout</span>
-            <span className="tabular-nums text-emerald-700">{Number(b.allowance_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-          </div>
-        </div>
-      ) : b.allowance_enabled ? (
-        <div className="px-3.5 pb-3">
-          <span className="pill text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-100">Allowance eligible</span>
-        </div>
-      ) : null}
-    </div>
-  );
-})}
-            </div>
-            </div>
-          )}
-        </div>
-      )}
+          );
+        })()}
+      </DetailSlideOver>
 
       {/* ── All other tabs (leave list) ── */}
       {activeTab !== 'Leave Entitlement' && (
@@ -574,11 +695,11 @@ const fetchSubordinateEmployees = useCallback(() => {
             searchPlaceholder="Search leaves..."
             searchWidth="sm:w-[280px]"
             actions={
-              activeTab === 'Subordinate Leave' && can(PERMISSIONS.VIEW_SUBORDINATE_LEAVE) ? (
+              activeTab === 'Subordinate Leave' ? (
                 <button className="primary-btn shrink-0" onClick={() => { setShowAssign(true); setAssignForm({ employee: '', leave_type: '', date_start: '', date_end: '', details: '' }); }}>
                   Assign Leave
                 </button>
-              ) : (activeTab === 'All my Leave' || activeTab === 'Pending Leave') && can(PERMISSIONS.APPLY_LEAVE) ? (
+              ) : (activeTab === 'All my Leave' || activeTab === 'Pending Leave') ? (
                 <button className="primary-btn shrink-0" onClick={() => setShowApply(true)}>
                   Apply Leave
                 </button>
@@ -639,26 +760,21 @@ const fetchSubordinateEmployees = useCallback(() => {
                     <td className="td text-right">
                       <div className="flex items-center justify-end gap-1">
                         <button className="action-btn text-[var(--success)]" title="View" onClick={() => setViewRow(row)}><Eye size={14} /></button>
-                        {/* Retry GL */}
                         {isAdmin && row.allowance_status === 'Failed GL Posting' && (
                           <button className="action-btn text-red-600" title="Retry GL Posting" onClick={() => retryLeaveGL(row.id)}><RefreshCw size={14} /></button>
                         )}
-                        {/* Submit */}
-                        {can(PERMISSIONS.APPLY_LEAVE) && ['Draft', 'Pending'].includes(row.status) && (
+                        {['Draft', 'Pending'].includes(row.status) && (
                           <button className="action-btn text-[var(--accent)]" title="Submit for Approval" onClick={() => submitLeave(row.id)}>
                             <SendHorizonal size={14} />
                           </button>
                         )}
-                        {/* Edit */}
-                        {can(PERMISSIONS.APPLY_LEAVE) && ['Pending', 'Draft'].includes(row.status) && (
+                        {['Pending', 'Draft'].includes(row.status) && (
                           <button className="action-btn text-[var(--warning)]" title="Edit" onClick={() => openEdit(row)}><FileEdit size={14} /></button>
                         )}
-                        {/* Delete */}
-                        {can(PERMISSIONS.APPLY_LEAVE) && ['Pending', 'Draft'].includes(row.status) && (
+                        {['Pending', 'Draft'].includes(row.status) && (
                           <button className="action-btn text-[var(--danger)]" title="Delete" onClick={() => deleteLeave(row.id)}><Trash2 size={14} /></button>
                         )}
-                        {/* Cancel */}
-                        {can(PERMISSIONS.CANCEL_LEAVE) && row.status === 'Approved' && (
+                        {row.status === 'Approved' && (
                           <button className="action-btn text-[var(--warning)]" title="Cancel Leave" onClick={() => cancelLeave(row.id)}><XCircle size={14} /></button>
                         )}
                       </div>
@@ -717,7 +833,6 @@ const fetchSubordinateEmployees = useCallback(() => {
               </>);
             })()}
 
-            {/* ── Live duration preview ── */}
             {applyForm.date_start && applyForm.date_end && (() => {
               const start = new Date(applyForm.date_start + 'T00:00:00');
               const end   = new Date(applyForm.date_end   + 'T00:00:00');
@@ -728,13 +843,10 @@ const fetchSubordinateEmployees = useCallback(() => {
               );
               return (
                 <div className="col-span-full rounded-[10px] border border-[var(--border)] bg-[var(--bg)] px-4 py-3 space-y-2">
-                  {/* Period + days summary */}
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[12px] font-semibold text-[var(--text-primary)]">
-                        {previewDays !== null
-                          ? `${previewDays} working day${previewDays !== 1 ? 's' : ''}`
-                          : '—'}
+                        {previewDays !== null ? `${previewDays} working day${previewDays !== 1 ? 's' : ''}` : '—'}
                       </span>
                       {previewHolidays.length > 0 && (
                         <span className="text-[11px] text-amber-600 font-medium">
@@ -742,12 +854,8 @@ const fetchSubordinateEmployees = useCallback(() => {
                         </span>
                       )}
                     </div>
-                    {previewPeriod && (
-                      <span className="pill pill-success text-[11px]">{previewPeriod.name}</span>
-                    )}
+                    {previewPeriod && <span className="pill pill-success text-[11px]">{previewPeriod.name}</span>}
                   </div>
-
-                  {/* Holiday list */}
                   {previewHolidays.length > 0 && (
                     <div className="pt-1 border-t border-[var(--border-light)]">
                       <p className="text-[11px] font-semibold text-amber-600 uppercase tracking-wide mb-1.5">Public holidays in this range</p>
@@ -766,7 +874,9 @@ const fetchSubordinateEmployees = useCallback(() => {
             })()}
 
             <FormField label="Details" className="col-span-full">
-              <textarea className={inputClass} rows={3} value={applyForm.details} onChange={e => setApplyForm(p => ({ ...p, details: e.target.value }))} placeholder="Reason for leave (optional)" />
+              <textarea className={inputClass} rows={3} value={applyForm.details}
+                onChange={e => setApplyForm(p => ({ ...p, details: e.target.value }))}
+                placeholder="Reason for leave (optional)" />
             </FormField>
           </div>
         </FormModal>
@@ -1031,7 +1141,7 @@ const fetchSubordinateEmployees = useCallback(() => {
             })()}
 
             <FormField label="Details" className="col-span-full">
-              <textarea className={inputClass} rows={3} value={editForm.details}
+              <CountedTextarea className={inputClass} rows={3} maxChars={1000} value={editForm.details}
                 onChange={e => setEditForm(p => ({ ...p, details: e.target.value }))}
                 placeholder="Reason for leave (optional)" />
             </FormField>
@@ -1110,7 +1220,7 @@ const fetchSubordinateEmployees = useCallback(() => {
             })()}
 
             <FormField label="Details" className="col-span-full">
-              <textarea className={inputClass} rows={3} value={assignForm.details}
+              <CountedTextarea className={inputClass} rows={3} maxChars={1000} value={assignForm.details}
                 onChange={e => setAssignForm(p => ({ ...p, details: e.target.value }))}
                 placeholder="Reason / notes (optional)" />
             </FormField>
@@ -1132,7 +1242,7 @@ const fetchSubordinateEmployees = useCallback(() => {
             >
               <RefreshCw size={14} className="mr-1.5 inline" />Retry GL Posting
             </button>
-          ) : can(PERMISSIONS.APPROVE_LEAVE) && viewRow.status === 'Pending Approval' && String(viewRow?.employee) !== String(currentUser?.employeeId) ? (
+          ) : viewRow.status === 'Pending Approval' && String(viewRow?.employee) !== String(currentUser?.employeeId) ? (
             <>
               <button
                 className="secondary-btn shadow-sm text-[var(--danger)] border-[var(--danger)]/40 hover:bg-[var(--danger)]/5"
@@ -1150,25 +1260,74 @@ const fetchSubordinateEmployees = useCallback(() => {
           ) : undefined
         ) : undefined}
       >
-        {viewRow && (
+        {viewRow && (() => {
+          const accent = viewRow.leave_color || '#185FA5';
+          const dayCount = Number(viewRow.day_count ?? 0);
+          return (
           <div className="space-y-5">
-            <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-[13px]">
-              {[
-                ['Employee',   viewRow.employee_name || viewRow.employee],
-                ['Leave Type', viewRow.leave_type_name || viewRow.leave_type],
-                ['Period',     viewRow.period_name || '—'],
-                ['Start Date', fmtDate(viewRow.date_start)],
-                ['End Date',   fmtDate(viewRow.date_end)],
-                ['Days',       viewRow.day_count ?? '—'],
-                ['Status',     viewRow.status],
-                ['Details',    viewRow.details || '—'],
-              ].map(([label, val]) => (
-                <div key={label as string}>
-                  <div className="text-[var(--text-muted)] text-[11px] font-semibold uppercase tracking-wide mb-0.5">{label}</div>
-                  <div className="text-[var(--text-primary)] font-medium break-words">{val}</div>
+
+            {/* Banner — leave type + date range + day count */}
+            <div className="rounded-xl px-5 py-4 flex items-center justify-between gap-4"
+              style={{ background: `color-mix(in srgb, ${accent} 8%, transparent)`, border: `1px solid color-mix(in srgb, ${accent} 22%, transparent)` }}>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: accent }} />
+                  <span className="text-[14px] font-bold text-[var(--text-primary)] truncate">
+                    {viewRow.leave_type_name || viewRow.leave_type || 'Leave'}
+                  </span>
                 </div>
-              ))}
+                <p className="text-[12px] text-[var(--text-muted)] ml-[18px]">
+                  {fmtDate(viewRow.date_start)} → {fmtDate(viewRow.date_end)}
+                  {viewRow.period_name && <span className="ml-2 font-medium" style={{ color: accent }}>· {viewRow.period_name}</span>}
+                </p>
+              </div>
+              <div className="text-right shrink-0">
+                <p className="text-[28px] font-bold tabular-nums leading-none" style={{ color: accent }}>{dayCount}</p>
+                <p className="text-[11px] font-semibold mt-0.5" style={{ color: accent }}>working day{dayCount !== 1 ? 's' : ''}</p>
+              </div>
             </div>
+
+            {/* Status + Employee */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-[12px] border border-[var(--border)] px-4 py-3">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-2">Status</p>
+                <StatusPill status={viewRow.status} />
+              </div>
+              <div className="rounded-[12px] border border-[var(--border)] px-4 py-3">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1.5">Employee</p>
+                <p className="text-[13px] font-semibold text-[var(--text-primary)] truncate">{viewRow.employee_name || viewRow.employee || '—'}</p>
+              </div>
+            </div>
+
+            {/* Leave details card */}
+            <div className="rounded-[12px] border border-[var(--border)] overflow-hidden">
+              <div className="px-4 py-2 bg-[var(--bg)] border-b border-[var(--border)]">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Details</p>
+              </div>
+              <div className="px-4 divide-y divide-[var(--border)]">
+                {([
+                  ['Start Date',    fmtDate(viewRow.date_start)],
+                  ['End Date',      fmtDate(viewRow.date_end)],
+                  ['Working Days',  `${dayCount} day${dayCount !== 1 ? 's' : ''}`],
+                  ['Period',        viewRow.period_name || '—'],
+                ] as [string, string][]).map(([label, val]) => (
+                  <div key={label} className="flex items-start justify-between py-2.5 text-[13px] gap-4">
+                    <span className="text-[var(--text-muted)] shrink-0">{label}</span>
+                    <span className="font-medium text-[var(--text-primary)] text-right">{val}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Notes */}
+            {viewRow.details && (
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)] mb-2">Notes</p>
+                <div className="rounded-xl bg-[var(--bg)] border border-[var(--border)] px-4 py-3 text-[13px] text-[var(--text-secondary)] leading-relaxed">
+                  {viewRow.details}
+                </div>
+              </div>
+            )}
 
             {/* Allowance breakdown */}
             {viewRow.leave_type_allowance_enabled === 'Yes' && Number(viewRow.allowance_basic) > 0 && (
@@ -1224,7 +1383,8 @@ const fetchSubordinateEmployees = useCallback(() => {
               </div>
             )}
           </div>
-        )}
+          );
+        })()}
       </DetailSlideOver>
 
       {/* ── Reject Modal ── */}
@@ -1239,7 +1399,7 @@ const fetchSubordinateEmployees = useCallback(() => {
           scrollable={false}
         >
           <FormField label="Rejection Reason">
-            <textarea className={inputClass} rows={3} value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Optional reason…" />
+            <CountedTextarea className={inputClass} rows={3} maxChars={500} value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Optional reason…" />
           </FormField>
         </FormModal>
       )}

@@ -9,8 +9,10 @@ import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import api from '../../lib/api';
+import { useCan } from '@/hooks/useCan';
 
 export function Company() {
+  const { can } = useCan();
   const [activeTab, setActiveTab] = useState('Company Structure');
   const [searchQuery, setSearchQuery] = useState('');
   const [showFilters, setShowFilters] = useState(false);
@@ -159,11 +161,13 @@ export function Company() {
             filterBar={filterBar}
             actions={
               <>
-                <button onClick={handleAddClick} className="primary-btn shrink-0">
-                  <span className="hidden sm:inline">Add New</span>
-                  <span className="sm:hidden">Add</span>
-                  <Plus className="w-[14px] h-[14px]" />
-                </button>
+                {can('create_company_structure') && (
+                  <button onClick={handleAddClick} className="primary-btn shrink-0">
+                    <span className="hidden sm:inline">Add New</span>
+                    <span className="sm:hidden">Add</span>
+                    <Plus className="w-[14px] h-[14px]" />
+                  </button>
+                )}
                 <button
                   onClick={() => setShowFilters(!showFilters)}
                   className={`secondary-btn shrink-0 ${showFilters ? 'ring-2 ring-[var(--accent)] border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-dim)]' : ''}`}
@@ -215,12 +219,16 @@ export function Company() {
                       <td className="td">{row.address || '—'}</td>
                       <td className="td">
                         <div className="flex items-center justify-end gap-1">
-                          <button onClick={() => handleEditClick(row)} className="action-btn text-[var(--warning)]" title="Edit">
-                            <FileEdit size={14} />
-                          </button>
-                          <button onClick={() => handleDeleteClick(row)} className="action-btn text-[var(--danger)]" title="Delete">
-                            <Trash2 size={14} />
-                          </button>
+                          {can('edit_company_structure') && (
+                            <button onClick={() => handleEditClick(row)} className="action-btn text-[var(--warning)]" title="Edit">
+                              <FileEdit size={14} />
+                            </button>
+                          )}
+                          {can('delete_company_structure') && (
+                            <button onClick={() => handleDeleteClick(row)} className="action-btn text-[var(--danger)]" title="Delete">
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </motion.tr>

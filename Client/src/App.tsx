@@ -1,11 +1,14 @@
 import React, { useState, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
+import ProtectedRoute from './components/ProtectedRoute';
 import { LeaveManagement } from './components/LeaveManagement';
 import { LeaveSetup } from './components/LeaveSetup';
 import { LeaveCalendar } from './components/LeaveCalendar';
 import { Dashboard } from './components/Dashboard';
 import { Employees } from './components/Employees';
+import { SelfOnboarding } from './components/SelfOnboarding';
+import { OnboardingPortal } from './components/OnboardingPortal';
 import { Company } from './components/Company';
 import { Documents } from './components/Document';
 import { Users } from './components/Users';
@@ -22,21 +25,34 @@ import { NotificationSettings } from './components/NotificationSettings';
 import { AuditLogs } from './components/AuditLogs';
 import { CentralApproval } from './components/CentralApproval';
 import { PersonalMedical, AdminMedical } from './components/Medical';
+import { AdminTraining, PersonalTraining } from './components/Training';
 import { PersonalDocuments } from './components/PersonalDocuments';
 import { PersonalInfo } from './components/PersonalInfo';
+import { StaffOrganogram } from './components/StaffOrganogram';
 import { Help } from './components/Help';
 import { Recruitment } from './components/Recruitment';
+import { ManagePerformance } from './components/ManagePerformance';
+import { PersonalPerformance } from './components/PersonalPerformance';
 import { CareersPortal } from './components/CareersPortal';
 import { SchedulingPortal } from './components/SchedulingPortal';
+import { AdminAttendance, MyAttendance } from './components/Attendance';
+import { AttendanceKiosk } from './components/AttendanceKiosk';
 
 import { AppUser } from '../types/permissions';
 import { logout as authLogout, getCurrentUser, onUserChange } from '@/lib/auth';
+import { canAccessNav } from '@/lib/permissions';
+import { moduleStore } from '@/lib/moduleState';
+import { initControlSettings } from '@/lib/settings';
+import { applyTheme } from '@/lib/theme';
+import api from '@/lib/api';
 
 function loadCurrentUser(): AppUser | null {
   try {
     const u = getCurrentUser();
-    if (!u || u.name.includes('undefined')) {
-      sessionStorage.removeItem('current_user');
+    if (!u || !u.name || u.name.includes('undefined')) {
+      // Clear from localStorage (current storage backend) and legacy sessionStorage keys
+      localStorage.removeItem('hr_current_user');
+      localStorage.removeItem('hr_access_token');
       return null;
     }
     return u;
@@ -45,8 +61,19 @@ function loadCurrentUser(): AppUser | null {
   }
 }
 
-function loadActiveView(): string {
-  return sessionStorage.getItem('activeView') || 'Dashboard';
+// Users without Overview (Dashboard) access land on Modules instead.
+function landingView(user: AppUser | null): string {
+  return user && !canAccessNav(user, 'Dashboard') ? 'Modules' : 'Dashboard';
+}
+
+function loadActiveView(user: AppUser | null): string {
+  const stored = sessionStorage.getItem('activeView');
+  if (stored) {
+    // Don't strand a user on the Overview page if they can't access it
+    if (stored === 'Dashboard' && user && !canAccessNav(user, 'Dashboard')) return 'Modules';
+    return stored;
+  }
+  return landingView(user);
 }
 
 export default function App() {
@@ -56,8 +83,14 @@ export default function App() {
   if (window.location.pathname.startsWith('/schedule')) {
     return <SchedulingPortal />;
   }
+  if (window.location.pathname.startsWith('/kiosk')) {
+    return <AttendanceKiosk />;
+  }
+  if (window.location.pathname.startsWith('/onboarding')) {
+    return <OnboardingPortal />;
+  }
   const [currentUser, setCurrentUser] = useState<AppUser | null>(loadCurrentUser);
-  const [activeView, setActiveView] = useState<string>(loadActiveView);
+  const [activeView, setActiveView] = useState<string>(() => loadActiveView(currentUser));
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const navigate = (view: string) => {
@@ -74,45 +107,71 @@ export default function App() {
 
   React.useEffect(() => onUserChange(freshUser => setCurrentUser(freshUser)), []);
 
+  // Never leave a user stranded on the Overview page they can't access
+  React.useEffect(() => {
+    if (currentUser && activeView === 'Dashboard' && !canAccessNav(currentUser, 'Dashboard')) {
+      navigate('Modules');
+    }
+  }, [currentUser, activeView]);
+
+  // main.tsx pre-loads module settings before first render for session-restore.
+  // For fresh logins (user was on the login screen), load them here after login.
   const handleLogin = useCallback((user: AppUser) => {
     setCurrentUser(user);
+    applyTheme(user.theme);
+    navigate(landingView(user));
+    api.get('/settings/modules')
+      .then(r => moduleStore.init(r.data?.data?.disabled ?? []))
+      .catch(() => {/* keep default on failure */});
+    void initControlSettings();
   }, []);
 
   const handleLogout = useCallback(() => {
     authLogout();
+    applyTheme('light');   // reset to light so the login screen isn't themed for the next user
     sessionStorage.removeItem('activeView');
     setCurrentUser(null);
   }, []);
 
   const renderView = () => {
+    // All routes now require permission check via ProtectedRoute
+    // If user lacks permission, they see AccessDenied component
     switch (activeView) {
-      case 'Dashboard': return <Dashboard />;
-      case 'Modules': return <Modules onNavigate={navigate} />;
-      case 'Employees': return <Employees />;
-      case 'Company': return <Company />;
-      case 'Documents':         return <Documents />;
-      case 'PersonalDocuments': return <PersonalDocuments />;
-      case 'LeaveManagement':
-      case 'Leave': return <LeaveManagement />;
-      case 'LeaveSetup': return <LeaveSetup />;
-      case 'LeaveCalendar': return <LeaveCalendar />;
-      case 'Salary': return <Salary />;
-      case 'Payroll': return <Payroll />;
-      case 'Users': return <Users />;
-      case 'System': return <System />;
-      case 'Settings': return <Settings />;
-      case 'AuditLogs': return <AuditLogs />;
-      case 'LeaveSettings': return <LeaveSettings />;
-      case 'NotificationSettings': return <NotificationSettings />;
-      case 'AdminReports': return <AdminReports />;
-      case 'UserReports': return <UserReports />;
-      case 'CentralApproval': return <CentralApproval onNavigate={navigate} />;
-      case 'PersonalInfo':    return <PersonalInfo />;
-      case 'PersonalMedical': return <PersonalMedical />;
-      case 'AdminMedical':    return <AdminMedical />;
-      case 'Help':            return <Help />;
-      case 'Recruitment':     return <Recruitment onNavigate={navigate} />;
-      default: return <Dashboard />;
+      case 'Dashboard': return <ProtectedRoute user={currentUser} navKey="Dashboard"><Dashboard /></ProtectedRoute>;
+      case 'Modules': return <ProtectedRoute user={currentUser} navKey="Modules"><Modules onNavigate={navigate} /></ProtectedRoute>;
+      case 'Employees': return <ProtectedRoute user={currentUser} navKey="Employees"><Employees /></ProtectedRoute>;
+      case 'SelfOnboarding': return <ProtectedRoute user={currentUser} navKey="SelfOnboarding"><SelfOnboarding /></ProtectedRoute>;
+      case 'Company': return <ProtectedRoute user={currentUser} navKey="Company"><Company /></ProtectedRoute>;
+      case 'Documents':         return <ProtectedRoute user={currentUser} navKey="Documents"><Documents /></ProtectedRoute>;
+      case 'PersonalDocuments': return <ProtectedRoute user={currentUser} navKey="PersonalDocuments"><PersonalDocuments /></ProtectedRoute>;
+      case 'LeaveManagement': return <ProtectedRoute user={currentUser} navKey="LeaveManagement"><LeaveManagement /></ProtectedRoute>;
+      case 'Leave': return <ProtectedRoute user={currentUser} navKey="Leave"><LeaveManagement /></ProtectedRoute>;
+      case 'LeaveSetup': return <ProtectedRoute user={currentUser} navKey="LeaveSetup"><LeaveSetup /></ProtectedRoute>;
+      case 'LeaveCalendar': return <ProtectedRoute user={currentUser} navKey="LeaveCalendar"><LeaveCalendar /></ProtectedRoute>;
+      case 'Salary': return <ProtectedRoute user={currentUser} navKey="Salary"><Salary /></ProtectedRoute>;
+      case 'Payroll': return <ProtectedRoute user={currentUser} navKey="Payroll"><Payroll /></ProtectedRoute>;
+      case 'Users': return <ProtectedRoute user={currentUser} navKey="Users"><Users /></ProtectedRoute>;
+      case 'System': return <ProtectedRoute user={currentUser} navKey="System"><System /></ProtectedRoute>;
+      case 'Settings': return <ProtectedRoute user={currentUser} navKey="Settings"><Settings /></ProtectedRoute>;
+      case 'AuditLogs': return <ProtectedRoute user={currentUser} navKey="AuditLogs"><AuditLogs /></ProtectedRoute>;
+      case 'LeaveSettings': return <ProtectedRoute user={currentUser} navKey="Settings"><LeaveSettings /></ProtectedRoute>;
+      case 'NotificationSettings': return <ProtectedRoute user={currentUser} navKey="Settings"><NotificationSettings /></ProtectedRoute>;
+      case 'AdminReports': return <ProtectedRoute user={currentUser} navKey="AdminReports"><AdminReports /></ProtectedRoute>;
+      case 'UserReports': return <ProtectedRoute user={currentUser} navKey="UserReports"><UserReports /></ProtectedRoute>;
+      case 'CentralApproval': return <ProtectedRoute user={currentUser} navKey="CentralApproval"><CentralApproval onNavigate={navigate} /></ProtectedRoute>;
+      case 'PersonalInfo':    return <ProtectedRoute user={currentUser} navKey="PersonalInfo"><PersonalInfo /></ProtectedRoute>;
+      case 'StaffOrganogram': return <ProtectedRoute user={currentUser} navKey="StaffOrganogram"><StaffOrganogram /></ProtectedRoute>;
+      case 'PersonalMedical': return <ProtectedRoute user={currentUser} navKey="Medical"><PersonalMedical /></ProtectedRoute>;
+      case 'AdminMedical':    return <ProtectedRoute user={currentUser} navKey="AdminMedical"><AdminMedical /></ProtectedRoute>;
+      case 'AdminTraining':    return <ProtectedRoute user={currentUser} navKey="AdminTraining"><AdminTraining /></ProtectedRoute>;
+      case 'PersonalTraining': return <ProtectedRoute user={currentUser} navKey="PersonalTraining"><PersonalTraining /></ProtectedRoute>;
+      case 'AdminAttendance':  return <ProtectedRoute user={currentUser} navKey="AdminAttendance"><AdminAttendance /></ProtectedRoute>;
+      case 'MyAttendance':     return <ProtectedRoute user={currentUser} navKey="Attendance"><MyAttendance /></ProtectedRoute>;
+      case 'Help':            return <ProtectedRoute user={currentUser} navKey="Help"><Help /></ProtectedRoute>;
+      case 'Recruitment':        return <ProtectedRoute user={currentUser} navKey="Recruitment"><Recruitment onNavigate={navigate} /></ProtectedRoute>;
+      case 'ManagePerformance':  return <ProtectedRoute user={currentUser} navKey="ManagePerformance"><ManagePerformance /></ProtectedRoute>;
+      case 'PersonalPerformance': return <ProtectedRoute user={currentUser} navKey="PersonalPerformance"><PersonalPerformance /></ProtectedRoute>;
+      default: return <ProtectedRoute user={currentUser} navKey="Dashboard"><Dashboard /></ProtectedRoute>;
     }
   };
 

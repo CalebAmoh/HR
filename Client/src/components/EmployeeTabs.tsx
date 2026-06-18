@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect, ReactNode, CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
+import { CountedTextarea } from './ui/CountedTextarea';
 import { AnimatePresence, motion } from 'motion/react';
 import { Plus, X, Search, Trash2, ChevronDown, Check, Loader2, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { ConfirmAlert } from './ConfirmAlert';
+import { useCan } from '@/hooks/useCan';
 
 type Option = { id: string; label: string };
 
@@ -129,7 +131,7 @@ export function Combobox({ options, value, onChange, placeholder = 'Select...', 
         type="button"
         disabled={disabled}
         onClick={() => { setOpen(o => !o); setQ(''); }}
-        className="w-full flex items-center justify-between px-3 py-2.5 bg-[#f8fafc] border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-[var(--accent)] transition-all font-medium text-left disabled:opacity-60"
+        className="w-full flex items-center justify-between px-3 py-2.5 bg-[var(--surface)] border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-[var(--accent)] transition-all font-medium text-left disabled:opacity-60"
       >
         <span className={selected ? 'text-slate-800' : 'text-slate-400'}>{selected?.label ?? placeholder}</span>
         <ChevronDown size={14} className="text-slate-400 shrink-0 ml-1" />
@@ -199,7 +201,7 @@ const PROFICIENCY: Option[] = [
 ];
 
 function inputCls() {
-  return 'w-full px-3 py-2.5 bg-[#f8fafc] border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-[var(--accent)] font-medium';
+  return 'w-full px-3 py-2.5 bg-[var(--surface)] border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-[var(--accent)] font-medium';
 }
 
 // ── Delete confirmation hook ──────────────────────────────────────────────────
@@ -225,16 +227,18 @@ function useDeleteConfirm() {
 }
 
 // ── Tab Shell ─────────────────────────────────────────────────────────────────
-function TabShell({ label, onAdd, search, onSearch, children, loading, isEmpty }: {
-  label: string; onAdd: () => void; search: string; onSearch: (v: string) => void;
+function TabShell({ label, onAdd, canManage = true, search, onSearch, children, loading, isEmpty }: {
+  label: string; onAdd: () => void; canManage?: boolean; search: string; onSearch: (v: string) => void;
   children: ReactNode; loading: boolean; isEmpty: boolean;
 }) {
   return (
     <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden flex flex-col min-h-[500px]">
       <div className="p-4 sm:p-5 border-b border-[var(--border)] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-        <button onClick={onAdd} className="primary-btn shrink-0">
-          <Plus className="w-[14px] h-[14px]" /> Add {label}
-        </button>
+        {canManage ? (
+          <button onClick={onAdd} className="primary-btn shrink-0">
+            <Plus className="w-[14px] h-[14px]" /> Add {label}
+          </button>
+        ) : <span />}
         <div className="search-wrap w-full sm:w-auto sm:min-w-[240px]">
           <Search size={14} />
           <input type="text" value={search} onChange={e => onSearch(e.target.value)} placeholder={`Search ${label.toLowerCase()}s...`} />
@@ -250,7 +254,7 @@ function TabShell({ label, onAdd, search, onSearch, children, loading, isEmpty }
             <Search size={24} className="text-slate-300" />
           </div>
           <p className="text-sm font-medium">No {label.toLowerCase()} records found.</p>
-          <button onClick={onAdd} className="text-[var(--accent)] text-sm font-semibold hover:underline">Create the first record</button>
+          {canManage && <button onClick={onAdd} className="text-[var(--accent)] text-sm font-semibold hover:underline">Create the first record</button>}
         </div>
       ) : (
         <div className="overflow-y-auto flex-1 overflow-x-auto">{children}</div>
@@ -276,7 +280,8 @@ function EmpCell({ emp }: { emp: any }) {
   );
 }
 
-function RowActions({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
+function RowActions({ onEdit, onDelete, canManage = true }: { onEdit: () => void; onDelete: () => void; canManage?: boolean }) {
+  if (!canManage) return <td className="td text-right text-[var(--text-muted)]">—</td>;
   return (
     <td className="td text-right">
       <div className="flex items-center justify-end gap-1">
@@ -290,7 +295,7 @@ function RowActions({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => 
 // ── 1. Skills ─────────────────────────────────────────────────────────────────
 const SKILL_BLANK = { employee_id: '', skill_id: '', details: '' };
 
-function SkillsTab({ employees }: { employees: any[] }) {
+function SkillsTab({ employees, canManage = true }: { employees: any[]; canManage?: boolean }) {
   const [rows, setRows]     = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen]     = useState(false);
@@ -355,7 +360,7 @@ function SkillsTab({ employees }: { employees: any[] }) {
 
   return (
     <>
-      <TabShell label="Skill" onAdd={openAdd} search={search} onSearch={setSearch} loading={loading} isEmpty={filtered.length === 0}>
+      <TabShell label="Skill" onAdd={openAdd} canManage={canManage} search={search} onSearch={setSearch} loading={loading} isEmpty={filtered.length === 0}>
         <table className="w-full border-collapse">
           <thead><tr>
             <th className="th">Employee</th><th className="th">Skill</th><th className="th">Details</th>
@@ -367,7 +372,7 @@ function SkillsTab({ employees }: { employees: any[] }) {
                 <EmpCell emp={r.employee} />
                 <td className="td text-[13px]">{r.skill?.label ?? '—'}</td>
                 <td className="td text-[13px] max-w-[200px] truncate">{r.details ?? '—'}</td>
-                <RowActions onEdit={() => openEdit(r)} onDelete={() => handleDelete(r)} />
+                <RowActions onEdit={() => openEdit(r)} onDelete={() => handleDelete(r)} canManage={canManage} />
               </motion.tr>
             ))}
           </tbody>
@@ -388,7 +393,7 @@ function SkillsTab({ employees }: { employees: any[] }) {
             </div>
             <div className="md:col-span-2">
               <FL>Details</FL>
-              <textarea value={form.details} onChange={e => setForm(f => ({ ...f, details: e.target.value }))} rows={3} placeholder="Add details..." className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-[#f8fafc] focus:outline-none focus:border-[var(--accent)] font-medium resize-none" />
+              <CountedTextarea value={form.details} onChange={e => setForm(f => ({ ...f, details: e.target.value }))} rows={3} maxChars={500} placeholder="Add details..." className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-[var(--surface)] focus:outline-none focus:border-[var(--accent)] font-medium resize-none" />
             </div>
           </Modal>
         )}
@@ -401,7 +406,7 @@ function SkillsTab({ employees }: { employees: any[] }) {
 // ── 2. Certifications ─────────────────────────────────────────────────────────
 const CERT_BLANK = { employee_id: '', certification_id: '', institute_id: '', date_start: '', date_end: '' };
 
-function CertificationsTab({ employees }: { employees: any[] }) {
+function CertificationsTab({ employees, canManage = true }: { employees: any[]; canManage?: boolean }) {
   const [rows, setRows]     = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen]     = useState(false);
@@ -473,7 +478,7 @@ function CertificationsTab({ employees }: { employees: any[] }) {
 
   return (
     <>
-      <TabShell label="Certification" onAdd={openAdd} search={search} onSearch={setSearch} loading={loading} isEmpty={filtered.length === 0}>
+      <TabShell label="Certification" onAdd={openAdd} canManage={canManage} search={search} onSearch={setSearch} loading={loading} isEmpty={filtered.length === 0}>
         <table className="w-full border-collapse">
           <thead><tr>
             <th className="th">Employee</th><th className="th">Certification</th>
@@ -488,7 +493,7 @@ function CertificationsTab({ employees }: { employees: any[] }) {
                 <td className="td text-[13px]">{instOpts.find(o => o.id === r.institute)?.label ?? r.institute ?? '—'}</td>
                 <td className="td text-[13px]">{fmtDate(r.date_start)}</td>
                 <td className="td text-[13px]">{fmtDate(r.date_end)}</td>
-                <RowActions onEdit={() => openEdit(r)} onDelete={() => handleDelete(r)} />
+                <RowActions onEdit={() => openEdit(r)} onDelete={() => handleDelete(r)} canManage={canManage} />
               </motion.tr>
             ))}
           </tbody>
@@ -530,7 +535,7 @@ function CertificationsTab({ employees }: { employees: any[] }) {
 // ── 3. Education ──────────────────────────────────────────────────────────────
 const EDU_BLANK = { employee_id: '', education_id: '', institute: '', date_start: '', date_end: '' };
 
-function EducationTab({ employees }: { employees: any[] }) {
+function EducationTab({ employees, canManage = true }: { employees: any[]; canManage?: boolean }) {
   const [rows, setRows]     = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen]     = useState(false);
@@ -599,7 +604,7 @@ function EducationTab({ employees }: { employees: any[] }) {
 
   return (
     <>
-      <TabShell label="Education" onAdd={openAdd} search={search} onSearch={setSearch} loading={loading} isEmpty={filtered.length === 0}>
+      <TabShell label="Education" onAdd={openAdd} canManage={canManage} search={search} onSearch={setSearch} loading={loading} isEmpty={filtered.length === 0}>
         <table className="w-full border-collapse">
           <thead><tr>
             <th className="th">Employee</th><th className="th">Institution Type</th>
@@ -614,7 +619,7 @@ function EducationTab({ employees }: { employees: any[] }) {
                 <td className="td text-[13px]">{r.institute ?? '—'}</td>
                 <td className="td text-[13px]">{fmtDate(r.date_start)}</td>
                 <td className="td text-[13px]">{fmtDate(r.date_end)}</td>
-                <RowActions onEdit={() => openEdit(r)} onDelete={() => handleDelete(r)} />
+                <RowActions onEdit={() => openEdit(r)} onDelete={() => handleDelete(r)} canManage={canManage} />
               </motion.tr>
             ))}
           </tbody>
@@ -656,7 +661,7 @@ function EducationTab({ employees }: { employees: any[] }) {
 // ── 4. Languages ──────────────────────────────────────────────────────────────
 const LANG_BLANK = { employee_id: '', language_id: '', reading: '', speaking: '', writing: '', understanding: '' };
 
-function LanguagesTab({ employees }: { employees: any[] }) {
+function LanguagesTab({ employees, canManage = true }: { employees: any[]; canManage?: boolean }) {
   const [rows, setRows]     = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen]     = useState(false);
@@ -720,7 +725,7 @@ function LanguagesTab({ employees }: { employees: any[] }) {
 
   return (
     <>
-      <TabShell label="Language" onAdd={openAdd} search={search} onSearch={setSearch} loading={loading} isEmpty={filtered.length === 0}>
+      <TabShell label="Language" onAdd={openAdd} canManage={canManage} search={search} onSearch={setSearch} loading={loading} isEmpty={filtered.length === 0}>
         <table className="w-full border-collapse">
           <thead><tr>
             <th className="th">Employee</th><th className="th">Language</th>
@@ -737,7 +742,7 @@ function LanguagesTab({ employees }: { employees: any[] }) {
                 <td className="td text-[13px]">{profLabel(r.speaking)}</td>
                 <td className="td text-[13px]">{profLabel(r.writing)}</td>
                 <td className="td text-[13px]">{profLabel(r.understanding)}</td>
-                <RowActions onEdit={() => openEdit(r)} onDelete={() => handleDelete(r)} />
+                <RowActions onEdit={() => openEdit(r)} onDelete={() => handleDelete(r)} canManage={canManage} />
               </motion.tr>
             ))}
           </tbody>
@@ -773,7 +778,7 @@ function LanguagesTab({ employees }: { employees: any[] }) {
 // ── 5. Dependents ─────────────────────────────────────────────────────────────
 const DEP_BLANK = { employee_id: '', name: '', gender: '', relationship: '', dob: '', place_of_birth: '', id_number: '' };
 
-function DependentsTab({ employees }: { employees: any[] }) {
+function DependentsTab({ employees, canManage = true }: { employees: any[]; canManage?: boolean }) {
   const [rows, setRows]     = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen]     = useState(false);
@@ -847,7 +852,7 @@ function DependentsTab({ employees }: { employees: any[] }) {
 
   return (
     <>
-      <TabShell label="Dependent" onAdd={openAdd} search={search} onSearch={setSearch} loading={loading} isEmpty={filtered.length === 0}>
+      <TabShell label="Dependent" onAdd={openAdd} canManage={canManage} search={search} onSearch={setSearch} loading={loading} isEmpty={filtered.length === 0}>
         <table className="w-full border-collapse">
           <thead><tr>
             <th className="th">Employee</th><th className="th">Name</th><th className="th">Gender</th>
@@ -863,7 +868,7 @@ function DependentsTab({ employees }: { employees: any[] }) {
                 <td className="td text-[13px]">{getLabel(relOpts, r.relationship)}</td>
                 <td className="td text-[13px]">{fmtDate(r.dob)}</td>
                 <td className="td text-[13px]">{r.place_of_birth ?? '—'}</td>
-                <RowActions onEdit={() => openEdit(r)} onDelete={() => handleDelete(r)} />
+                <RowActions onEdit={() => openEdit(r)} onDelete={() => handleDelete(r)} canManage={canManage} />
               </motion.tr>
             ))}
           </tbody>
@@ -913,7 +918,7 @@ function DependentsTab({ employees }: { employees: any[] }) {
 // ── 6. Emergency Contacts ─────────────────────────────────────────────────────
 const EC_BLANK = { employee_id: '', name: '', relationship: '', home_phone: '', work_phone: '', mobile_phone: '' };
 
-function EmergencyContactsTab({ employees }: { employees: any[] }) {
+function EmergencyContactsTab({ employees, canManage = true }: { employees: any[]; canManage?: boolean }) {
   const [rows, setRows]     = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen]     = useState(false);
@@ -979,7 +984,7 @@ function EmergencyContactsTab({ employees }: { employees: any[] }) {
 
   return (
     <>
-      <TabShell label="Emergency Contact" onAdd={openAdd} search={search} onSearch={setSearch} loading={loading} isEmpty={filtered.length === 0}>
+      <TabShell label="Emergency Contact" onAdd={openAdd} canManage={canManage} search={search} onSearch={setSearch} loading={loading} isEmpty={filtered.length === 0}>
         <table className="w-full border-collapse">
           <thead><tr>
             <th className="th">Employee</th><th className="th">Contact Name</th><th className="th">Relationship</th>
@@ -995,7 +1000,7 @@ function EmergencyContactsTab({ employees }: { employees: any[] }) {
                 <td className="td text-[13px]">{r.home_phone ?? '—'}</td>
                 <td className="td text-[13px]">{r.work_phone ?? '—'}</td>
                 <td className="td text-[13px]">{r.mobile_phone ?? '—'}</td>
-                <RowActions onEdit={() => openEdit(r)} onDelete={() => handleDelete(r)} />
+                <RowActions onEdit={() => openEdit(r)} onDelete={() => handleDelete(r)} canManage={canManage} />
               </motion.tr>
             ))}
           </tbody>
@@ -1040,11 +1045,12 @@ function EmergencyContactsTab({ employees }: { employees: any[] }) {
 
 // ── Main Export ───────────────────────────────────────────────────────────────
 export function RelationalTab({ activeTab, mockEmployees }: { activeTab: string; mockEmployees: any[] }) {
-  if (activeTab === 'Skills')             return <SkillsTab employees={mockEmployees} />;
-  if (activeTab === 'Certifications')     return <CertificationsTab employees={mockEmployees} />;
-  if (activeTab === 'Education')          return <EducationTab employees={mockEmployees} />;
-  if (activeTab === 'Languages')          return <LanguagesTab employees={mockEmployees} />;
-  if (activeTab === 'Dependents')         return <DependentsTab employees={mockEmployees} />;
-  if (activeTab === 'Emergency Contacts') return <EmergencyContactsTab employees={mockEmployees} />;
+  const { can } = useCan();
+  if (activeTab === 'Skills')             return <SkillsTab employees={mockEmployees} canManage={can('manage_skills')} />;
+  if (activeTab === 'Certifications')     return <CertificationsTab employees={mockEmployees} canManage={can('manage_certifications')} />;
+  if (activeTab === 'Education')          return <EducationTab employees={mockEmployees} canManage={can('manage_education')} />;
+  if (activeTab === 'Languages')          return <LanguagesTab employees={mockEmployees} canManage={can('manage_languages')} />;
+  if (activeTab === 'Dependents')         return <DependentsTab employees={mockEmployees} canManage={can('manage_dependents')} />;
+  if (activeTab === 'Emergency Contacts') return <EmergencyContactsTab employees={mockEmployees} canManage={can('manage_emergency_contacts')} />;
   return null;
 }

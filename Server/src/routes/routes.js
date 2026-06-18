@@ -1,19 +1,20 @@
 const express = require("express");
 const router = express.Router();
 const { checkToken, handleRefreshToken } = require("../middleware/authMiddleware");
-const { registerUser, loginUser, getAllUsers, getUserById, updateUser, changePassword, deactivateUser, activateUser,updateUserStatus,getMe } = require("../controllers/userController.js");
+const { registerUser, loginUser, getAllUsers, getUserById, updateUser, changePassword, deactivateUser, activateUser,updateUserStatus,getMe,updateUserTheme } = require("../controllers/userController.js");
 const { assignRoleToUser, revokeRoleFromUser, assignPermissionToUser, revokePermissionFromUser, getAllRoles, getAllPermissions, getUserAccess, addRole, deleteRole, updateRole, updateRoleStatus } = require('../controllers/rolePermissionController');
 const roleGuard       = require('../middleware/roleGuard');
 const permissionGuard = require('../middleware/permissionGuard');
 
 
 /* controllers */
-const { uploadDocument, downloadDocument, getMySharedDocs, getMyPersonalDocs, getDocumentSettings, updateDocumentSettings, getCompanyDocs, createCompanyDoc, updateCompanyDoc, deleteCompanyDoc } = require('../controllers/documentController');
-const { upload } = require('../middleware/upload');
+const { uploadDocument, downloadDocument, getMySharedDocs, getMyPersonalDocs, getDocumentSettings, updateDocumentSettings, getCompanyDocs, createCompanyDoc, updateCompanyDoc, deleteCompanyDoc, getEmployeeDocs, createEmployeeDoc, updateEmployeeDoc, deleteEmployeeDoc, notifyExpiredDocs } = require('../controllers/documentController');
+const { upload, csvUpload } = require('../middleware/upload');
 
 const {
   getAllEmployees,
   getActiveEmployees,
+  getStaffOrganogram,
   getEmployeeById,
   createEmployee,
   updateEmployee,
@@ -24,6 +25,8 @@ const {
   getAllPaygrades,
   getAllNotches,
   syncEmployee,
+  getEmployeePositionImpact,
+  getEmployeeActivity,
 } = require('../controllers/employeeController.js');
 
 const {
@@ -34,6 +37,10 @@ const {
   getAllDependents, addDependent, updateDependent, deleteDependent,
   getAllEmergencyContacts, addEmergencyContact, updateEmergencyContact, deleteEmergencyContact,
 } = require('../controllers/employeeRelationsController');
+
+const {
+  getDisciplinaryMeta, getAllDisciplinary, createDisciplinary, updateDisciplinary, deleteDisciplinary,
+} = require('../controllers/disciplinaryController');
 
 const {
   getAllCompanyStructures,
@@ -65,6 +72,7 @@ const {
 const med      = require('../controllers/medicalController');
 const leave    = require('../controllers/leaveController');
 const appCfg   = require('../controllers/settingsController');
+const apiInteg = require('../controllers/apiIntegrationController');
 
 // ─────────────────────────────────────────────
 // Public routes (no auth required)
@@ -76,15 +84,24 @@ router.get('/health', (req, res) => {
 router.post('/login', loginUser);
 router.get('/user/refresh-token', handleRefreshToken);
 
+// Module visibility — public read so the pre-render fetch in main.tsx never
+// causes a 401 → refresh → logout chain on page reload.
+router.get('/settings/modules', appCfg.getModuleSettings);
+
 // Specific document routes must come BEFORE the /:filename wildcard (with inline auth)
 router.get   ('/documents/company',     checkToken, getCompanyDocs);
-router.post  ('/documents/company',     checkToken, createCompanyDoc);
-router.put   ('/documents/company/:id', checkToken, updateCompanyDoc);
-router.delete('/documents/company/:id', checkToken, deleteCompanyDoc);
-router.get   ('/documents/my-shared',   checkToken, getMySharedDocs);
-router.get   ('/documents/my-personal', checkToken, getMyPersonalDocs);
-router.get   ('/documents/settings',    checkToken, getDocumentSettings);
-router.put   ('/documents/settings',    checkToken, permissionGuard('edit_settings'), updateDocumentSettings);
+router.post  ('/documents/company',     checkToken, permissionGuard('create_documents'), createCompanyDoc);
+router.put   ('/documents/company/:id', checkToken, permissionGuard('edit_documents'),   updateCompanyDoc);
+router.delete('/documents/company/:id', checkToken, permissionGuard('delete_documents'), deleteCompanyDoc);
+router.get   ('/documents/my-shared',              checkToken, getMySharedDocs);
+router.get   ('/documents/my-personal',            checkToken, getMyPersonalDocs);
+router.get   ('/documents/settings',               checkToken, getDocumentSettings);
+router.put   ('/documents/settings',               checkToken, permissionGuard('manage_settings'), updateDocumentSettings);
+router.get   ('/documents/employee',               checkToken, getEmployeeDocs);
+router.post  ('/documents/employee',               checkToken, permissionGuard('create_documents'), createEmployeeDoc);
+router.post  ('/documents/employee/notify-expired',checkToken, permissionGuard('edit_documents'),   notifyExpiredDocs);
+router.put   ('/documents/employee/:id',           checkToken, permissionGuard('edit_documents'),   updateEmployeeDoc);
+router.delete('/documents/employee/:id',           checkToken, permissionGuard('delete_documents'), deleteEmployeeDoc);
 
 // Public wildcard — filenames are unguessable SHA-256 hashes, must be last
 router.get('/documents/:filename', downloadDocument);
@@ -99,6 +116,18 @@ router.post('/public/jobs/:code/apply',            upload.single('cv'), pub.appl
 router.get ('/public/schedule/:token',             pub.getSchedulePage);
 router.post('/public/schedule/:token/confirm',     pub.confirmSchedule);
 
+// Public self-onboarding portal (no auth)
+const onboarding = require('../controllers/onboardingController');
+router.get ('/public/onboarding/:token',           onboarding.publicGetForm);
+router.post('/public/onboarding/:token/apply',     upload.any(), onboarding.publicSubmit);
+
+// Public attendance — biometric device push (x-api-key) + kiosk (token)
+const attendance = require('../controllers/attendanceController');
+router.post('/public/attendance/device-sync',                  attendance.deviceSync);
+router.get ('/public/attendance/kiosk/:token/meta',            attendance.kioskMeta);
+router.get ('/public/attendance/kiosk/:token/lookup/:staffId', attendance.kioskLookup);
+router.post('/public/attendance/kiosk/:token/punch',           attendance.kioskPunch);
+
 // ─────────────────────────────────────────────
 // All routes below require a valid token
 // ─────────────────────────────────────────────
@@ -108,35 +137,36 @@ router.use(checkToken);
 // ─────────────────────────────────────────────
 // User management — static routes first
 // ─────────────────────────────────────────────
-router.post('/user/register', roleGuard('admin','super-admin'), permissionGuard('create_users'), registerUser);
+router.post('/user/register', permissionGuard('create_users'), registerUser);
+router.put('/user/theme', updateUserTheme);   // any authenticated user saves their own UI theme
 router.get('/users',     getAllUsers);   // ← renamed from GET / to avoid conflict with health check
 
 router.get   ('/system/code-lists/:code/values/all',                  getCodeListValues);
-router.post  ('/system/code-lists/:code/values',                      createCodeListValue);
-router.put   ('/system/code-lists/:valueId/:id',                        updateCodeListValue);
-router.put   ('/system/code-lists/:id/values/:valueId/deactivate',    deactivateCodeListValue);
-router.put   ('/system/code-lists/:id/values/:valueId/activate',      activateCodeListValue);
+router.post  ('/system/code-lists/:code/values',                      permissionGuard('manage_app_settings'), createCodeListValue);
+router.put   ('/system/code-lists/:valueId/:id',                        permissionGuard('manage_app_settings'), updateCodeListValue);
+router.put   ('/system/code-lists/:id/values/:valueId/deactivate',    permissionGuard('manage_app_settings'), deactivateCodeListValue);
+router.put   ('/system/code-lists/:id/values/:valueId/activate',      permissionGuard('manage_app_settings'), activateCodeListValue);
 router.get   ('/system/code-lists',                                   getAllCodeLists);
 router.get   ('/system/code-lists/:id',                               getCodeListById);
-router.post  ('/system/code-lists',                                   createCodeList);
-router.put   ('/system/code-lists/:id',                               updateCodeList);
+router.post  ('/system/code-lists',                                   permissionGuard('manage_app_settings'), createCodeList);
+router.put   ('/system/code-lists/:id',                               permissionGuard('manage_app_settings'), updateCodeList);
 router.get   ('/system/code-lists/:code/values',                     getActiveValuesByCode);   // reference — no guard
 
 // ─────────────────────────────────────────────
 // Role management
 // ─────────────────────────────────────────────
-router.get('/roles',           roleGuard('admin','super-admin'), getAllRoles);
-router.post('/roles',          roleGuard('super-admin','admin'), addRole);
+router.get('/roles',           permissionGuard.any('view_users','manage_roles'), getAllRoles);
+router.post('/roles',          permissionGuard('manage_roles'), addRole);
 router.post('/roles/assign',   roleGuard('admin','super-admin'), assignRoleToUser);
 router.delete('/roles/revoke', roleGuard('admin','super-admin'), revokeRoleFromUser);
-router.put('/roles/:id',       roleGuard('super-admin','admin'), updateRole);
-router.put('/roles/:id/status', roleGuard('super-admin','admin'), updateRoleStatus);
+router.put('/roles/:id',       permissionGuard('manage_roles'), updateRole);
+router.put('/roles/:id/status', permissionGuard('manage_roles'), updateRoleStatus);
 router.delete('/roles/:id',    roleGuard('super-admin'), deleteRole); 
 
 // ─────────────────────────────────────────────
 // Permission management
 // ─────────────────────────────────────────────
-router.get('/permissions',           roleGuard('admin','super-admin'), getAllPermissions);
+router.get('/permissions',           permissionGuard.any('view_users','manage_roles'), getAllPermissions);
 router.post('/permissions/assign',   roleGuard('admin','super-admin'), assignPermissionToUser);
 router.delete('/permissions/revoke', roleGuard('admin','super-admin'), revokePermissionFromUser);
 
@@ -148,60 +178,80 @@ router.post('/employees/documents/upload', upload.single('file'), uploadDocument
 // Employee routes  (static before /:id)
 // ─────────────────────────────────────────────
 router.get   ('/employees/active',         getActiveEmployees);
+router.get   ('/employees/organogram',     getStaffOrganogram);
 router.get   ('/employees/paygrades',      getAllPaygrades);
 router.get   ('/employees/notches',        getAllNotches);
 router.get   ('/employees',                getAllEmployees);
-router.post  ('/employees',                createEmployee);
+router.post  ('/employees',                permissionGuard('create_employees'),       createEmployee);
 router.get   ('/employees/:id',            getEmployeeById);
+// PUT /employees/:id is shared with self-service (Personal Info profile image) — not guarded
 router.put   ('/employees/:id',            updateEmployee);
-router.put   ('/employees/:id/approve',    approveEmployee);
-router.put   ('/employees/:id/reject',     rejectEmployee);
-router.put   ('/employees/:id/status',     changeEmployeeStatus);
-router.post  ('/employees/:id/resign',     initiateResignation);
-router.post  ('/employees/:id/sync',       syncEmployee);
+router.put   ('/employees/:id/approve',    permissionGuard('approve_employees'),       approveEmployee);
+router.put   ('/employees/:id/reject',     permissionGuard('approve_employees'),       rejectEmployee);
+router.put   ('/employees/:id/status',     permissionGuard('change_employee_status'),  changeEmployeeStatus);
+router.post  ('/employees/:id/resign',     permissionGuard('change_employee_status'),  initiateResignation);
+router.post  ('/employees/:id/sync',       permissionGuard('edit_employees'),          syncEmployee);
+router.get   ('/employees/:id/position-impact', getEmployeePositionImpact);
+router.get   ('/employees/:id/activity',        getEmployeeActivity);
+
+// ─────────────────────────────────────────────
+// Self-Onboarding (admin — manage_onboarding)
+// ─────────────────────────────────────────────
+router.get   ('/onboarding/config',                 permissionGuard('manage_onboarding'), onboarding.getConfig);
+router.put   ('/onboarding/config',                 permissionGuard('manage_onboarding'), onboarding.saveConfig);
+router.post  ('/onboarding/token/regenerate',       permissionGuard('manage_onboarding'), onboarding.regenerateToken);
+router.get   ('/onboarding/submissions',            permissionGuard('manage_onboarding'), onboarding.listSubmissions);
+router.post  ('/onboarding/submissions/:id/convert',permissionGuard('manage_onboarding'), onboarding.convertSubmission);
+router.delete('/onboarding/submissions/:id',        permissionGuard('manage_onboarding'), onboarding.deleteSubmission);
+
+router.get   ('/disciplinary/meta',  getDisciplinaryMeta);
+router.get   ('/disciplinary',       getAllDisciplinary);
+router.post  ('/disciplinary',       createDisciplinary);
+router.put   ('/disciplinary/:id',   updateDisciplinary);
+router.delete('/disciplinary/:id',   deleteDisciplinary);
 
 // ─────────────────────────────────────────────
 // Relational / HR tab routes
 // ─────────────────────────────────────────────
 router.get   ('/skills',                 getAllSkills);
-router.post  ('/skills',                 addSkill);
-router.put   ('/skills/:id',             updateSkill);
-router.delete('/skills/:id',             deleteSkill);
+router.post  ('/skills',                 permissionGuard('manage_skills'), addSkill);
+router.put   ('/skills/:id',             permissionGuard('manage_skills'), updateSkill);
+router.delete('/skills/:id',             permissionGuard('manage_skills'), deleteSkill);
 
 router.get   ('/certifications',         getAllCerts);
-router.post  ('/certifications',         addCert);
-router.put   ('/certifications/:id',     updateCert);
-router.delete('/certifications/:id',     deleteCert);
+router.post  ('/certifications',         permissionGuard('manage_certifications'), addCert);
+router.put   ('/certifications/:id',     permissionGuard('manage_certifications'), updateCert);
+router.delete('/certifications/:id',     permissionGuard('manage_certifications'), deleteCert);
 
 router.get   ('/education',              getAllEducation);
-router.post  ('/education',              addEducation);
-router.put   ('/education/:id',          updateEducation);
-router.delete('/education/:id',          deleteEducation);
+router.post  ('/education',              permissionGuard('manage_education'), addEducation);
+router.put   ('/education/:id',          permissionGuard('manage_education'), updateEducation);
+router.delete('/education/:id',          permissionGuard('manage_education'), deleteEducation);
 
 router.get   ('/languages',              getAllLanguages);
-router.post  ('/languages',              addLanguage);
-router.put   ('/languages/:id',          updateLanguage);
-router.delete('/languages/:id',          deleteLanguage);
+router.post  ('/languages',              permissionGuard('manage_languages'), addLanguage);
+router.put   ('/languages/:id',          permissionGuard('manage_languages'), updateLanguage);
+router.delete('/languages/:id',          permissionGuard('manage_languages'), deleteLanguage);
 
 router.get   ('/dependents',             getAllDependents);
-router.post  ('/dependents',             addDependent);
-router.put   ('/dependents/:id',         updateDependent);
-router.delete('/dependents/:id',         deleteDependent);
+router.post  ('/dependents',             permissionGuard('manage_dependents'), addDependent);
+router.put   ('/dependents/:id',         permissionGuard('manage_dependents'), updateDependent);
+router.delete('/dependents/:id',         permissionGuard('manage_dependents'), deleteDependent);
 
 router.get   ('/emergency-contacts',     getAllEmergencyContacts);
-router.post  ('/emergency-contacts',     addEmergencyContact);
-router.put   ('/emergency-contacts/:id', updateEmergencyContact);
-router.delete('/emergency-contacts/:id', deleteEmergencyContact);
+router.post  ('/emergency-contacts',     permissionGuard('manage_emergency_contacts'), addEmergencyContact);
+router.put   ('/emergency-contacts/:id', permissionGuard('manage_emergency_contacts'), updateEmergencyContact);
+router.delete('/emergency-contacts/:id', permissionGuard('manage_emergency_contacts'), deleteEmergencyContact);
 
 // ─────────────────────────────────────────────
 // Company structure routes
 // ─────────────────────────────────────────────
 router.get   ('/company/structures/types',  getStructureTypes);
 router.get   ('/company/structures',        getAllCompanyStructures);
-router.post  ('/company/structures',        createCompanyStructure);
+router.post  ('/company/structures',        permissionGuard('create_company_structure'), createCompanyStructure);
 router.get   ('/company/structures/:id',    getCompanyStructureById);
-router.put   ('/company/structures/:id',    updateCompanyStructure);
-router.delete('/company/structures/:id',    deleteCompanyStructure);
+router.put   ('/company/structures/:id',    permissionGuard('edit_company_structure'),   updateCompanyStructure);
+router.delete('/company/structures/:id',    permissionGuard('delete_company_structure'), deleteCompanyStructure);
 
 // ─────────────────────────────────────────────
 // Dynamic user routes — must come after all static routes
@@ -209,32 +259,32 @@ router.delete('/company/structures/:id',    deleteCompanyStructure);
 // Salary setup routes
 router.get   ('/salary/refs',                         salary.getSalaryRefs);
 router.get   ('/salary/paygrades',                    getPaygrades);
-router.post  ('/salary/paygrades',                    createPaygrade);
-router.put   ('/salary/paygrades/:id',                updatePaygrade);
-router.delete('/salary/paygrades/:id',                deletePaygrade);
+router.post  ('/salary/paygrades',                    permissionGuard('manage_notch_setup'),                createPaygrade);
+router.put   ('/salary/paygrades/:id',                permissionGuard('manage_notch_setup'),                updatePaygrade);
+router.delete('/salary/paygrades/:id',                permissionGuard('manage_notch_setup'),                deletePaygrade);
 router.get   ('/salary/component-types',              salary.getSalaryComponentTypes);
-router.post  ('/salary/component-types',              salary.createSalaryComponentType);
-router.put   ('/salary/component-types/:id',          salary.updateSalaryComponentType);
-router.delete('/salary/component-types/:id',          salary.deleteSalaryComponentType);
+router.post  ('/salary/component-types',              permissionGuard('manage_salary_component_types'),     salary.createSalaryComponentType);
+router.put   ('/salary/component-types/:id',          permissionGuard('manage_salary_component_types'),     salary.updateSalaryComponentType);
+router.delete('/salary/component-types/:id',          permissionGuard('manage_salary_component_types'),     salary.deleteSalaryComponentType);
 router.get   ('/salary/components',                   salary.getSalaryComponents);
-router.post  ('/salary/components',                   salary.createSalaryComponent);
-router.put   ('/salary/components/:id',               salary.updateSalaryComponent);
-router.delete('/salary/components/:id',               salary.deleteSalaryComponent);
+router.post  ('/salary/components',                   permissionGuard('manage_salary_components'),          salary.createSalaryComponent);
+router.put   ('/salary/components/:id',               permissionGuard('manage_salary_components'),          salary.updateSalaryComponent);
+router.delete('/salary/components/:id',               permissionGuard('manage_salary_components'),          salary.deleteSalaryComponent);
 router.get   ('/salary/employee-components',          salary.getEmployeeSalaryComponents);
 router.get   ('/salary/history/:employeeId',          salary.getEmployeeSalaryHistory);
-router.post  ('/salary/employee-components',          salary.createEmployeeSalaryComponent);
-router.put   ('/salary/employee-components/:id',      salary.updateEmployeeSalaryComponent);
-router.delete('/salary/employee-components/:id',      salary.deleteEmployeeSalaryComponent);
+router.post  ('/salary/employee-components',          permissionGuard('manage_employee_salary_components'), salary.createEmployeeSalaryComponent);
+router.put   ('/salary/employee-components/:id',      permissionGuard('manage_employee_salary_components'), salary.updateEmployeeSalaryComponent);
+router.delete('/salary/employee-components/:id',      permissionGuard('manage_employee_salary_components'), salary.deleteEmployeeSalaryComponent);
 router.get   ('/salary/notches',                      salary.getNotches);
-router.post  ('/salary/notches',                      salary.createNotch);
-router.put   ('/salary/notches/:id',                  salary.updateNotch);
-router.delete('/salary/notches/:id',                  salary.deleteNotch);
+router.post  ('/salary/notches',                      permissionGuard('manage_notch_setup'),                salary.createNotch);
+router.put   ('/salary/notches/:id',                  permissionGuard('manage_notch_setup'),                salary.updateNotch);
+router.delete('/salary/notches/:id',                  permissionGuard('manage_notch_setup'),                salary.deleteNotch);
 router.get   ('/salary/payment-types',                salary.getPaymentTypes);
-router.post  ('/salary/payment-types',                salary.createPaymentType);
-router.put   ('/salary/payment-types/:id',            salary.updatePaymentType);
-router.delete('/salary/payment-types/:id',            salary.deletePaymentType);
+router.post  ('/salary/payment-types',                permissionGuard('manage_payment_types'),              salary.createPaymentType);
+router.put   ('/salary/payment-types/:id',            permissionGuard('manage_payment_types'),              salary.updatePaymentType);
+router.delete('/salary/payment-types/:id',            permissionGuard('manage_payment_types'),              salary.deletePaymentType);
 router.get   ('/salary/notch-movements',              salary.getNotchMovements);
-router.post  ('/salary/notch-movements',              salary.createNotchMovement);
+router.post  ('/salary/notch-movements',              permissionGuard('manage_notch_movements'),            salary.createNotchMovement);
 
 // ─────────────────────────────────────────────
 // Payroll calculation routes
@@ -245,26 +295,33 @@ router.post  ('/salary/notch-movements',              salary.createNotchMovement
 const run = require('../controllers/payrollRunController');
 const { getAuditLogs, getAuditModules } = require('../controllers/auditController');
 router.get   ('/payroll/runs',                    run.getPayrollRuns);
-router.post  ('/payroll/runs',                    run.createPayrollRun);
-router.put   ('/payroll/runs/:id',                run.updatePayrollRun);
-router.delete('/payroll/runs/:id',                run.deletePayrollRun);
-router.post  ('/payroll/runs/:id/generate',       run.generatePayroll);
-router.post  ('/payroll/runs/:id/finalize',       run.finalizePayroll);
-router.post  ('/payroll/runs/:id/retry-gl',       run.retryGLPosting);
-router.post  ('/payroll/runs/:id/submit',         run.submitPayroll);
-router.post  ('/payroll/runs/:id/approve',        run.approvePayroll);
-router.post  ('/payroll/runs/:id/reject',         run.rejectPayroll);
+router.post  ('/payroll/runs',                    permissionGuard('process_payroll'), run.createPayrollRun);
+router.put   ('/payroll/runs/:id',                permissionGuard('process_payroll'), run.updatePayrollRun);
+router.delete('/payroll/runs/:id',                permissionGuard('process_payroll'), run.deletePayrollRun);
+router.post  ('/payroll/runs/:id/generate',       permissionGuard('process_payroll'), run.generatePayroll);
+router.post  ('/payroll/runs/:id/finalize',       permissionGuard('approve_payroll'), run.finalizePayroll);
+router.post  ('/payroll/runs/:id/retry-gl',       permissionGuard('approve_payroll'), run.retryGLPosting);
+router.post  ('/payroll/runs/:id/submit',         permissionGuard('process_payroll'), run.submitPayroll);
+router.post  ('/payroll/runs/:id/approve',        permissionGuard('approve_payroll'), run.approvePayroll);
+router.post  ('/payroll/runs/:id/reject',         permissionGuard('approve_payroll'), run.rejectPayroll);
 router.get   ('/payroll/runs/:id/audit',          run.getPayrollAudit);
 router.get   ('/payroll/runs/:id/data',           run.getPayrollData);
 router.get   ('/payroll/runs/:id/debug',          run.debugPayrollRun);
-router.put   ('/payroll/runs/:id/data/:itemId',   run.updatePayrollDataItem);
+router.put   ('/payroll/runs/:id/data/:itemId',   permissionGuard('process_payroll'), run.updatePayrollDataItem);
 
 // ─────────────────────────────────────────────
 // App settings (email, etc.)
 // ─────────────────────────────────────────────
-router.get ('/settings/email',       appCfg.getEmailSettings);
-router.put ('/settings/email',       appCfg.updateEmailSettings);
-router.post('/settings/email/test',  appCfg.sendTestEmail);
+router.put ('/settings/modules',           permissionGuard('manage_settings'), appCfg.saveModuleSettings);
+router.get ('/settings/app-setup',         appCfg.getAppSetup);
+router.put ('/settings/app-setup',         permissionGuard('manage_app_settings'), appCfg.saveAppSetup);
+router.get ('/settings/controls',          appCfg.getControlSettings);
+router.put ('/settings/controls',          permissionGuard('manage_settings'), appCfg.saveControlSettings);
+router.get ('/settings/email',             appCfg.getEmailSettings);
+router.put ('/settings/email',             permissionGuard('manage_settings'), appCfg.updateEmailSettings);
+router.post('/settings/email/test',        permissionGuard('manage_settings'), appCfg.sendTestEmail);
+router.get ('/settings/api-integrations',  apiInteg.getApiIntegrations);
+router.put ('/settings/api-integrations',  permissionGuard('manage_settings'), apiInteg.updateApiIntegrations);
 
 // ─────────────────────────────────────────────
 // Audit logs
@@ -273,33 +330,34 @@ router.get('/audit-logs',         getAuditLogs);
 router.get('/audit-logs/modules', getAuditModules);
 
 router.get   ('/payroll/columns',                             calc.getPayrollColumns);
-router.post  ('/payroll/columns',                             calc.createPayrollColumn);
-router.patch ('/payroll/columns/reorder',                     calc.reorderPayrollColumns);
-router.put   ('/payroll/columns/:id',                         calc.updatePayrollColumn);
-router.delete('/payroll/columns/:id',                         calc.deletePayrollColumn);
+router.post  ('/payroll/columns',                             permissionGuard('manage_payroll_columns'), calc.createPayrollColumn);
+router.patch ('/payroll/columns/reorder',                     permissionGuard('manage_payroll_columns'), calc.reorderPayrollColumns);
+router.put   ('/payroll/columns/:id',                         permissionGuard('manage_payroll_columns'), calc.updatePayrollColumn);
+router.delete('/payroll/columns/:id',                         permissionGuard('manage_payroll_columns'), calc.deletePayrollColumn);
 router.get   ('/payroll/pay-frequencies',                     calc.getPayFrequencies);
-router.post  ('/payroll/pay-frequencies',                     calc.createPayFrequency);
-router.put   ('/payroll/pay-frequencies/:id',                 calc.updatePayFrequency);
-router.delete('/payroll/pay-frequencies/:id',                 calc.deletePayFrequency);
+router.post  ('/payroll/pay-frequencies',                     permissionGuard('manage_payroll_employees'), calc.createPayFrequency);
+router.put   ('/payroll/pay-frequencies/:id',                 permissionGuard('manage_payroll_employees'), calc.updatePayFrequency);
+router.delete('/payroll/pay-frequencies/:id',                 permissionGuard('manage_payroll_employees'), calc.deletePayFrequency);
 router.get   ('/payroll/employees',                           calc.getPayrollEmployees);
-router.post  ('/payroll/employees',                           calc.createPayrollEmployee);
-router.put   ('/payroll/employees/:id',                       calc.updatePayrollEmployee);
-router.delete('/payroll/employees/:id',                       calc.deletePayrollEmployee);
+router.post  ('/payroll/employees',                           permissionGuard('manage_payroll_employees'), calc.createPayrollEmployee);
+router.put   ('/payroll/employees/:id',                       permissionGuard('manage_payroll_employees'), calc.updatePayrollEmployee);
+router.delete('/payroll/employees/:id',                       permissionGuard('manage_payroll_employees'), calc.deletePayrollEmployee);
 router.get   ('/payroll/calc-groups',                         calc.getCalcGroups);
-router.post  ('/payroll/calc-groups',                         calc.createCalcGroup);
-router.put   ('/payroll/calc-groups/:id',                     calc.updateCalcGroup);
-router.delete('/payroll/calc-groups/:id',                     calc.deleteCalcGroup);
+router.post  ('/payroll/calc-groups',                         permissionGuard('manage_calculation_groups'), calc.createCalcGroup);
+router.put   ('/payroll/calc-groups/:id',                     permissionGuard('manage_calculation_groups'), calc.updateCalcGroup);
+router.delete('/payroll/calc-groups/:id',                     permissionGuard('manage_calculation_groups'), calc.deleteCalcGroup);
 router.get   ('/payroll/saved-calculations',                  calc.getSavedCalculations);
 router.get   ('/payroll/saved-calculations/:id',              calc.getSavedCalculationById);
-router.post  ('/payroll/saved-calculations',                  calc.createSavedCalculation);
-router.put   ('/payroll/saved-calculations/:id',              calc.updateSavedCalculation);
-router.delete('/payroll/saved-calculations/:id',              calc.deleteSavedCalculation);
+router.post  ('/payroll/saved-calculations',                  permissionGuard('manage_calculation_groups'), calc.createSavedCalculation);
+router.put   ('/payroll/saved-calculations/:id',              permissionGuard('manage_calculation_groups'), calc.updateSavedCalculation);
+router.delete('/payroll/saved-calculations/:id',              permissionGuard('manage_calculation_groups'), calc.deleteSavedCalculation);
 router.get   ('/payroll/payslip-templates',                   calc.getPayslipTemplates);
-router.post  ('/payroll/payslip-templates',                   calc.createPayslipTemplate);
-router.put   ('/payroll/payslip-templates/:id',               calc.updatePayslipTemplate);
-router.delete('/payroll/payslip-templates/:id',               calc.deletePayslipTemplate);
+router.post  ('/payroll/payslip-templates',                   permissionGuard('manage_report_templates'), calc.createPayslipTemplate);
+router.put   ('/payroll/payslip-templates/:id',               permissionGuard('manage_report_templates'), calc.updatePayslipTemplate);
+router.delete('/payroll/payslip-templates/:id',               permissionGuard('manage_report_templates'), calc.deletePayslipTemplate);
 const payslip = require('../controllers/payslipController');
 router.get   ('/payroll/my-payslips',                         payslip.getMyPayslips);
+router.get   ('/payroll/my-tax-summary',                      payslip.getMyTaxSummary);
 router.get   ('/payroll/runs/:id/employees/:empId/payslip.pdf', payslip.downloadPayslip);
 
 // ─────────────────────────────────────────────
@@ -310,25 +368,25 @@ router.post  ('/medical/staff',                             med.createStaffMedic
 router.put   ('/medical/staff/:id',                         med.updateStaffMedical);
 router.delete('/medical/staff/:id',                         med.deleteStaffMedical);
 router.post  ('/medical/staff/:id/submit',                  med.submitStaffMedical);
-router.post  ('/medical/staff/:id/approve',                 med.approveStaffMedical);
-router.post  ('/medical/staff/:id/reject',                  med.rejectStaffMedical);
-router.post  ('/medical/staff/:id/finalize',                med.finalizeStaffMedical);
-router.post  ('/medical/staff/:id/retry-gl',               med.retryStaffMedicalGL);
+router.post  ('/medical/staff/:id/approve',                 permissionGuard('approve_medical'), med.approveStaffMedical);
+router.post  ('/medical/staff/:id/reject',                  permissionGuard('approve_medical'), med.rejectStaffMedical);
+router.post  ('/medical/staff/:id/finalize',                permissionGuard('approve_medical'), med.finalizeStaffMedical);
+router.post  ('/medical/staff/:id/retry-gl',               permissionGuard('approve_medical'), med.retryStaffMedicalGL);
 
 router.get   ('/medical/dependents-requests',               med.getDependentMedical);
 router.post  ('/medical/dependents-requests',               med.createDependentMedical);
 router.put   ('/medical/dependents-requests/:id',           med.updateDependentMedical);
 router.delete('/medical/dependents-requests/:id',           med.deleteDependentMedical);
 router.post  ('/medical/dependents-requests/:id/submit',    med.submitDependentMedical);
-router.post  ('/medical/dependents-requests/:id/approve',   med.approveDependentMedical);
-router.post  ('/medical/dependents-requests/:id/reject',    med.rejectDependentMedical);
-router.post  ('/medical/dependents-requests/:id/finalize',  med.finalizeDependentMedical);
-router.post  ('/medical/dependents-requests/:id/retry-gl', med.retryDependentMedicalGL);
+router.post  ('/medical/dependents-requests/:id/approve',   permissionGuard('approve_medical'), med.approveDependentMedical);
+router.post  ('/medical/dependents-requests/:id/reject',    permissionGuard('approve_medical'), med.rejectDependentMedical);
+router.post  ('/medical/dependents-requests/:id/finalize',  permissionGuard('approve_medical'), med.finalizeDependentMedical);
+router.post  ('/medical/dependents-requests/:id/retry-gl', permissionGuard('approve_medical'), med.retryDependentMedicalGL);
 
 router.get   ('/medical/limits',                   med.getMedicalLimits);
-router.post  ('/medical/limits',                   med.createMedicalLimit);
-router.put   ('/medical/limits/:id',               med.updateMedicalLimit);
-router.delete('/medical/limits/:id',               med.deleteMedicalLimit);
+router.post  ('/medical/limits',                   permissionGuard('manage_medical_limits'), med.createMedicalLimit);
+router.put   ('/medical/limits/:id',               permissionGuard('manage_medical_limits'), med.updateMedicalLimit);
+router.delete('/medical/limits/:id',               permissionGuard('manage_medical_limits'), med.deleteMedicalLimit);
 
 router.get   ('/medical/enquiry/:id',               med.getMedicalEnquiryByEmployee);
 router.get   ('/medical/enquiry',                  med.getMedicalEnquiry);
@@ -340,18 +398,19 @@ router.get   ('/medical/gl-settings',              med.getMedicalGLSettings);
 router.put   ('/medical/gl-settings',              med.updateMedicalGLSettings);
 
 router.get   ('/medical/hospitals',                med.getHospitals);
-router.post  ('/medical/hospitals',                med.createHospital);
-router.put   ('/medical/hospitals/:id',            med.updateHospital);
-router.delete('/medical/hospitals/:id',            med.deleteHospital);
+router.post  ('/medical/hospitals',                permissionGuard('manage_hospitals'), med.createHospital);
+router.put   ('/medical/hospitals/:id',            permissionGuard('manage_hospitals'), med.updateHospital);
+router.delete('/medical/hospitals/:id',            permissionGuard('manage_hospitals'), med.deleteHospital);
 
 router.get   ('/medical/claims',                   med.getHospitalClaims);
-router.post  ('/medical/claims',                   med.createHospitalClaim);
-router.put   ('/medical/claims/:id',               med.updateHospitalClaim);
-router.delete('/medical/claims/:id',               med.deleteHospitalClaim);
-router.post  ('/medical/claims/:id/submit',        med.submitHospitalClaim);
-router.post  ('/medical/claims/:id/approve',       med.approveHospitalClaim);
-router.post  ('/medical/claims/:id/retry-gl',     med.retryHospitalClaimGL);
-router.post  ('/medical/claims/:id/reject',        med.rejectHospitalClaim);
+router.post  ('/medical/claims',                   permissionGuard('create_medical'),  med.createHospitalClaim);
+router.put   ('/medical/claims/:id',               permissionGuard('edit_medical'),    med.updateHospitalClaim);
+router.delete('/medical/claims/:id',               permissionGuard('delete_medical'),  med.deleteHospitalClaim);
+router.post  ('/medical/claims/:id/submit',        permissionGuard('create_medical'),  med.submitHospitalClaim);
+router.post  ('/medical/claims/:id/approve',       permissionGuard('approve_medical'), med.approveHospitalClaim);
+router.post  ('/medical/claims/:id/retry-gl',     permissionGuard('approve_medical'), med.retryHospitalClaimGL);
+router.post  ('/medical/claims/:id/reject',        permissionGuard('approve_medical'), med.rejectHospitalClaim);
+
 
 // ─────────────────────────────────────────────
 // Leave Setup
@@ -388,16 +447,16 @@ router.post  ('/leave/groups/:id/paygrades',         permissionGuard('manage_lea
 router.delete('/leave/groups/:id/paygrades/:pgId',   permissionGuard('manage_leave_groups'),  leave.removeLeaveGroupPaygrade);
 
 router.get   ('/leave/allowance-settings',            leave.getLeaveAllowanceSettings);
-router.put   ('/leave/allowance-settings',            permissionGuard('manage_leave_settings'), leave.updateLeaveAllowanceSettings);
+router.put   ('/leave/allowance-settings',            permissionGuard('manage_settings'), leave.updateLeaveAllowanceSettings);
 
 router.get   ('/leave/approval-settings',             leave.getApprovalFlowSettings);
-router.put   ('/leave/approval-settings',             permissionGuard('manage_leave_settings'), leave.updateApprovalFlowSettings);
+router.put   ('/leave/approval-settings',             permissionGuard('manage_settings'), leave.updateApprovalFlowSettings);
 
 router.get   ('/leave/threshold-settings',            leave.getThresholdSettings);
-router.put   ('/leave/threshold-settings',            permissionGuard('manage_leave_settings'), leave.updateThresholdSettings);
+router.put   ('/leave/threshold-settings',            permissionGuard('manage_settings'), leave.updateThresholdSettings);
 
 router.get   ('/leave/calendar-settings',             leave.getCalendarSettings);
-router.put   ('/leave/calendar-settings',             permissionGuard('manage_leave_settings'), leave.updateCalendarSettings);
+router.put   ('/leave/calendar-settings',             permissionGuard('manage_settings'), leave.updateCalendarSettings);
 
 // Static before parameterised :id — must come before /leave/leaves/:id block
 router.get   ('/leave/central-approval',              leave.getLeaveCentralApproval);
@@ -411,22 +470,24 @@ router.delete('/leave/rules/:id',                    permissionGuard('manage_lea
 // ─────────────────────────────────────────────
 // Leave Management — static sub-paths BEFORE :id
 // ─────────────────────────────────────────────
-router.get   ('/leave/subordinates',                 permissionGuard('view_subordinate_leave'), leave.getSubordinateEmployees);
-router.get   ('/leave/leaves/subordinates',          permissionGuard('view_subordinate_leave'), leave.getSubordinateLeaves);
-router.get   ('/leave/leaves/all',                   permissionGuard('approve_leave'),           leave.getAllEmployeeLeaves);
+// Leave approval is open to all by default (self-service supervisor approval) — no permission guards
+router.get   ('/leave/subordinates',                 leave.getSubordinateEmployees);
+router.get   ('/leave/leaves/subordinates',          leave.getSubordinateLeaves);
+router.get   ('/leave/leaves/all',                   leave.getAllEmployeeLeaves);
 router.get   ('/leave/balance/:employeeId',          leave.getLeaveBalance);
 
 router.get   ('/leave/leaves',                       leave.getLeaves);
-router.post  ('/leave/leaves',                       permissionGuard('apply_leave'),             leave.applyLeave);
+// Self-service leave actions (own application) — screen access is the gate, no permission guard
+router.post  ('/leave/leaves',                       leave.applyLeave);
 router.put   ('/leave/leaves/:id',                   leave.updateLeave);
 router.delete('/leave/leaves/:id',                   leave.deleteLeave);
-router.post  ('/leave/leaves/:id/submit',            permissionGuard('apply_leave'),             leave.submitLeave);
-router.post  ('/leave/leaves/:id/approve',           permissionGuard('approve_leave'),           leave.approveLeave);
-router.post  ('/leave/leaves/:id/reject',            permissionGuard('approve_leave'),           leave.rejectLeave);
-router.post  ('/leave/leaves/:id/cancel',            permissionGuard('cancel_leave'),            leave.cancelLeave);
-router.post  ('/leave/leaves/:id/finalize',          permissionGuard('approve_leave'),           leave.finalizeLeave);
-router.post  ('/leave/leaves/:id/approve-allowance', permissionGuard('approve_leave'),           leave.approveAllowanceLeave);
-router.post  ('/leave/leaves/:id/retry-gl',          permissionGuard('approve_leave'),           leave.retryLeaveGL);
+router.post  ('/leave/leaves/:id/submit',            leave.submitLeave);
+router.post  ('/leave/leaves/:id/approve',           leave.approveLeave);
+router.post  ('/leave/leaves/:id/reject',            leave.rejectLeave);
+router.post  ('/leave/leaves/:id/cancel',            leave.cancelLeave);
+router.post  ('/leave/leaves/:id/finalize',          leave.finalizeLeave);
+router.post  ('/leave/leaves/:id/approve-allowance', leave.approveAllowanceLeave);
+router.post  ('/leave/leaves/:id/retry-gl',          leave.retryLeaveGL);
 
 // ─────────────────────────────────────────────
 // Recruitment
@@ -434,35 +495,135 @@ router.post  ('/leave/leaves/:id/retry-gl',          permissionGuard('approve_le
 const recruitment = require('../controllers/recruitmentController');
 router.get   ('/recruitment/pipeline',              recruitment.getPipeline);
 router.get   ('/recruitment/jobs',                  recruitment.getJobs);
-router.post  ('/recruitment/jobs',                  recruitment.createJob);
-router.put   ('/recruitment/jobs/:id',              recruitment.updateJob);
-router.delete('/recruitment/jobs/:id',              recruitment.deleteJob);
+router.post  ('/recruitment/jobs',                  permissionGuard('manage_jobs'), recruitment.createJob);
+router.put   ('/recruitment/jobs/:id',              permissionGuard('manage_jobs'), recruitment.updateJob);
+router.delete('/recruitment/jobs/:id',              permissionGuard('manage_jobs'), recruitment.deleteJob);
 
 router.get   ('/recruitment/candidates',            recruitment.getCandidates);
 router.get   ('/recruitment/candidates/:id',        recruitment.getCandidateById);
-router.post  ('/recruitment/candidates',            recruitment.createCandidate);
-router.put   ('/recruitment/candidates/:id',        recruitment.updateCandidate);
-router.delete('/recruitment/candidates/:id',        recruitment.deleteCandidate);
-router.put   ('/recruitment/candidates/:id/stage',  recruitment.moveCandidateStage);
-router.post  ('/recruitment/candidates/:id/hire',   recruitment.hireCandidate);
+router.post  ('/recruitment/candidates',            permissionGuard('manage_candidates'), recruitment.createCandidate);
+router.put   ('/recruitment/candidates/:id',        permissionGuard('manage_candidates'), recruitment.updateCandidate);
+router.delete('/recruitment/candidates/:id',        permissionGuard('manage_candidates'), recruitment.deleteCandidate);
+router.put   ('/recruitment/candidates/:id/stage',  permissionGuard.any('manage_candidates','manage_interviews'), recruitment.moveCandidateStage);
+router.post  ('/recruitment/candidates/:id/hire',   permissionGuard('manage_candidates'), recruitment.hireCandidate);
 
 router.get   ('/recruitment/applications',          recruitment.getApplications);
-router.post  ('/recruitment/applications',          recruitment.createApplication);
-router.delete('/recruitment/applications/:id',      recruitment.deleteApplication);
+router.post  ('/recruitment/applications',          permissionGuard('manage_applications'), recruitment.createApplication);
+router.delete('/recruitment/applications/:id',      permissionGuard('manage_applications'), recruitment.deleteApplication);
 
 router.get   ('/recruitment/interviews',                              recruitment.getInterviews);
-router.post  ('/recruitment/interviews',                              recruitment.createInterview);
-router.put   ('/recruitment/interviews/:id',                          recruitment.updateInterview);
-router.delete('/recruitment/interviews/:id',                          recruitment.deleteInterview);
-router.post  ('/recruitment/interviews/:id/send-schedule-link',       recruitment.sendScheduleLink);
+router.post  ('/recruitment/interviews',                              permissionGuard('manage_interviews'), recruitment.createInterview);
+router.put   ('/recruitment/interviews/:id',                          permissionGuard('manage_interviews'), recruitment.updateInterview);
+router.delete('/recruitment/interviews/:id',                          permissionGuard('manage_interviews'), recruitment.deleteInterview);
+router.post  ('/recruitment/interviews/:id/send-schedule-link',       permissionGuard('manage_interviews'), recruitment.sendScheduleLink);
+router.post  ('/recruitment/interviews/:id/send-invite',              permissionGuard('manage_interviews'), recruitment.sendInterviewInvite);
+
+// ─────────────────────────────────────────────
+// Performance Management
+// ─────────────────────────────────────────────
+const perf = require('../controllers/performanceController');
+router.get   ('/performance/meta',                           perf.getPerformanceMeta);
+router.get   ('/performance/cycles',                         perf.getAllCycles);
+router.get   ('/performance/cycles/:id',                     perf.getCycleById);
+router.post  ('/performance/cycles',                         permissionGuard('create_performance'), perf.createCycle);
+router.put   ('/performance/cycles/:id',                     permissionGuard('create_performance'),   perf.updateCycle);
+router.delete('/performance/cycles/:id',                     permissionGuard('delete_performance'), perf.deleteCycle);
+router.post  ('/performance/cycles/:id/employees',           permissionGuard('create_performance'),   perf.addEmployeesToCycle);
+router.delete('/performance/cycles/:id/employees/:employeeId', permissionGuard('create_performance'), perf.removeEmployeeFromCycle);
+router.post  ('/performance/cycles/:id/activate',            permissionGuard('create_performance'),   perf.activateCycle);
+router.post  ('/performance/cycles/:id/close',               permissionGuard('create_performance'),   perf.closeCycle);
+
+router.get   ('/performance/reviews/my',                     perf.getMyReviews);
+router.get   ('/performance/reviews/team',                   perf.getTeamReviews);
+router.get   ('/performance/reviews',                        perf.getAllReviews);
+router.get   ('/performance/reviews/:id',                    perf.getReviewById);
+router.put   ('/performance/reviews/:id',                    perf.updateReview);
+router.post  ('/performance/reviews/:id/self',               perf.submitSelfAssessment);
+router.post  ('/performance/reviews/:id/supervisor',         perf.submitSupervisorReview);
+router.post  ('/performance/reviews/:id/hr',                 permissionGuard('review_performance'), perf.submitHRReview);
+router.post  ('/performance/reviews/:id/ratings',            perf.saveCompRatings);
+
+router.get   ('/performance/goals',                          perf.getGoals);
+router.post  ('/performance/goals',                          perf.createGoal);
+router.put   ('/performance/goals/:id',                      perf.updateGoal);
+router.delete('/performance/goals/:id',                      perf.deleteGoal);
+router.post  ('/performance/goals/:id/document',             upload.single('file'), perf.uploadGoalDocument);
+
+router.get   ('/performance/competencies',                   perf.getCompetencies);
+router.post  ('/performance/competencies',                   permissionGuard('create_performance'), perf.createCompetency);
+router.put   ('/performance/competencies/:id',               permissionGuard('create_performance'),   perf.updateCompetency);
+
+// ─────────────────────────────────────────────
+// Training & Development
+// ─────────────────────────────────────────────
+const training = require('../controllers/trainingController');
+
+router.get   ('/training/catalog',                             training.getCatalog);
+router.post  ('/training/catalog',                             permissionGuard('create_training'), training.createCatalog);
+router.put   ('/training/catalog/:id',                         permissionGuard('create_training'),   training.updateCatalog);
+router.delete('/training/catalog/:id',                         permissionGuard('delete_training'), training.deleteCatalog);
+router.get   ('/training/catalog/:id/slots',                   training.getCatalogSlots);
+router.post  ('/training/catalog/:id/slots',                   permissionGuard('create_training'), training.saveCatalogSlots);
+
+router.get   ('/training/settings',                            roleGuard('admin','super-admin'), training.getTrainingSettings);
+router.put   ('/training/settings',                            roleGuard('admin','super-admin'), training.saveTrainingSettings);
+router.get   ('/training/subordinates',                        training.getSubordinates);
+
+router.get   ('/training/nominations',                         training.getNominations);
+router.get   ('/training/nominations/subordinate',             training.getSubordinateNominations);
+router.post  ('/training/nominations',                         training.createNomination);
+router.put   ('/training/nominations/:id',                     training.updateNomination);
+router.delete('/training/nominations/:id',                     training.deleteNomination);
+router.post  ('/training/nominations/:id/submit',              training.submitNomination);
+router.post  ('/training/nominations/:id/approve',             permissionGuard('approve_training'), training.approveNomination);
+router.post  ('/training/nominations/:id/reject',              permissionGuard('approve_training'), training.rejectNomination);
+router.post  ('/training/nominations/:id/complete',            permissionGuard('approve_training'), training.completeNomination);
+router.post  ('/training/nominations/:id/no-show',             permissionGuard('approve_training'), training.noShowNomination);
+router.post  ('/training/nominations/:id/supervisor-approve',  training.supervisorApproveNomination);
+router.post  ('/training/nominations/:id/supervisor-reject',   training.supervisorRejectNomination);
+
+// ─────────────────────────────────────────────
+// Dashboard & Reports
+// ─────────────────────────────────────────────
+const dashboard = require('../controllers/dashboardController');
+router.get('/dashboard/summary', dashboard.getDashboardSummary);
+
+const report = require('../controllers/reportController');
+router.post('/reports/table.pdf', report.tablePdf);
+
+// ─────────────────────────────────────────────
+// Attendance — static routes before /attendance/:id
+// ─────────────────────────────────────────────
+router.post  ('/attendance/punch',                    attendance.punch);
+router.get   ('/attendance/punch-policy',             attendance.getPunchPolicy);
+router.get   ('/attendance/night-shift',              attendance.getNightShift);
+router.post  ('/attendance/night-shift',              permissionGuard('manage_attendance'), attendance.addNightShift);
+router.delete('/attendance/night-shift/:employee',    permissionGuard('manage_attendance'), attendance.removeNightShift);
+router.get   ('/attendance/today',                    attendance.getToday);
+router.get   ('/attendance/subordinates',             attendance.getSubordinateLog);
+router.get   ('/attendance/timesheet',                attendance.getTimesheet);
+router.get   ('/attendance/summary',                  attendance.getSummary);
+router.get   ('/attendance/punches',                  attendance.getPunches);
+router.post  ('/attendance/manual',                   permissionGuard('manage_attendance'), attendance.manualEntry);
+router.post  ('/attendance/import',                   permissionGuard('manage_attendance'), csvUpload.single('file'), attendance.importCsv);
+router.get   ('/attendance/import/batches',           attendance.getImportBatches);
+router.get   ('/attendance/export',                   attendance.exportCsv);
+router.post  ('/attendance/recompute',                attendance.recompute);
+router.get   ('/attendance/settings',                 attendance.getSettings);
+router.put   ('/attendance/settings',                 permissionGuard('manage_attendance'), attendance.updateSettings);
+router.post  ('/attendance/settings/regenerate-key',  permissionGuard('manage_attendance'), attendance.regenerateKey);
+router.get   ('/attendance',                          attendance.getDailyLog);
+router.get   ('/attendance/:id/photos',               attendance.getRecordPhotos);
+router.put   ('/attendance/:id',                      permissionGuard('manage_attendance'), attendance.updateRecord);
+router.delete('/attendance/:id',                      permissionGuard('manage_attendance'), attendance.deleteRecord);
 
 router.get('/:id/access',          roleGuard('admin','super-admin'), getUserAccess);
 router.get('/:id',                 getUserById);
-router.put('/:id',                 updateUser);
+router.put('/:id',                 permissionGuard('edit_users'),       updateUser);
 router.put('/:id/change-password', changePassword);
-router.put('/:id/deactivate',      deactivateUser);
-router.put('/:id/activate',        activateUser);
-router.put('/user/:id/status', roleGuard('super-admin','admin'), updateUserStatus);
+router.put('/:id/deactivate',      permissionGuard('deactivate_users'), deactivateUser);
+router.put('/:id/activate',        permissionGuard('activate_users'),   activateUser);
+router.put('/user/:id/status', permissionGuard.any('deactivate_users','activate_users'), updateUserStatus);
 router.get('/me',            checkToken, getMe);
 
 // ─────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { FormModal } from './ui/FormModal';
 import { FormField, inputClass } from './ui/FormField';
+import { CountedTextarea } from './ui/CountedTextarea';
 import { FileUpload } from './ui/FileUpload';
 import { MultiSearchSelect } from './ui/SearchSelect';
 import api from '../../lib/api';
@@ -34,14 +35,9 @@ export function CompanyDocumentForm({ onClose, initialData, onSave }: any) {
       );
     }).catch(() => {});
 
-    api.get('/employees').then(r => {
+    api.get('/employees/active').then(r => {
       const all: any[] = r.data.data ?? [];
-      setEmpOptions(
-        all.map(e => ({
-          id:    String(e.id),
-          label: [e.firstName, e.lastName].filter(Boolean).join(' ') || e.employee_id || String(e.id),
-        }))
-      );
+      setEmpOptions(all.map(e => ({ id: String(e.id), label: e.name })));
     }).catch(() => {});
   }, []);
 
@@ -104,12 +100,13 @@ export function CompanyDocumentForm({ onClose, initialData, onSave }: any) {
         </FormField>
 
         <FormField label="Details">
-          <textarea
+          <CountedTextarea
             value={details}
             onChange={e => setDetails(e.target.value)}
             className={inputClass}
             placeholder="Brief description of the document contents"
             rows={3}
+            maxChars={1000}
           />
         </FormField>
 

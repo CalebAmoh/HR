@@ -5,6 +5,11 @@ import { TablePagination } from './ui/TablePagination';
 import { Search, FileEdit, Trash2, Filter, Plus, Download, X, Building2, Tag, List, ChevronDown, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ConfirmAlert } from './ConfirmAlert';
+import { useCan } from '@/hooks/useCan';
+import api from '../../lib/api';
+
+const logoUrl = (name?: string) =>
+  !name ? '' : name.startsWith('blob:') || name.startsWith('http') ? name : `${api.defaults.baseURL}/documents/${name}`;
 
 /* ─────────────────────────────────────────────────────────────────────────────
    INITIAL DATA — App Setup (local only, no API yet)
@@ -59,6 +64,8 @@ function Modal({ title, onClose, onSave, saveLabel = 'Save', saving = false, chi
    MAIN COMPONENT
 ───────────────────────────────────────────────────────────────────────────── */
 export function System() {
+  const { can } = useCan();
+  const canManage = can('manage_app_settings');   // gates all App Settings actions
   /* ── Tab state ────────────────────────────────────────────────────────── */
   const [activeTab, setActiveTab]       = useState('App Setup');
   const tabs                            = ['App Setup', 'Parameter Creation'];
@@ -88,6 +95,22 @@ export function System() {
 
   /* ── App Setup form state ─────────────────────────────────────────────── */
   const [setupForm, setSetupForm]       = useState({ companyName: '', logoName: '' });
+  const [logoPreview, setLogoPreview]   = useState<string>('');   // object URL of the chosen logo file
+  const [logoUploading, setLogoUploading] = useState(false);
+
+  // Load persisted App Setup (company name + logo) so edits survive reloads.
+  useEffect(() => {
+    api.get('/settings/app-setup')
+      .then(r => {
+        const d = r.data?.data ?? {};
+        setAppSetup(prev => ({
+          ...prev,
+          companyName: d.company_name || prev.companyName,
+          logoName:    d.company_logo || '',
+        }));
+      })
+      .catch(() => {});
+  }, []);
 
   /* ── Code Creation form state ─────────────────────────────────────────── */
   const [codeForm, setCodeForm]         = useState({ name: '', code: '', description: '' });
@@ -186,13 +209,31 @@ export function System() {
   ───────────────────────────────────────────────────────────────────────── */
   const openEditSetup = () => {
     setSetupForm({ companyName: appSetup.companyName, logoName: appSetup.logoName });
+    setLogoPreview(logoUrl(appSetup.logoName));   // show the saved logo when editing
     setIsFormOpen(true);
   };
 
-  const handleSaveSetup = () => {
-    setAppSetup((prev) => ({ ...prev, ...setupForm }));
-    setIsFormOpen(false);
-    toast.success('App setup updated');
+  const uploadLogo = async (file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    setLogoUploading(true);
+    setLogoPreview(URL.createObjectURL(file));   // instant local preview
+    try {
+      const res = await api.post('/employees/documents/upload', fd, { headers: { 'Content-Type': undefined } });
+      const hash = res.data?.data?.hash ?? res.data?.hash;
+      if (hash) setSetupForm(f => ({ ...f, logoName: hash }));
+      else toast.error('Upload succeeded but no file reference returned');
+    } catch { toast.error('Logo upload failed'); }
+    finally { setLogoUploading(false); }
+  };
+
+  const handleSaveSetup = async () => {
+    try {
+      await api.put('/settings/app-setup', { company_name: setupForm.companyName, company_logo: setupForm.logoName });
+      setAppSetup((prev) => ({ ...prev, ...setupForm }));
+      setIsFormOpen(false);
+      toast.success('App setup updated');
+    } catch (e: any) { toast.error(e?.response?.data?.message ?? 'Failed to save app setup'); }
   };
 
   /* ─────────────────────────────────────────────────────────────────────────
@@ -406,7 +447,7 @@ export function System() {
             {/* Left side — action buttons */}
             <div className="grid grid-cols-3 sm:flex items-center gap-2 w-full sm:w-auto">
 
-              {activeTab === 'App Setup' && (
+              {activeTab === 'App Setup' && canManage && (
                 <button onClick={openEditSetup} className="primary-btn shrink-0">
                   <FileEdit className="w-[14px] h-[14px]" />
                   <span className="hidden sm:inline">Edit Setup</span>
@@ -416,14 +457,14 @@ export function System() {
 
               {activeTab === 'Parameter Creation' && (
                 <>
-                  <button
+                  {canManage && <button
                     onClick={subTab === 'Code Creation' ? handleAddCode : handleAddValue}
                     className="primary-btn shrink-0"
                   >
                     <span className="hidden sm:inline">Add New</span>
                     <span className="sm:hidden">Add</span>
                     <Plus className="w-[14px] h-[14px]" />
-                  </button>
+                  </button>}
 
                   {subTab === 'Code Values' && (
                     <button
@@ -611,15 +652,18 @@ export function System() {
                       </div>
                     </td>
                     <td className="td">
-                      <span className="font-mono text-[11px] text-[var(--text-muted)] bg-[var(--bg)] px-2 py-0.5 rounded border border-[var(--border)]">
-                        {appSetup.logoName}
-                      </span>
+                      {appSetup.logoName ? (
+                        <img src={logoUrl(appSetup.logoName)} alt="Company logo"
+                          className="w-10 h-10 rounded-lg object-contain border border-[var(--border)] bg-[var(--bg)]" />
+                      ) : (
+                        <span className="text-[11px] text-[var(--text-muted)]">No logo</span>
+                      )}
                     </td>
                     <td className="td">
                       <div className="flex items-center justify-end gap-1">
-                        <button onClick={openEditSetup} className="action-btn text-[var(--warning)]" title="Edit">
-                          <FileEdit size={14} />
-                        </button>
+                        {canManage
+                          ? <button onClick={openEditSetup} className="action-btn text-[var(--warning)]" title="Edit"><FileEdit size={14} /></button>
+                          : <span className="text-[var(--text-muted)]">—</span>}
                       </div>
                     </td>
                   </motion.tr>
@@ -654,9 +698,9 @@ export function System() {
                         </td>
                         <td className="td">
                           <div className="flex items-center justify-end gap-1">
-                            <button onClick={() => handleEditCode(row)} className="action-btn text-[var(--warning)]" title="Edit">
-                              <FileEdit size={14} />
-                            </button>
+                            {canManage
+                              ? <button onClick={() => handleEditCode(row)} className="action-btn text-[var(--warning)]" title="Edit"><FileEdit size={14} /></button>
+                              : <span className="text-[var(--text-muted)]">—</span>}
                           </div>
                         </td>
                       </motion.tr>
@@ -693,12 +737,14 @@ export function System() {
                         <td className="td text-[var(--text-secondary)]">{row.description ?? '—'}</td>
                         <td className="td">
                           <div className="flex items-center justify-end gap-1">
+                            {canManage ? (<>
                             <button onClick={() => handleEditValue(row)} className="action-btn text-[var(--warning)]" title="Edit">
                               <FileEdit size={14} />
                             </button>
                             <button onClick={() => handleDeleteValueClick(row)} className="action-btn text-[var(--danger)]" title="Deactivate">
                               <Trash2 size={14} />
                             </button>
+                            </>) : <span className="text-[var(--text-muted)]">—</span>}
                           </div>
                         </td>
                       </motion.tr>
@@ -758,17 +804,23 @@ export function System() {
             </div>
             <div>
               <label className="label">Company Logo</label>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) =>
-                  setSetupForm({ ...setupForm, logoName: e.target.files?.[0]?.name ?? setupForm.logoName })
-                }
-              />
-              {setupForm.logoName && (
-                <p className="text-[11px] text-[var(--text-muted)] mt-1.5">
-                  Current file: <span className="font-mono">{setupForm.logoName}</span>
-                </p>
+              <div className="flex items-center gap-3">
+                {logoPreview ? (
+                  <img src={logoPreview} alt="Logo preview"
+                    className="w-14 h-14 rounded-lg object-contain border border-[var(--border)] bg-[var(--bg)] shrink-0" />
+                ) : (
+                  <div className="w-14 h-14 rounded-lg border border-dashed border-[var(--border)] bg-[var(--bg)] flex items-center justify-center shrink-0 text-[var(--text-muted)]">
+                    <Building2 size={18} />
+                  </div>
+                )}
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => { const file = e.target.files?.[0]; if (file) uploadLogo(file); }}
+                />
+              </div>
+              {logoUploading && (
+                <p className="text-[11px] text-[var(--text-muted)] mt-1.5">Uploading…</p>
               )}
             </div>
           </Modal>

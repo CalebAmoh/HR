@@ -3,21 +3,11 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 const { Parser } = require('expr-eval');
 const { logActivity, fromReq } = require('./auditController');
-const { postToGL, cfg: glCfg } = require('../helpers/glHelper');
+const { postToGL }    = require('../helpers/glHelper');
+const { getApiConfig } = require('./apiIntegrationController');
 const _parser = new Parser({ operators: { logical: false, comparison: false, conditional: false } });
 
-function serialize(obj) {
-  if (typeof obj === 'bigint') return obj.toString();
-  if (obj && typeof obj === 'object' && typeof obj.toString === 'function' && obj.constructor?.name === 'Decimal') return obj.toString();
-  if (obj instanceof Date) return obj.toISOString();
-  if (Array.isArray(obj)) return obj.map(serialize);
-  if (obj !== null && typeof obj === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) out[k] = serialize(v);
-    return out;
-  }
-  return obj;
-}
+const { serialize } = require('../helpers/controllerHelpers');
 
 async function query(sql, ...params) {
   const rows = await prisma.$queryRawUnsafe(sql, ...params);
@@ -27,57 +17,6 @@ async function query(sql, ...params) {
 async function exec(sql, ...params) {
   return prisma.$executeRawUnsafe(sql, ...params);
 }
-
-// ── Auto-create tables ────────────────────────────────────────────────────────
-(async () => {
-  try {
-    await exec(`
-      CREATE TABLE IF NOT EXISTS payrollruns (
-        id              BIGINT AUTO_INCREMENT PRIMARY KEY,
-        name            VARCHAR(200) NOT NULL,
-        pay_frequency   INT NULL,
-        date_start      DATE NULL,
-        date_end        DATE NULL,
-        deduction_group BIGINT NULL,
-        status          ENUM('Draft','Processing','Completed') DEFAULT 'Draft',
-        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      )
-    `);
-    await exec(`ALTER TABLE payrollruns ADD COLUMN payment_type_id BIGINT NULL`).catch(() => {});
-    await exec(`ALTER TABLE payrollruns MODIFY COLUMN status ENUM('Draft','Processing','Pending Approval','Rejected','Approved','Completed','GL Failed') DEFAULT 'Draft'`).catch(() => {});
-    await exec(`ALTER TABLE payrollruns ADD COLUMN submitted_by BIGINT NULL`).catch(() => {});
-    await exec(`ALTER TABLE payrollruns ADD COLUMN approved_by BIGINT NULL`).catch(() => {});
-    await exec(`ALTER TABLE payrollruns ADD COLUMN approved_at DATETIME NULL`).catch(() => {});
-    await exec(`ALTER TABLE payrollruns ADD COLUMN rejection_reason TEXT NULL`).catch(() => {});
-    await exec(`ALTER TABLE payrollruns ADD COLUMN document_ref VARCHAR(100) NULL`).catch(() => {});
-    await exec(`ALTER TABLE payrollruns ADD COLUMN payment_log TEXT NULL`).catch(() => {});
-    await exec(`ALTER TABLE payrollruns ADD COLUMN finalized_at DATETIME NULL`).catch(() => {});
-    await exec(`
-      CREATE TABLE IF NOT EXISTS payrollrunaudit (
-        id         BIGINT AUTO_INCREMENT PRIMARY KEY,
-        run_id     BIGINT NOT NULL,
-        action     VARCHAR(50) NOT NULL,
-        user_id    BIGINT NULL,
-        user_name  VARCHAR(200) NULL,
-        details    TEXT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    await exec(`
-      CREATE TABLE IF NOT EXISTS payrolldata (
-        id           INT AUTO_INCREMENT PRIMARY KEY,
-        payroll      BIGINT NOT NULL,
-        employee     BIGINT NOT NULL,
-        payroll_item INT NOT NULL,
-        amount       VARCHAR(25) NULL
-      )
-    `);
-    console.log('[payrollRunController] Tables ready');
-  } catch (e) {
-    console.error('[payrollRunController] Table setup error', e.message);
-  }
-})();
 
 // ── Formula evaluator ─────────────────────────────────────────────────────────
 function safeEval(formula, vars = {}) {
@@ -231,11 +170,13 @@ const RUNS_SELECT = `
   LEFT JOIN paymenttype        pt ON pt.id = pr.payment_type_id
 `;
 
+// GET /payroll/runs — list all payroll runs with frequency, deduction group, payment type, and approval status.
 const getPayrollRuns = asyncHandler(async (_req, res) => {
   const rows = await query(RUNS_SELECT + ' ORDER BY pr.created_at DESC');
   respond.ok(res, 'Payroll runs retrieved', rows);
 });
 
+// POST /payroll/runs — create a new payroll run in Draft status for a given pay frequency and date range.
 const createPayrollRun = asyncHandler(async (req, res) => {
   const { name, pay_frequency, date_start, date_end, deduction_group, payment_type } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Run name is required');
@@ -253,6 +194,7 @@ const createPayrollRun = asyncHandler(async (req, res) => {
   respond.created(res, 'Payroll run created', rows[0] || null);
 });
 
+// PUT /payroll/runs/:id — update run metadata (name, dates, frequency, deduction group); blocked on Completed runs.
 const updatePayrollRun = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { name, pay_frequency, date_start, date_end, deduction_group, payment_type } = req.body;
@@ -273,6 +215,7 @@ const updatePayrollRun = asyncHandler(async (req, res) => {
   respond.ok(res, 'Updated', rows[0] || null);
 });
 
+// DELETE /payroll/runs/:id — delete a Draft or Processing run and its payroll data; blocked on Completed runs.
 const deletePayrollRun = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const [run] = await query(`SELECT status FROM payrollruns WHERE id = ?`, BigInt(id));
@@ -284,6 +227,9 @@ const deletePayrollRun = asyncHandler(async (req, res) => {
 });
 
 // ── Generate ──────────────────────────────────────────────────────────────────
+// POST /payroll/runs/:id/generate — compute each employee's payroll column values using the calculation engine
+// (salary components, formulas, add/sub columns, bracket rules) and store results in payrolldata.
+// Reports missing salary components and employees with no salary setup for diagnostics.
 const generatePayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const [run] = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
@@ -451,6 +397,7 @@ const generatePayroll = asyncHandler(async (req, res) => {
 });
 
 // ── Grid data ─────────────────────────────────────────────────────────────────
+// GET /payroll/runs/:id/data — retrieve all payroll cells for a run (employee × column), with stale-column warning count.
 const getPayrollData = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const cells = await query(`
@@ -472,7 +419,8 @@ const getPayrollData = asyncHandler(async (req, res) => {
   respond.ok(res, 'Payroll data retrieved', { cells, staleColumnCount, totalEnabledCols: Number(totalEnabled) });
 });
 
-// ── Debug: show salary map + column results for a run (read-only, admin only) ──
+// GET /payroll/runs/:id/debug — re-run the calculation engine in read-only mode and return the raw salary map
+// plus each column's computed value per employee; used for troubleshooting incorrect payroll results.
 const debugPayrollRun = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const [run] = await query(`SELECT id, pay_frequency, deduction_group FROM payrollruns WHERE id = ? LIMIT 1`, BigInt(id));
@@ -539,6 +487,7 @@ const debugPayrollRun = asyncHandler(async (req, res) => {
   respond.ok(res, 'Debug info', { notchLinkedComponent: notchLinkedComp?.name || null, employees: result });
 });
 
+// PUT /payroll/runs/:id/data/:itemId — manually override a single payroll cell amount (for corrections before finalization).
 const updatePayrollDataItem = asyncHandler(async (req, res) => {
   const { id, itemId } = req.params;
   const { amount } = req.body;
@@ -551,6 +500,12 @@ const updatePayrollDataItem = asyncHandler(async (req, res) => {
 
 // ── GL posting helper (shared by finalize + retry) ───────────────────────────
 async function buildAndPostGL(id, req) {
+  const apiCfg = await getApiConfig();
+  let glExtra  = {};
+  try { glExtra = JSON.parse(apiCfg.gl_extra || '{}'); } catch {}
+  const defaultCurrency = glExtra.currency || 'SLL';
+  const defaultBranch   = glExtra.branch   || '000';
+
   const postingRows = await query(`
     SELECT pd.employee, pd.amount,
            pc.name AS col_name, pc.payment_deduction, pc.salarycomponent_gl, pc.posting_branch,
@@ -563,7 +518,7 @@ async function buildAndPostGL(id, req) {
     LEFT JOIN payrollemployees pe ON pe.employee = pd.employee
     WHERE  pd.payroll = ? AND pc.posting_column = 'Yes'
     ORDER  BY pd.employee, COALESCE(pc.colorder, 99999)
-  `, glCfg.currency(), BigInt(id));
+  `, defaultCurrency, BigInt(id));
 
   const debitAccounts  = [];
   const creditAccounts = [];
@@ -577,8 +532,8 @@ async function buildAndPostGL(id, req) {
   for (const row of postingRows) {
     const amount   = parseFloat(row.amount || '0');
     if (!amount || amount <= 0) continue;
-    const branch   = row.posting_branch || glCfg.branch();
-    const currency = row.currency       || glCfg.currency();
+    const branch   = row.posting_branch || defaultBranch;
+    const currency = row.currency       || defaultCurrency;
     const prodRef  = `HR_${id}_${row.employee}`;
     const isNet    = (row.col_name || '').toLowerCase().startsWith('net');
 
@@ -607,6 +562,8 @@ async function buildAndPostGL(id, req) {
 }
 
 // ── Finalize ──────────────────────────────────────────────────────────────────
+// POST /payroll/runs/:id/finalize — mark a payroll run as Completed and attempt GL posting via the configured API.
+// Sets status to 'GL Failed' (not Completed) when GL posting errors, allowing a retry without re-generating.
 const finalizePayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const [run] = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
@@ -621,7 +578,8 @@ const finalizePayroll = asyncHandler(async (req, res) => {
   let finalStatus = 'Completed';
 
   // ── GL posting ───────────────────────────────────────────────────────────────
-  if (glCfg.url()) {
+  const _glUrl = (await getApiConfig()).gl_url;
+  if (_glUrl) {
     try {
       const result = await buildAndPostGL(id, req);
       documentRef = result.documentRef;
@@ -646,13 +604,14 @@ const finalizePayroll = asyncHandler(async (req, res) => {
 });
 
 // ── Retry GL posting (for GL Failed runs) ────────────────────────────────────
+// POST /payroll/runs/:id/retry-gl — re-attempt GL posting for a 'GL Failed' run; transitions to Completed on success.
 const retryGLPosting = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const [run] = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status !== 'GL Failed') return respond.badReq(res, 'Only a GL Failed run can retry GL posting');
   if (run.document_ref) return respond.badReq(res, 'GL already posted for this run');
-  if (!glCfg.url()) return respond.badReq(res, 'POSTING_API_URL not configured');
+  if (!(await getApiConfig()).gl_url) return respond.badReq(res, 'GL API URL not configured');
 
   try {
     const result = await buildAndPostGL(id, req);
@@ -676,6 +635,7 @@ const retryGLPosting = asyncHandler(async (req, res) => {
 });
 
 // ── Approval workflow ─────────────────────────────────────────────────────────
+// POST /payroll/runs/:id/submit — move a Processing run to 'Pending Approval' for sign-off before finalization.
 const submitPayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const [run] = await query(`SELECT status FROM payrollruns WHERE id = ?`, BigInt(id));
@@ -689,11 +649,21 @@ const submitPayroll = asyncHandler(async (req, res) => {
   respond.ok(res, 'Submitted for approval', rows[0] || null);
 });
 
+// POST /payroll/runs/:id/approve — approve a Pending Approval run, transitioning it to Approved status.
 const approvePayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const [run] = await query(`SELECT status FROM payrollruns WHERE id = ?`, BigInt(id));
+  const [run] = await query(`SELECT status, submitted_by FROM payrollruns WHERE id = ?`, BigInt(id));
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status !== 'Pending Approval') return respond.badReq(res, 'Run is not pending approval');
+
+  // Self-approval guard: the user who submitted the run may approve it only when the
+  // "Allow Self-Approval" payroll control is on (defaults off).
+  if (String(run.submitted_by ?? '') === String(req.user?.id ?? '')) {
+    const [s] = await query(`SELECT value FROM settings WHERE name='approval_payroll_self' AND category='app_controls' LIMIT 1`).catch(() => []);
+    const selfAllowed = s ? s.value === '1' : false;
+    if (!selfAllowed) return respond.forbidden(res, 'Self-approval is disabled — a different approver must review this payroll run');
+  }
+
   const userId = req.user?.id ? BigInt(req.user.id) : null;
   await exec(
     `UPDATE payrollruns SET status='Approved', approved_by=?, approved_at=NOW(), updated_at=NOW() WHERE id=?`,
@@ -705,6 +675,7 @@ const approvePayroll = asyncHandler(async (req, res) => {
   respond.ok(res, 'Payroll approved', rows[0] || null);
 });
 
+// POST /payroll/runs/:id/reject — reject a Pending Approval run with an optional reason; sends it back for regeneration.
 const rejectPayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { reason } = req.body;
@@ -722,6 +693,7 @@ const rejectPayroll = asyncHandler(async (req, res) => {
 });
 
 // ── Audit log ─────────────────────────────────────────────────────────────────
+// GET /payroll/runs/:id/audit — retrieve the chronological audit trail of all actions taken on a payroll run.
 const getPayrollAudit = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const entries = await query(
@@ -731,6 +703,8 @@ const getPayrollAudit = asyncHandler(async (req, res) => {
   respond.ok(res, 'Audit log retrieved', entries);
 });
 
+// POST /payroll/runs/:id/duplicate — copy a run's config (frequency, dates, group) into a new Draft run
+// named "<original> (Copy)", without copying the payroll data.
 const duplicatePayrollRun = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const [run] = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));

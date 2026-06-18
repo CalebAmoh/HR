@@ -4,6 +4,8 @@ import { Wand2 } from 'lucide-react';
 import { useFormState } from '../hooks/useFormState';
 import { FormModal } from './ui/FormModal';
 import { FormField, inputClass } from './ui/FormField';
+import { CountedTextarea } from './ui/CountedTextarea';
+import { SearchSelect } from './ui/SearchSelect';
 import api from '../../lib/api';
 import { getSettings } from '../../lib/settings';
 
@@ -21,6 +23,7 @@ function genCode(): string {
 
 export function CompanyStructureForm({ onClose, initialData, onSave, currentStructures = [] }: Props) {
   const [typeOptions, setTypeOptions] = useState<any[]>([]);
+  const [employees, setEmployees]     = useState<any[]>([]);
 
   const isCreate = !initialData;
   const autoGen = getSettings().companyStructure.autoGenerateCode;
@@ -62,7 +65,23 @@ export function CompanyStructureForm({ onClose, initialData, onSave, currentStru
     api.get('/company/structures/types')
       .then(res => setTypeOptions(res.data.data ?? []))
       .catch(() => {});
+    api.get('/employees/active')
+      .then(res => setEmployees(res.data.data ?? []))
+      .catch(() => {});
   }, []);
+
+  // Manager is picked from the employees list (stored as the employee's name).
+  // Keep any pre-existing manager value selectable even if not in the active list.
+  const managerOptions = useMemo(() => {
+    const opts = employees.map((e: any) => ({
+      id: e.name,
+      label: e.employee_id ? `${e.name} (${e.employee_id})` : e.name,
+    }));
+    if (formData.heads && !opts.some(o => o.id === formData.heads)) {
+      opts.unshift({ id: formData.heads, label: formData.heads });
+    }
+    return opts;
+  }, [employees, formData.heads]);
 
   // Code field is locked when auto-generate is on, in create mode, and type is not Branch
   const codeIsLocked = autoGen && !!formData.type && formData.type !== 'Branch';
@@ -142,13 +161,11 @@ export function CompanyStructureForm({ onClose, initialData, onSave, currentStru
         </FormField>
 
         <FormField label="Manager *">
-          <input
-            type="text"
-            name="heads"
+          <SearchSelect
             value={formData.heads}
-            onChange={handleChange}
-            className={inputClass}
-            placeholder="Manager name"
+            onChange={v => setFormData(prev => ({ ...prev, heads: v }))}
+            options={managerOptions}
+            placeholder="Select manager…"
           />
         </FormField>
 
@@ -173,13 +190,14 @@ export function CompanyStructureForm({ onClose, initialData, onSave, currentStru
         </FormField>
 
         <FormField label="Description" className="sm:col-span-2">
-          <textarea
+          <CountedTextarea
             name="description"
             value={formData.description}
             onChange={handleChange}
             className={inputClass}
             placeholder="Additional details..."
             rows={3}
+            maxChars={1000}
           />
         </FormField>
 

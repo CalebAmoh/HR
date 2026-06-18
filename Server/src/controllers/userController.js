@@ -118,20 +118,18 @@ const registerUser = asyncHandler(async (req, res) => {
 
   // Assign roles
   for (const roleId of roles) {
-    await helper.dynamicInsert('model_has_roles', {
-      role_id:    roleId,
-      model_id:   newUserId,
-      model_type: 'users',
-    });
+    await helper.selectRecordsWithQuery(
+      `INSERT INTO model_has_roles (role_id, model_id, model_type) VALUES (?, ?, 'users')`,
+      [roleId, String(newUserId)]
+    );
   }
 
   // Assign direct permissions
   for (const permissionId of permissions) {
-    await helper.dynamicInsert('model_has_permissions', {
-      permission_id: permissionId,
-      model_id:      newUserId,
-      model_type:    'users',
-    });
+    await helper.selectRecordsWithQuery(
+      `INSERT INTO model_has_permissions (permission_id, model_id, model_type) VALUES (?, ?, 'users')`,
+      [permissionId, String(newUserId)]
+    );
   }
 
   // Send welcome email (non-blocking — don't fail registration if email fails)
@@ -179,7 +177,7 @@ const loginUser = asyncHandler(async (req, res) => {
 
   // Find user by username OR employee email (LEFT JOIN so username-only accounts still match)
   const userResult = await helper.selectRecordsWithQuery(`
-    SELECT u.id, u.username, u.password, u.status, u.employeeId,
+    SELECT u.id, u.username, u.password, u.status, u.employeeId, u.theme,
            e.email, e.firstName, e.lastName, e.phone
     FROM users u
     LEFT JOIN employee e ON e.id = u.employeeId
@@ -204,11 +202,12 @@ const loginUser = asyncHandler(async (req, res) => {
   }
 
   // ── Fetch roles ────────────────────────────────────────
+  // Only ACTIVE roles grant access — a deactivated role contributes no permissions until reactivated.
   const rolesResult = await helper.selectRecordsWithQuery(`
     SELECT r.id, r.name
     FROM roles r
     INNER JOIN model_has_roles mhr ON mhr.role_id = r.id
-    WHERE mhr.model_id = ? AND mhr.model_type = 'users'
+    WHERE mhr.model_id = ? AND mhr.model_type = 'users' AND r.status = '1'
     ORDER BY r.name ASC
   `, [user.id]);
 
@@ -633,11 +632,10 @@ const updateUser = asyncHandler(async (req, res) => {
 
     // Insert new roles
     for (const roleId of roles) {
-      await helper.dynamicInsert('model_has_roles', {
-        role_id:    roleId,
-        model_id:   id,
-        model_type: 'users',
-      });
+      await helper.selectRecordsWithQuery(
+        `INSERT INTO model_has_roles (role_id, model_id, model_type) VALUES (?, ?, 'users')`,
+        [roleId, String(id)]
+      );
     }
   }
 
@@ -669,11 +667,10 @@ const updateUser = asyncHandler(async (req, res) => {
 
     // Insert new permissions
     for (const permissionId of permissions) {
-      await helper.dynamicInsert('model_has_permissions', {
-        permission_id: permissionId,
-        model_id:      id,
-        model_type:    'users',
-      });
+      await helper.selectRecordsWithQuery(
+        `INSERT INTO model_has_permissions (permission_id, model_id, model_type) VALUES (?, ?, 'users')`,
+        [permissionId, String(id)]
+      );
     }
   }
 
@@ -950,6 +947,21 @@ const getMe = asyncHandler(async (req, res) => {
 });
 
 
+// ─────────────────────────────────────────────
+// @desc    Persist the current user's UI theme preference (dark | light)
+// @route   PUT /user/theme
+// @access  Private
+// ─────────────────────────────────────────────
+const updateUserTheme = asyncHandler(async (req, res) => {
+  const { theme } = req.body;
+  if (!['dark', 'light'].includes(theme)) {
+    return res.status(400).json({ status: '400', message: 'Invalid theme' });
+  }
+  await helper.prisma.$executeRawUnsafe(`UPDATE users SET theme = ? WHERE id = ?`, theme, req.user.id);
+  return respond.ok(res, 'Theme saved');
+});
+
+
 module.exports = {
   registerUser,
   loginUser,
@@ -962,4 +974,5 @@ module.exports = {
   activateUser,
   updateUserStatus,
   getMe,
+  updateUserTheme,
 };

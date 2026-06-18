@@ -5,31 +5,12 @@ const respond      = require('../helpers/respondHelper');
 const axios        = require('axios');
 const fs           = require('fs');
 
-function serialize(obj) {
-  if (typeof obj === 'bigint') return obj.toString();
-  if (obj && typeof obj === 'object' && typeof obj.toString === 'function' && obj.constructor?.name === 'Decimal') return obj.toString();
-  if (obj instanceof Date) return obj.toISOString();
-  if (Array.isArray(obj)) return obj.map(serialize);
-  if (obj !== null && typeof obj === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) out[k] = serialize(v);
-    return out;
-  }
-  return obj;
-}
+const { serialize } = require('../helpers/controllerHelpers');
 
 async function query(sql, ...params) {
   const rows = await prisma.$queryRawUnsafe(sql, ...params);
   return serialize(rows);
 }
-
-// Ensure payslip_label column exists — calculationController adds it too, but payslipController
-// runs this query independently and may load before calculationController on some restarts.
-(async () => {
-  try {
-    await prisma.$executeRawUnsafe(`ALTER TABLE payrollcolumns ADD COLUMN payslip_label VARCHAR(100) NULL`);
-  } catch { /* column already exists — safe to ignore */ }
-})();
 
 function fmt(val) {
   const n = parseFloat(val || '0');
@@ -83,9 +64,7 @@ const downloadPayslip = asyncHandler(async (req, res) => {
   const canDownloadForOthers =
     roles.includes('admin') ||
     roles.includes('super-admin') ||
-    permissions.includes('view_payroll_reports') ||
     permissions.includes('export_payroll_reports') ||
-    permissions.includes('view_reports') ||
     permissions.includes('export_reports');
 
   if (!canDownloadForOthers) {
@@ -312,4 +291,66 @@ const getMyPayslips = asyncHandler(async (req, res) => {
   respond.ok(res, 'My payslips retrieved', { employeeId: String(self.id), runs: rows });
 });
 
-module.exports = { downloadPayslip, getMyPayslips };
+// ── My annual earnings & tax summary (employee self-service) ─────────────────
+const getMyTaxSummary = asyncHandler(async (req, res) => {
+  // Resolve own employee — prefer the users.employeeId link, fall back to email match
+  let empId = req.user?.employeeId ? String(req.user.employeeId) : null;
+  if (!empId) {
+    const [self] = await query(
+      'SELECT id FROM employee WHERE email = ? OR work_email = ? OR employee_id = ? LIMIT 1',
+      req.user?.email || '', req.user?.email || '', req.user?.username || ''
+    );
+    empId = self ? String(self.id) : null;
+  }
+  if (!empId) return respond.notFound(res, 'Employee record not found for this user');
+
+  const years = await query(`
+    SELECT DISTINCT YEAR(pr.date_start) AS y
+    FROM payrolldata pd JOIN payrollruns pr ON pr.id = pd.payroll
+    WHERE pd.employee = ? AND pr.status IN ('Completed','Approved') AND pr.date_start IS NOT NULL
+    ORDER BY y DESC`, BigInt(empId));
+  const yearList = years.map(r => String(r.y)).filter(y => y && y !== 'null');
+
+  const year = String(req.query.year ?? '').match(/^\d{4}$/)
+    ? String(req.query.year)
+    : (yearList[0] ?? String(new Date().getFullYear()));
+
+  const rows = await query(`
+    SELECT pr.id AS run_id, pr.name AS run_name, pr.date_start, pr.date_end,
+           COALESCE(NULLIF(pc.payslip_label,''), pc.name) AS item,
+           pc.payment_deduction,
+           CAST(pd.amount AS CHAR) AS amount
+    FROM payrolldata pd
+    JOIN payrollruns pr ON pr.id = pd.payroll
+    JOIN payrollcolumns pc ON pc.id = pd.payroll_item
+    WHERE pd.employee = ? AND pr.status IN ('Completed','Approved') AND YEAR(pr.date_start) = ?
+    ORDER BY pr.date_start ASC`, BigInt(empId), Number(year));
+
+  const isTax = name => /tax|paye/i.test(String(name ?? ''));
+  const byRun = new Map();
+  rows.forEach(r => {
+    const k = String(r.run_id);
+    if (!byRun.has(k)) {
+      byRun.set(k, {
+        run: r.run_name,
+        period: r.date_start ? `${String(r.date_start).slice(0, 10)} → ${String(r.date_end ?? '').slice(0, 10)}` : r.run_name,
+        gross: 0, tax: 0, other_deductions: 0,
+      });
+    }
+    const a = byRun.get(k);
+    const amt = parseFloat(r.amount || '0') || 0;
+    if (r.payment_deduction === 'Deduction') {
+      if (isTax(r.item)) a.tax += amt; else a.other_deductions += amt;
+    } else {
+      a.gross += amt;
+    }
+  });
+
+  respond.ok(res, 'Tax summary', {
+    year,
+    years: yearList,
+    runs: [...byRun.values()].map(a => ({ ...a, net: a.gross - a.tax - a.other_deductions })),
+  });
+});
+
+module.exports = { downloadPayslip, getMyPayslips, getMyTaxSummary };

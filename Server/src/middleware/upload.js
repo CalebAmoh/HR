@@ -18,7 +18,7 @@ const storage = multer.diskStorage({
   },
 });
 
-const ALLOWED = ['.pdf', '.jpg', '.jpeg', '.png'];
+const ALLOWED = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp'];
 
 const fileFilter = (_req, file, cb) => {
   const ext = path.extname(file.originalname).toLowerCase();
@@ -32,4 +32,16 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB per file
 });
 
-module.exports = { upload, UPLOAD_DIR };
+// In-memory CSV upload (attendance imports) — kept separate because the
+// document filter above only allows pdf/jpg/png
+const csvUpload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (['.csv', '.txt'].includes(ext)) cb(null, true);
+    else cb(new Error('Only .csv or .txt files are allowed — save Excel sheets as CSV first'), false);
+  },
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+module.exports = { upload, csvUpload, UPLOAD_DIR };

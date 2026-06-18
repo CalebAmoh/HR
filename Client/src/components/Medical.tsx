@@ -6,7 +6,7 @@ import {
   Plus, Edit, Trash2, CheckCircle2, XCircle, RefreshCw,
   FileText, X, UploadCloud, Send, Eye, ChevronLeft, Download, Upload,
   Calendar, Stethoscope, Pill, Landmark, UserCircle2, DollarSign, Paperclip,
-  Lock, Clock,
+  Clock,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { PageHeader } from './ui/PageHeader';
@@ -15,11 +15,13 @@ import { TablePagination } from './ui/TablePagination';
 import { FormModal } from './ui/FormModal';
 import { ConfirmAlert } from './ConfirmAlert';
 import { inputClass } from './ui/FormField';
+import { CountedTextarea } from './ui/CountedTextarea';
 import { SearchSelect } from './ui/SearchSelect';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { getCurrentUser } from '../../lib/auth';
 import { getSettings } from '../../lib/settings';
+import { useCan } from '@/hooks/useCan';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -63,17 +65,17 @@ function EmptyTable({ cols }: { cols: number }) {
 function StatusPill({ status }: { status?: string }) {
   if (!status) return null;
   const cls: Record<string, string> = {
-    Draft:             'pill',
+    Draft:             'pill pill-neutral',
     Pending:           'pill pill-warning',
     'Pending Approval':'pill pill-warning',
     Submitted:         'pill pill-accent',
     Approved:          'pill pill-success',
     Rejected:          'pill pill-danger',
     'GL Failed':       'pill pill-danger',
-    Cancelled:         'pill',
+    Cancelled:         'pill pill-neutral',
     Processing:        'pill pill-accent',
   };
-  return <span className={cls[status] ?? 'pill'}>{status}</span>;
+  return <span className={cls[status] ?? 'pill pill-neutral'}>{status}</span>;
 }
 
 
@@ -197,7 +199,9 @@ interface EmpOption { id: string; label: string; paygradId?: string; empId?: str
 function useEmployees() {
   const [list, setList] = useState<EmpOption[]>([]);
   useEffect(() => {
-    api.get('/employees?approval=APPROVED').then(r => {
+    // Only active employees can have new medical requests/claims — exclude suspended,
+    // terminated and resigned staff from the picker.
+    api.get('/employees?approval=APPROVED&lifecycle=ACTIVE').then(r => {
       const rows: any[] = r.data.data ?? r.data ?? [];
       setList(rows.map((e: any) => ({
         id:        String(e.id),
@@ -294,7 +298,7 @@ function MedTable({
   search, onSearch, onAdd, addLabel = 'Add New',
   headers, headerAligns, rows, renderRow, emptyColSpan, total, filtered,
 }: {
-  search: string; onSearch: (q: string) => void; onAdd: () => void; addLabel?: string;
+  search: string; onSearch: (q: string) => void; onAdd?: () => void; addLabel?: string;
   headers: string[]; headerAligns?: ('left' | 'right' | 'center')[];
   rows: any[]; renderRow: (row: any, i: number) => React.ReactNode;
   emptyColSpan: number; total: number; filtered: number;
@@ -308,7 +312,7 @@ function MedTable({
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
       className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden flex flex-col flex-1 max-h-min drop-shadow-sm">
       <TableToolbar searchQuery={search} onSearchChange={onSearch}
-        actions={<button className="primary-btn" onClick={onAdd}><Plus size={14} />{addLabel}</button>}
+        actions={onAdd ? <button className="primary-btn" onClick={onAdd}><Plus size={14} />{addLabel}</button> : undefined}
       />
       <div className="overflow-x-auto flex-1">
         <table className="w-full border-collapse">
@@ -351,12 +355,18 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
   const [docPreview, setDocPreview] = useState(false);
   const [rejecting, setRejecting]   = useState(false);
   const [reason, setReason]         = useState('');
-  const medicalApproval    = getSettings().approvals.medicalApproval;
   const medicalSelfApproval = getSettings().approvals.medicalSelfApproval;
   const appCurrency = getSettings().general.currency;
   const currentUserId = getCurrentUser()?.id;
   const attachment = record.attachment1;
   const isImage = (name: string) => /\.(png|jpg|jpeg|gif|webp)$/i.test(name ?? '');
+
+  const { can } = useCan();
+  // In admin mode, processing actions require medical permissions. In personal mode a user can
+  // only act on a request they originated — admin-originated requests are view-only.
+  const isOwnRecord = String(record.posted_by ?? '') === String(currentUserId ?? '');
+  const canProcess = !adminMode || can('approve_medical');
+  const canCreate  = adminMode ? can('create_medical') : isOwnRecord;
 
   const base = type === 'staff'
     ? `/medical/staff/${record.id}`
@@ -377,7 +387,6 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
 
   const submitRecord   = () => callAction(`${base}/submit`,   {},        'Submitted for approval');
   const approveRecord  = () => callAction(`${base}/approve`,  {},        'Request approved');
-  const finalizeRecord = () => callAction(`${base}/finalize`, {},        'Record finalized');
   const rejectRecord   = () => callAction(`${base}/reject`,   { reason }, 'Request rejected');
 
   return (
@@ -513,9 +522,10 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
           {rejecting && (
             <div className="space-y-1.5">
               <label className="label text-[var(--danger)]">Rejection Reason <span className="text-[var(--danger)]">*</span></label>
-              <textarea
+              <CountedTextarea
                 className={`${inputClass} resize-none`}
                 rows={3}
+                maxChars={500}
                 placeholder="Enter reason for rejection…"
                 value={reason}
                 onChange={e => setReason(e.target.value)}
@@ -537,16 +547,8 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
 
         <div className="px-5 py-4 border-t border-[var(--border)] shrink-0 flex flex-wrap gap-2">
 
-          {/* ── Finalize: admin, Draft, approval workflow OFF ── */}
-          {adminMode && record.status === 'Draft' && !medicalApproval && (
-            <button disabled={acting} onClick={finalizeRecord}
-              className="success-btn flex items-center gap-1.5 flex-1">
-              <Lock size={14} /> {acting ? 'Finalizing…' : 'Finalize'}
-            </button>
-          )}
-
-          {/* ── Submit: non-admin always, or admin when approval workflow ON ── */}
-          {record.status === 'Draft' && (!adminMode || medicalApproval) && (
+          {/* ── Submit: any Draft record goes through the approval workflow ── */}
+          {record.status === 'Draft' && canCreate && (
             <button disabled={acting} onClick={submitRecord}
               className="secondary-btn flex items-center gap-1.5 flex-1"
               style={{ borderColor: '#f59e0b', color: '#b45309' }}>
@@ -555,7 +557,7 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
           )}
 
           {/* ── Approve / Reject: admin, Pending Approval ── */}
-          {adminMode && record.status === 'Pending Approval' && !rejecting && (() => {
+          {adminMode && record.status === 'Pending Approval' && !rejecting && canProcess && (() => {
             const isSelf = currentUserId != null && record.posted_by != null
               && String(record.posted_by) === String(currentUserId);
             const canAct = medicalSelfApproval || !isSelf;
@@ -593,7 +595,7 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
           )}
 
           {/* ── Retry GL: admin, GL Failed ── */}
-          {adminMode && record.status === 'GL Failed' && !rejecting && (
+          {adminMode && record.status === 'GL Failed' && !rejecting && canProcess && (
             <button disabled={acting}
               onClick={() => callAction(`${base}/retry-gl`, {}, 'GL posted successfully')}
               className="secondary-btn flex items-center gap-1.5 flex-1">
@@ -612,9 +614,17 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
 // ── Staff Medical tab ─────────────────────────────────────────────────────────
 
 function StaffMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean; currentEmpId?: string }) {
+  const { can } = useCan();
+  const currentUserId = getCurrentUser()?.id;
+  // Admin actions need medical permissions. In personal mode a user can only act on
+  // requests they originated themselves — admin-originated requests are view-only.
+  const allowCreate  = !adminMode || can('create_medical');   // "Add Request" (own new request)
+  const ownsRow   = (row: any) => String(row.posted_by ?? '') === String(currentUserId ?? '');
+  const rowSubmit = (row: any) => adminMode ? can('create_medical') : ownsRow(row);
+  const rowEdit   = (row: any) => adminMode ? can('edit_medical')   : ownsRow(row);
+  const rowDelete = (row: any) => adminMode ? can('delete_medical') : ownsRow(row);
   const employees = useEmployees();
   const { limitCurrencyMap } = useLimitCurrencyMap();
-  const medicalApproval = getSettings().approvals.medicalApproval;
   const appCurrency = getSettings().general.currency;
   const [rows, setRows]         = useState<any[]>([]);
   const [search, setSearch]     = useState('');
@@ -707,7 +717,7 @@ function StaffMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean; cur
 
   return (
     <>
-      <MedTable search={search} onSearch={setSearch} onAdd={openAdd} addLabel="Add Request"
+      <MedTable search={search} onSearch={setSearch} onAdd={allowCreate ? openAdd : undefined} addLabel="Add Request"
         headers={['Employee', 'Admission Date', 'Discharged Date', 'Illness Type', `Cost${appCurrency ? ` (${appCurrency})` : ''}`, 'Status', 'Actions']}
         rows={filtered} emptyColSpan={7} total={rows.length} filtered={filtered.length}
         renderRow={(row, i) => (
@@ -721,21 +731,16 @@ function StaffMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean; cur
             <td className="td text-right">
               <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                 <button onClick={() => setViewRec(row)} className="action-btn text-[var(--text-muted)]" title="View Details"><Eye size={13} /></button>
-                {row.status === 'Draft' && (
-                  adminMode && !medicalApproval
-                    ? <button onClick={async () => {
-                        try { const r = await api.post(`/medical/staff/${row.id}/finalize`, {}); console.log('[medical GL] finalize response:', r.data?.data); if (r.data?.data?.gl_payload) console.log('[medical GL] sent to GL API:', r.data.data.gl_payload); toast.success('Finalized'); load(); }
-                        catch (e: any) { toast.error(e?.response?.data?.message ?? 'Failed to finalize'); }
-                      }} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-[color-mix(in_srgb,var(--success)_10%,transparent)] text-[color-mix(in_srgb,var(--success)_150%,#000)] hover:bg-[color-mix(in_srgb,var(--success)_18%,transparent)] border border-[color-mix(in_srgb,var(--success)_30%,transparent)] transition-colors" title="Finalize"><Lock size={11} />Finalize</button>
-                    : <button onClick={async () => {
-                        try { await api.post(`/medical/staff/${row.id}/submit`, {}); toast.success('Submitted for approval'); load(); }
-                        catch (e: any) { toast.error(e?.response?.data?.message ?? 'Failed to submit'); }
-                      }} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] text-[var(--accent)] hover:bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] border border-[color-mix(in_srgb,var(--accent)_25%,transparent)] transition-colors" title="Submit for Approval"><Send size={11} />Submit</button>
+                {row.status === 'Draft' && rowSubmit(row) && (
+                  <button onClick={async () => {
+                    try { await api.post(`/medical/staff/${row.id}/submit`, {}); toast.success('Submitted for approval'); load(); }
+                    catch (e: any) { toast.error(e?.response?.data?.message ?? 'Failed to submit'); }
+                  }} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] text-[var(--accent)] hover:bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] border border-[color-mix(in_srgb,var(--accent)_25%,transparent)] transition-colors" title="Submit for Approval"><Send size={11} />Submit</button>
                 )}
-                {(row.status === 'Draft' || row.status === 'Rejected') && (
+                {rowEdit(row) && (row.status === 'Draft' || row.status === 'Rejected') && (
                   <button onClick={() => openEdit(row)} className="action-btn" title="Edit"><Edit size={13} /></button>
                 )}
-                {(row.status === 'Draft' || row.status === 'Rejected' || adminMode) && (
+                {rowDelete(row) && (row.status === 'Draft' || row.status === 'Rejected' || adminMode) && (
                   <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>
                 )}
               </div>
@@ -826,10 +831,16 @@ function StaffMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean; cur
 // ── Dependent Medical tab ─────────────────────────────────────────────────────
 
 function DependentMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean; currentEmpId?: string }) {
+  const { can } = useCan();
+  const currentUserId = getCurrentUser()?.id;
+  const allowCreate  = !adminMode || can('create_medical');
+  const ownsRow   = (row: any) => String(row.posted_by ?? '') === String(currentUserId ?? '');
+  const rowSubmit = (row: any) => adminMode ? can('create_medical') : ownsRow(row);
+  const rowEdit   = (row: any) => adminMode ? can('edit_medical')   : ownsRow(row);
+  const rowDelete = (row: any) => adminMode ? can('delete_medical') : ownsRow(row);
   const employees    = useEmployees();
   const allDependents = useAllDependents();
   const { limitCurrencyMap } = useLimitCurrencyMap();
-  const medicalApproval = getSettings().approvals.medicalApproval;
   const appCurrency = getSettings().general.currency;
   const [rows, setRows]         = useState<any[]>([]);
   const [search, setSearch]     = useState('');
@@ -949,7 +960,7 @@ function DependentMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean;
 
   return (
     <>
-      <MedTable search={search} onSearch={setSearch} onAdd={openAdd} addLabel="Add Request"
+      <MedTable search={search} onSearch={setSearch} onAdd={allowCreate ? openAdd : undefined} addLabel="Add Request"
         headers={['Employee', 'Dependent', 'Relationship', 'Date Attended', 'Illness Type', `Cost${appCurrency ? ` (${appCurrency})` : ''}`, 'Status', 'Actions']}
         rows={filtered} emptyColSpan={8} total={rows.length} filtered={filtered.length}
         renderRow={(row, i) => (
@@ -964,21 +975,16 @@ function DependentMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean;
             <td className="td text-right">
               <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                 <button onClick={() => setViewRec(row)} className="action-btn text-[var(--text-muted)]" title="View Details"><Eye size={13} /></button>
-                {row.status === 'Draft' && (
-                  adminMode && !medicalApproval
-                    ? <button onClick={async () => {
-                        try { const r = await api.post(`/medical/dependents-requests/${row.id}/finalize`, {}); console.log('[medical GL] dep finalize response:', r.data?.data); if (r.data?.data?.gl_payload) console.log('[medical GL] sent to GL API:', r.data.data.gl_payload); toast.success('Finalized'); load(); }
-                        catch (e: any) { toast.error(e?.response?.data?.message ?? 'Failed to finalize'); }
-                      }} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-[color-mix(in_srgb,var(--success)_10%,transparent)] text-[color-mix(in_srgb,var(--success)_150%,#000)] hover:bg-[color-mix(in_srgb,var(--success)_18%,transparent)] border border-[color-mix(in_srgb,var(--success)_30%,transparent)] transition-colors" title="Finalize"><Lock size={11} />Finalize</button>
-                    : <button onClick={async () => {
-                        try { await api.post(`/medical/dependents-requests/${row.id}/submit`, {}); toast.success('Submitted for approval'); load(); }
-                        catch (e: any) { toast.error(e?.response?.data?.message ?? 'Failed to submit'); }
-                      }} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] text-[var(--accent)] hover:bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] border border-[color-mix(in_srgb,var(--accent)_25%,transparent)] transition-colors" title="Submit for Approval"><Send size={11} />Submit</button>
+                {row.status === 'Draft' && rowSubmit(row) && (
+                  <button onClick={async () => {
+                    try { await api.post(`/medical/dependents-requests/${row.id}/submit`, {}); toast.success('Submitted for approval'); load(); }
+                    catch (e: any) { toast.error(e?.response?.data?.message ?? 'Failed to submit'); }
+                  }} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] text-[var(--accent)] hover:bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] border border-[color-mix(in_srgb,var(--accent)_25%,transparent)] transition-colors" title="Submit for Approval"><Send size={11} />Submit</button>
                 )}
-                {(row.status === 'Draft' || row.status === 'Rejected') && (
+                {rowEdit(row) && (row.status === 'Draft' || row.status === 'Rejected') && (
                   <button onClick={() => openEdit(row)} className="action-btn" title="Edit"><Edit size={13} /></button>
                 )}
-                {(row.status === 'Draft' || row.status === 'Rejected' || adminMode) && (
+                {rowDelete(row) && (row.status === 'Draft' || row.status === 'Rejected' || adminMode) && (
                   <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>
                 )}
               </div>
@@ -1089,6 +1095,8 @@ function DependentMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean;
 // ── Medical Limits Setup tab ──────────────────────────────────────────────────
 
 function MedicalLimitsTab() {
+  const { can } = useCan();
+  const canManage = can('manage_medical_limits');
   const grades     = usePayGrades();
   const currencies = useCurrencies();
   const { reloadLimitMap } = useLimitCurrencyMap();
@@ -1141,9 +1149,17 @@ function MedicalLimitsTab() {
 
   const filtered = rows.filter(r => !search || (r.grade_name ?? '').toLowerCase().includes(search.toLowerCase()));
 
+  // A pay grade (band) that already has a limit shouldn't appear again when adding a new one.
+  // When editing, keep the row's own grade selectable.
+  const gradeOptions = useMemo(() => {
+    const used = new Set(rows.map(r => String(r.paygrade_id ?? r.paygrade ?? '')));
+    const currentId = sel ? String(sel.paygrade_id ?? sel.paygrade ?? '') : null;
+    return grades.filter(g => !used.has(String(g.id)) || String(g.id) === currentId);
+  }, [grades, rows, sel]);
+
   return (
     <>
-      <MedTable search={search} onSearch={setSearch} onAdd={openAdd} addLabel="Add Limit"
+      <MedTable search={search} onSearch={setSearch} onAdd={canManage ? openAdd : undefined} addLabel="Add Limit"
         headers={['Pay Grade', 'Currency', 'Limit Amount', 'Actions']}
         rows={filtered} emptyColSpan={4} total={rows.length} filtered={filtered.length}
         renderRow={(row, i) => (
@@ -1153,8 +1169,8 @@ function MedicalLimitsTab() {
             <td className="td">{parseFloat(String(row.amount ?? 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
             <td className="td text-right">
               <div className="flex justify-end gap-2">
-                <button onClick={() => openEdit(row)} className="action-btn"><Edit size={13} /></button>
-                <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]"><Trash2 size={13} /></button>
+                {canManage && <button onClick={() => openEdit(row)} className="action-btn"><Edit size={13} /></button>}
+                {canManage && <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]"><Trash2 size={13} /></button>}
               </div>
             </td>
           </tr>
@@ -1166,7 +1182,7 @@ function MedicalLimitsTab() {
           <FormModal title={sel ? 'Edit Medical Limit' : 'Add Medical Limit'} maxWidth="md"
             onClose={() => setOpen(false)} onSave={handleSave} saveLabel={saving ? 'Saving…' : 'Save'}>
             <F label="Pay Grade" required>
-              <SearchSelect value={f.paygrade} onChange={v => set('paygrade', v)} options={grades} placeholder="Select pay grade…" />
+              <SearchSelect value={f.paygrade} onChange={v => set('paygrade', v)} options={gradeOptions} placeholder="Select pay grade…" />
             </F>
             <F label="Currency" required>
               <select className={inputClass} value={f.currency} onChange={e => set('currency', e.target.value)}>
@@ -1388,11 +1404,28 @@ function StaffMedicalEnquiryTab() {
     return '';
   };
 
+  const exportEnquiry = () => {
+    if (!filtered.length) { toast.error('Nothing to export'); return; }
+    const ws = XLSX.utils.aoa_to_sheet([enqHeaders, ...filtered.map(enqRow)]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Medical Enquiry');
+    XLSX.writeFile(wb, `staff_medical_enquiry_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
   return (
     <>
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
         className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden flex flex-col flex-1 max-h-min drop-shadow-sm">
-        <TableToolbar searchQuery={search} onSearchChange={setSearch} searchPlaceholder="Search employees…" />
+        <TableToolbar
+          searchQuery={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Search employees…"
+          actions={
+            <button className="secondary-btn shrink-0" onClick={exportEnquiry}>
+              <Download size={14} className="inline mr-1.5" />Export
+            </button>
+          }
+        />
         <div className="overflow-x-auto flex-1">
           <table className="w-full border-collapse">
             <thead>
@@ -1448,6 +1481,8 @@ function StaffMedicalEnquiryTab() {
 // ── Registered Hospitals tab ──────────────────────────────────────────────────
 
 function RegisteredHospitalsTab() {
+  const { can } = useCan();
+  const canManage = can('manage_hospitals');
   const [rows, setRows]       = useState<any[]>([]);
   const [search, setSearch]   = useState('');
   const [open, setOpen]       = useState(false);
@@ -1485,20 +1520,20 @@ function RegisteredHospitalsTab() {
 
   return (
     <>
-      <MedTable search={search} onSearch={setSearch} onAdd={openAdd} addLabel="Register Hospital"
+      <MedTable search={search} onSearch={setSearch} onAdd={canManage ? openAdd : undefined} addLabel="Register Hospital"
         headers={['Name', 'Type', 'Account', 'Actions']}
         rows={filtered} emptyColSpan={4} total={rows.length} filtered={filtered.length}
         renderRow={(row, i) => (
           <tr key={i} className="tr">
             <td className="td">{row.name}</td>
             <td className="td">
-              <span className={`pill ${row.type === 'Pharmacy' ? 'pill-accent' : ''}`}>{row.type ?? 'Hospital'}</span>
+              <span className={`pill ${row.type === 'Pharmacy' ? 'pill-accent' : 'pill-neutral'}`}>{row.type ?? 'Hospital'}</span>
             </td>
             <td className="td">{row.account}</td>
             <td className="td text-right">
               <div className="flex justify-end gap-2">
-                <button onClick={() => openEdit(row)} className="action-btn"><Edit size={13} /></button>
-                <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]"><Trash2 size={13} /></button>
+                {canManage && <button onClick={() => openEdit(row)} className="action-btn"><Edit size={13} /></button>}
+                {canManage && <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]"><Trash2 size={13} /></button>}
               </div>
             </td>
           </tr>
@@ -1532,10 +1567,18 @@ function RegisteredHospitalsTab() {
 // ── Hospital Claim detail slide-over ─────────────────────────────────────────
 
 function HospitalClaimDetailPanel({ row, onClose, onRefresh }: { row: any; onClose: () => void; onRefresh: () => void }) {
+  const { can } = useCan();
+  const canApprove = can('approve_medical');
   const [acting, setActing]     = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason]     = useState('');
   const appCurrency = getSettings().general.currency;
+  const medicalSelfApproval = getSettings().approvals.medicalSelfApproval;
+  const currentUserId = getCurrentUser()?.id;
+  // Self-approval guard: the originator can only approve their own claim when self-approval is on.
+  const isSelf = currentUserId != null && row.posted_by != null
+    && String(row.posted_by) === String(currentUserId);
+  const canSelfAct = medicalSelfApproval || !isSelf;
 
   const fmtN = (n: any) => parseFloat(String(n ?? 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const items: any[] = Array.isArray(row.items) ? row.items : [];
@@ -1663,7 +1706,7 @@ function HospitalClaimDetailPanel({ row, onClose, onRefresh }: { row: any; onClo
           {rejecting && (
             <div className="space-y-1.5">
               <label className="label text-[var(--danger)]">Rejection Reason</label>
-              <textarea className={`${inputClass} resize-none`} rows={3}
+              <CountedTextarea className={`${inputClass} resize-none`} rows={3} maxChars={500}
                 placeholder="Enter reason for rejection…"
                 value={reason} onChange={e => setReason(e.target.value)} autoFocus />
             </div>
@@ -1671,7 +1714,7 @@ function HospitalClaimDetailPanel({ row, onClose, onRefresh }: { row: any; onClo
         </div>
 
         <div className="px-5 py-4 border-t border-[var(--border)] shrink-0 flex flex-wrap gap-2">
-          {row.status === 'Pending Approval' && !rejecting && (
+          {row.status === 'Pending Approval' && !rejecting && canApprove && (canSelfAct ? (
             <>
               <button disabled={acting}
                 onClick={() => callAction(`/medical/claims/${row.id}/approve`, {}, 'Claim approved')}
@@ -1683,8 +1726,14 @@ function HospitalClaimDetailPanel({ row, onClose, onRefresh }: { row: any; onClo
                 <XCircle size={14} />Reject
               </button>
             </>
-          )}
-          {row.status === 'GL Failed' && !rejecting && (
+          ) : (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium flex-1"
+              style={{ background: 'rgba(245,158,11,0.1)', color: '#b45309', border: '1px solid #f59e0b' }}>
+              <Clock size={13} className="shrink-0" />
+              Awaiting a different approver
+            </div>
+          ))}
+          {row.status === 'GL Failed' && !rejecting && canApprove && (
             <button disabled={acting}
               onClick={() => callAction(`/medical/claims/${row.id}/retry-gl`, {}, 'GL posted successfully')}
               className="secondary-btn flex items-center gap-1.5 flex-1">
@@ -1726,10 +1775,14 @@ function claimPillClass(status: string) {
   if (status === 'Rejected')         return 'pill bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] text-[var(--danger)]';
   if (status === 'GL Failed')        return 'pill bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] text-[var(--danger)]';
   if (status === 'Pending Approval') return 'pill pill-accent';
-  return 'pill'; // Draft
+  return 'pill pill-neutral'; // Draft
 }
 
 function HospitalClaimsTab() {
+  const { can } = useCan();
+  const allowCreate = can('create_medical');
+  const allowEdit   = can('edit_medical');
+  const allowDelete = can('delete_medical');
   const { hospitalOptions } = useHospitalList();
   const employees    = useEmployees();
   const allDependents = useAllDependents();
@@ -1964,7 +2017,7 @@ function HospitalClaimsTab() {
 
   return (
     <>
-      <MedTable search={search} onSearch={setSearch} onAdd={openAdd} addLabel="Add Claim"
+      <MedTable search={search} onSearch={setSearch} onAdd={allowCreate ? openAdd : undefined} addLabel="Add Claim"
         headers={['Hospital', 'Type', 'Items', `Total${appCurrency ? ` (${appCurrency})` : ''}`, 'WHT', 'Credit', 'Status', 'Actions']}
         headerAligns={['left', 'left', 'center', 'right', 'right', 'right', 'left', 'right']}
         rows={filtered} emptyColSpan={8} total={rows.length} filtered={filtered.length}
@@ -1980,9 +2033,9 @@ function HospitalClaimsTab() {
             <td className="td text-right">
               <div className="flex justify-end gap-1.5">
                 {row.status === 'Draft' && <>
-                  <button onClick={() => openEdit(row)} className="action-btn" title="Edit"><Edit size={13} /></button>
-                  <button onClick={() => handleSubmit(row)} className="action-btn text-[var(--accent)]" title="Submit"><Send size={13} /></button>
-                  <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>
+                  {allowEdit && <button onClick={() => openEdit(row)} className="action-btn" title="Edit"><Edit size={13} /></button>}
+                  {allowCreate && <button onClick={() => handleSubmit(row)} className="action-btn text-[var(--accent)]" title="Submit"><Send size={13} /></button>}
+                  {allowDelete && <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>}
                 </>}
                 <button onClick={() => setViewDetail(row)} className="action-btn" title="View Details"><Eye size={13} /></button>
               </div>
@@ -2135,7 +2188,7 @@ function HospitalClaimsTab() {
 
             {/* Comment */}
             <F label="Comment">
-              <textarea className={inputClass + ' resize-none'} rows={2} value={comment}
+              <CountedTextarea className={inputClass + ' resize-none'} rows={2} maxChars={300} value={comment}
                 onChange={e => setComment(e.target.value)} placeholder="Optional comment…" />
             </F>
 
@@ -2178,13 +2231,14 @@ function HospitalClaimsTab() {
 function MyMedicalEnquiryTab() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [viewRec, setViewRec]   = useState<any>(null);
+  const [viewType, setViewType] = useState<'staff' | 'dependent'>('staff');
 
-  useEffect(() => {
-    api.get('/medical/my-enquiry')
-      .then(r => setData(r.data.data ?? null))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  const load = () => api.get('/medical/my-enquiry')
+    .then(r => setData(r.data.data ?? null))
+    .catch(() => {})
+    .finally(() => setLoading(false));
+  useEffect(() => { load(); }, []);
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-[13px] text-[var(--text-muted)]">Loading…</div>;
   if (!data)   return <div className="flex-1 flex items-center justify-center text-[13px] text-[var(--text-muted)]">No employee record linked to your account.</div>;
@@ -2192,8 +2246,35 @@ function MyMedicalEnquiryTab() {
   const fmt = (v: any) => v != null ? parseFloat(String(v)).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '—';
   const currency = data.currency ?? '';
 
+  const exportEnquiry = () => {
+    const aoa: any[][] = [
+      ['My Medical Enquiry'],
+      ['Medical Limit',     data.medical_limit != null ? `${currency} ${fmt(data.medical_limit)}` : '—'],
+      ['Amount Utilised',   `${currency} ${fmt(data.amount_utilized)}`],
+      ['Remaining Balance', data.limit_balance != null ? `${currency} ${fmt(data.limit_balance)}` : '—'],
+    ];
+    if (data.staff_records?.length) {
+      aoa.push([], ['My Medical Records'], ['Admission Date', 'Illness', 'Hospital', 'Cost', 'Status']);
+      data.staff_records.forEach((r: any) => aoa.push([r.admission_date?.slice(0, 10), r.illness_type, r.hospital, r.cost, r.status]));
+    }
+    if (data.dependent_records?.length) {
+      aoa.push([], ['Dependent Medical Records'], ['Dependent', 'Date Attended', 'Illness', 'Cost', 'Status']);
+      data.dependent_records.forEach((r: any) => aoa.push([r.dependent_name, r.date_attended?.slice(0, 10), r.illness_type, r.cost, r.status]));
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'My Medical Enquiry');
+    XLSX.writeFile(wb, `my_medical_enquiry_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+      <div className="flex justify-end">
+        <button className="secondary-btn" onClick={exportEnquiry}>
+          <Download size={14} className="inline mr-1.5" />Download
+        </button>
+      </div>
+
       {/* Summary cards */}
       <div className="grid grid-cols-3 gap-3">
         {[
@@ -2219,6 +2300,7 @@ function MyMedicalEnquiryTab() {
               <thead><tr>
                 <th className="th">Admission Date</th><th className="th">Illness</th>
                 <th className="th">Hospital</th><th className="th">Cost</th><th className="th">Status</th>
+                <th className="th text-right"><span className="sr-only">Actions</span></th>
               </tr></thead>
               <tbody>{data.staff_records.map((r: any, i: number) => (
                 <tr key={i} className="tr">
@@ -2227,6 +2309,9 @@ function MyMedicalEnquiryTab() {
                   <td className="td">{r.hospital}</td>
                   <td className="td">{fmt(r.cost)}</td>
                   <td className="td"><StatusPill status={r.status} /></td>
+                  <td className="td text-right">
+                    <button onClick={() => { setViewRec({ ...r, employee_name: data.employee_name }); setViewType('staff'); }} className="action-btn text-[var(--text-muted)]" title="View Details"><Eye size={13} /></button>
+                  </td>
                 </tr>
               ))}</tbody>
             </table>
@@ -2245,6 +2330,7 @@ function MyMedicalEnquiryTab() {
               <thead><tr>
                 <th className="th">Dependent</th><th className="th">Date Attended</th>
                 <th className="th">Illness</th><th className="th">Cost</th><th className="th">Status</th>
+                <th className="th text-right"><span className="sr-only">Actions</span></th>
               </tr></thead>
               <tbody>{data.dependent_records.map((r: any, i: number) => (
                 <tr key={i} className="tr">
@@ -2253,6 +2339,9 @@ function MyMedicalEnquiryTab() {
                   <td className="td">{r.illness_type}</td>
                   <td className="td">{fmt(r.cost)}</td>
                   <td className="td"><StatusPill status={r.status} /></td>
+                  <td className="td text-right">
+                    <button onClick={() => { setViewRec({ ...r, employee_name: data.employee_name }); setViewType('dependent'); }} className="action-btn text-[var(--text-muted)]" title="View Details"><Eye size={13} /></button>
+                  </td>
                 </tr>
               ))}</tbody>
             </table>
@@ -2263,6 +2352,13 @@ function MyMedicalEnquiryTab() {
       {!data.staff_records?.length && !data.dependent_records?.length && (
         <p className="text-center text-[13px] text-[var(--text-muted)] py-10">No medical records on file.</p>
       )}
+
+      <AnimatePresence>
+        {viewRec && (
+          <MedicalDetailPanel record={viewRec} type={viewType} adminMode={false}
+            onClose={() => setViewRec(null)} onRefresh={load} />
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

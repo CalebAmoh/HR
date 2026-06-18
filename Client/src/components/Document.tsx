@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import {
-  Eye, FileEdit, Trash2, Filter, Plus, Download, X, Loader2,
+  Eye, FileEdit, Trash2, Filter, Plus, Download, X, Loader2, Mail,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ConfirmAlert } from './ConfirmAlert';
@@ -12,36 +12,42 @@ import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import api from '../../lib/api';
 import { toast } from 'sonner';
+import { useCan } from '@/hooks/useCan';
 
-const initialEmployeeDocs = [
-  { id: 101, employee: 'UNION ADMIN', documentType: 'Passport', dateOfIssue: '2023-01-15', placeOfIssue: 'Accra', expiryDate: '2033-01-14', details: 'Valid passport', attachmentName: 'passport_admin.pdf' },
-  { id: 102, employee: 'SAMUEL BANDOH', documentType: 'National ID', dateOfIssue: '2022-05-10', placeOfIssue: 'Kumasi', expiryDate: '2032-05-10', details: 'Ghana Card', attachmentName: 'gh_card_samuel.jpg' },
-  { id: 103, employee: 'SARAH JENKS', documentType: 'Tax Certificate', dateOfIssue: '2025-02-01', placeOfIssue: 'Accra', expiryDate: '2026-02-01', details: '2025 Tax clearance', attachmentName: 'tax_clearance.pdf' },
-];
-
-const fmtSharing = (doc: any) => {
+// share_departments / share_employees are stored as comma-joined IDs.
+// Resolve them to names so the column reads "Emps: John Doe" rather than "Emps: 8".
+const fmtSharing = (doc: any, empMap: Record<string, string> = {}, deptMap: Record<string, string> = {}) => {
   if (doc.share_userlevel === 'All') return 'All';
+  const resolve = (csv: string, map: Record<string, string>) =>
+    csv.split(',').map(x => x.trim()).filter(Boolean).map(id => map[id] ?? `#${id}`);
   const parts: string[] = [];
-  if (doc.share_departments) parts.push(`Depts: ${doc.share_departments}`);
-  if (doc.share_employees)   parts.push(`Emps: ${doc.share_employees}`);
+  if (doc.share_departments) parts.push(`Depts: ${resolve(doc.share_departments, deptMap).join(', ')}`);
+  if (doc.share_employees)   parts.push(`Emps: ${resolve(doc.share_employees, empMap).join(', ')}`);
   return parts.join(' | ') || '—';
 };
+
+const fmtDate = (d: any) => d ? String(d).substring(0, 10) : '—';
 
 type DocTab = 'Company Documents' | 'Employee Documents';
 const TABS: DocTab[] = ['Company Documents', 'Employee Documents'];
 
 export function Documents() {
-  const [activeTab, setActiveTab]       = useState<DocTab>('Company Documents');
-  const [companyDocs, setCompanyDocs]   = useState<any[]>([]);
+  const { can } = useCan();
+  const [activeTab, setActiveTab]         = useState<DocTab>('Company Documents');
+  const [companyDocs, setCompanyDocs]     = useState<any[]>([]);
   const [companyLoading, setCompanyLoading] = useState(false);
-  const [employeeDocs, setEmployeeDocs] = useState(initialEmployeeDocs);
-  const [search, setSearch]             = useState('');
-  const [showFilters, setShowFilters]   = useState(false);
+  const [employeeDocs, setEmployeeDocs]   = useState<any[]>([]);
+  const [employeeLoading, setEmployeeLoading] = useState(false);
+  const [search, setSearch]               = useState('');
+  const [showFilters, setShowFilters]     = useState(false);
   const [docTypeFilter, setDocTypeFilter] = useState('');
-  const [isFormOpen, setIsFormOpen]     = useState(false);
-  const [isAlertOpen, setIsAlertOpen]   = useState(false);
-  const [selectedDoc, setSelectedDoc]   = useState<any>(null);
+  const [isFormOpen, setIsFormOpen]       = useState(false);
+  const [isAlertOpen, setIsAlertOpen]     = useState(false);
+  const [selectedDoc, setSelectedDoc]     = useState<any>(null);
   const [documentToView, setDocumentToView] = useState<any>(null);
+  const [notifying, setNotifying]         = useState(false);
+  const [empMap, setEmpMap]               = useState<Record<string, string>>({});
+  const [deptMap, setDeptMap]             = useState<Record<string, string>>({});
 
   const isEmployee = activeTab === 'Employee Documents';
 
@@ -53,40 +59,95 @@ export function Documents() {
       .finally(() => setCompanyLoading(false));
   }, []);
 
-  useEffect(() => { fetchCompanyDocs(); }, [fetchCompanyDocs]);
+  const fetchEmployeeDocs = useCallback(() => {
+    setEmployeeLoading(true);
+    api.get('/documents/employee')
+      .then(r => setEmployeeDocs(r.data.data ?? []))
+      .catch(() => toast.error('Failed to load employee documents'))
+      .finally(() => setEmployeeLoading(false));
+  }, []);
+
+  useEffect(() => { fetchCompanyDocs();  }, [fetchCompanyDocs]);
+  useEffect(() => { fetchEmployeeDocs(); }, [fetchEmployeeDocs]);
+
+  // Lookup maps to resolve shared employee/department IDs to names in the table
+  useEffect(() => {
+    api.get('/employees/active')
+      .then(r => setEmpMap(Object.fromEntries((r.data.data ?? []).map((e: any) => [String(e.id), e.name]))))
+      .catch(() => {});
+    api.get('/company/structures')
+      .then(r => setDeptMap(Object.fromEntries((r.data.data ?? []).map((s: any) => [String(s.id), s.title]))))
+      .catch(() => {});
+  }, []);
 
   const filteredCompany = useMemo(
     () => companyDocs.filter(d => (d.name ?? '').toLowerCase().includes(search.toLowerCase())),
     [companyDocs, search]
   );
+
   const filteredEmployee = useMemo(
     () => employeeDocs.filter(d => {
       const q = search.toLowerCase();
-      return (d.employee.toLowerCase().includes(q) || d.documentType.toLowerCase().includes(q))
-        && (!docTypeFilter || d.documentType === docTypeFilter);
+      const nameMatch = (d.employee_name ?? '').toLowerCase().includes(q);
+      const typeMatch = (d.document_type_name ?? '').toLowerCase().includes(q);
+      const filterMatch = !docTypeFilter || d.document_type_name === docTypeFilter;
+      return (nameMatch || typeMatch) && filterMatch;
     }),
     [employeeDocs, search, docTypeFilter]
   );
 
   const handleSave = () => {
-    if (!isEmployee) fetchCompanyDocs();
+    if (isEmployee) fetchEmployeeDocs();
+    else fetchCompanyDocs();
     toast.success('Document saved');
   };
 
   const handleDelete = async () => {
     if (!selectedDoc) return;
-    if (!isEmployee) {
-      try {
+    try {
+      if (isEmployee) {
+        await api.delete(`/documents/employee/${selectedDoc.id}`);
+      } else {
         await api.delete(`/documents/company/${selectedDoc.id}`);
-        toast.success('Document deleted');
-        fetchCompanyDocs();
-      } catch { toast.error('Delete failed'); }
-    } else {
-      setEmployeeDocs(prev => prev.filter(d => d.id !== selectedDoc.id));
+      }
+      toast.success('Document deleted');
+      isEmployee ? fetchEmployeeDocs() : fetchCompanyDocs();
+    } catch {
+      toast.error('Delete failed');
     }
     setIsAlertOpen(false);
     setSelectedDoc(null);
   };
+
+  const handleNotifyExpired = async () => {
+    setNotifying(true);
+    try {
+      const r = await api.post('/documents/employee/notify-expired');
+      const { notified, total } = r.data.data ?? {};
+      if (total === 0) toast.info('No expired documents found that need notification.');
+      else toast.success(`Email sent for ${notified} of ${total} expired document(s).`);
+      fetchEmployeeDocs();
+    } catch {
+      toast.error('Failed to send notifications');
+    } finally {
+      setNotifying(false);
+    }
+  };
+
+  // Normalise a row from the API into the shape EmployeeDocumentForm expects
+  const toEditData = (row: any) => ({
+    id:           row.id,
+    employee:     String(row.employee),
+    documentType: row.document_type_name ?? '',
+    dateOfIssue:  fmtDate(row.date_added)  === '—' ? '' : fmtDate(row.date_added),
+    placeOfIssue: row.place_of_issue ?? '',
+    expiryDate:   fmtDate(row.valid_until) === '—' ? '' : fmtDate(row.valid_until),
+    details:      row.details ?? '',
+    attachment:   row.attachment ?? null,
+  });
+
+  const loading = isEmployee ? employeeLoading : companyLoading;
+  const rows    = isEmployee ? filteredEmployee : filteredCompany;
 
   return (
     <div className="p-4 sm:p-6 md:p-8 w-full max-w-[1400px] mx-auto flex flex-col h-full overflow-hidden">
@@ -137,17 +198,30 @@ export function Documents() {
           ) : null}
           actions={
             <>
-              <button onClick={() => { setSelectedDoc(null); setIsFormOpen(true); }} className="primary-btn shrink-0">
-                <span className="hidden sm:inline">Add New</span><span className="sm:hidden">Add</span>
-                <Plus className="w-[14px] h-[14px]" />
-              </button>
-              {isEmployee && (
-                <button
-                  onClick={() => setShowFilters(!showFilters)}
-                  className={`secondary-btn shrink-0 ${showFilters ? 'ring-2 ring-[var(--accent)] border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-dim)]' : ''}`}
-                >
-                  Filter <Filter className="w-[14px] h-[14px] fill-current opacity-80" />
+              {can('create_documents') && (
+                <button onClick={() => { setSelectedDoc(null); setIsFormOpen(true); }} className="primary-btn shrink-0">
+                  <span className="hidden sm:inline">Add New</span><span className="sm:hidden">Add</span>
+                  <Plus className="w-[14px] h-[14px]" />
                 </button>
+              )}
+              {isEmployee && (
+                <>
+                  <button
+                    onClick={() => setShowFilters(!showFilters)}
+                    className={`secondary-btn shrink-0 ${showFilters ? 'ring-2 ring-[var(--accent)] border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-dim)]' : ''}`}
+                  >
+                    Filter <Filter className="w-[14px] h-[14px] fill-current opacity-80" />
+                  </button>
+                  <button
+                    onClick={handleNotifyExpired}
+                    disabled={notifying}
+                    className="secondary-btn shrink-0 flex items-center gap-1.5"
+                    title="Send emails for all expired documents that haven't been notified yet"
+                  >
+                    {notifying ? <Loader2 className="w-[14px] h-[14px] animate-spin" /> : <Mail className="w-[14px] h-[14px]" />}
+                    <span className="hidden sm:inline">Notify Expired</span>
+                  </button>
+                </>
               )}
               <button className="secondary-btn shrink-0">
                 <span className="hidden sm:inline">Download (Excel)</span>
@@ -160,7 +234,7 @@ export function Documents() {
 
         {/* Table */}
         <div className="overflow-x-auto flex-1">
-          {!isEmployee && companyLoading ? (
+          {loading ? (
             <div className="flex items-center justify-center py-20 text-[var(--text-muted)]">
               <Loader2 size={20} className="animate-spin mr-2" /> Loading…
             </div>
@@ -188,30 +262,64 @@ export function Documents() {
                 </tr>
               </thead>
               <tbody>
-                {(isEmployee ? filteredEmployee : filteredCompany).length > 0 ? (
-                  (isEmployee ? filteredEmployee : filteredCompany).map((row: any, i) => (
+                {rows.length > 0 ? (
+                  rows.map((row: any, i: number) => (
                     <motion.tr key={row.id} className="tr" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.05 * i }}>
                       {isEmployee ? (
                         <>
-                          <td className="td font-medium text-[var(--text-primary)]">{row.employee}</td>
-                          <td className="td">{row.documentType}</td>
-                          <td className="td">{row.dateOfIssue}</td>
-                          <td className="td">{row.expiryDate || 'N/A'}</td>
-                          <td className="td">{row.placeOfIssue}</td>
+                          <td className="td font-medium text-[var(--text-primary)]">{row.employee_name ?? '—'}</td>
+                          <td className="td">{row.document_type_name ?? '—'}</td>
+                          <td className="td">{fmtDate(row.date_added)}</td>
+                          <td className="td">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className={row.valid_until && new Date(row.valid_until) < new Date() ? 'text-rose-600 font-semibold' : ''}>
+                                {fmtDate(row.valid_until)}
+                              </span>
+                              {row.expire_notification_last && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-200 whitespace-nowrap">
+                                  <Mail size={9} /> Email Sent
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="td">{row.place_of_issue ?? '—'}</td>
                         </>
                       ) : (
                         <>
                           <td className="td font-medium text-[var(--text-primary)]">{row.name}</td>
-                          <td className="td text-[var(--text-muted)] text-[12px]">{fmtSharing(row)}</td>
+                          <td className="td text-[var(--text-muted)] text-[12px]">{fmtSharing(row, empMap, deptMap)}</td>
                           <td className="td truncate max-w-[220px]">{row.details || '—'}</td>
-                          <td className="td">{row.valid_until ? String(row.valid_until).substring(0, 10) : '—'}</td>
+                          <td className="td">{row.valid_until ? fmtDate(row.valid_until) : '—'}</td>
                         </>
                       )}
                       <td className="td">
                         <div className="flex items-center justify-end gap-1">
-                          <button onClick={() => setDocumentToView({ ...row, attachmentName: row.attachment, sourceUrl: row.attachment ? `/documents/${row.attachment}` : null })} className="action-btn text-[var(--accent)]" title="View"><Eye size={14} /></button>
-                          <button onClick={() => { setSelectedDoc(row); setIsFormOpen(true); }} className="action-btn text-[var(--warning)]" title="Edit"><FileEdit size={14} /></button>
-                          <button onClick={() => { setSelectedDoc(row); setIsAlertOpen(true); }} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={14} /></button>
+                          <button
+                            onClick={() => setDocumentToView({
+                              ...row,
+                              attachmentName: row.attachment,
+                              sourceUrl: row.attachment ? `/documents/${row.attachment}` : null,
+                            })}
+                            className="action-btn text-[var(--accent)]" title="View"
+                          >
+                            <Eye size={14} />
+                          </button>
+                          {can('edit_documents') && (
+                            <button
+                              onClick={() => { setSelectedDoc(isEmployee ? toEditData(row) : row); setIsFormOpen(true); }}
+                              className="action-btn text-[var(--warning)]" title="Edit"
+                            >
+                              <FileEdit size={14} />
+                            </button>
+                          )}
+                          {can('delete_documents') && (
+                            <button
+                              onClick={() => { setSelectedDoc(row); setIsAlertOpen(true); }}
+                              className="action-btn text-[var(--danger)]" title="Delete"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </motion.tr>
@@ -230,7 +338,7 @@ export function Documents() {
 
         <TablePagination
           total={isEmployee ? employeeDocs.length : companyDocs.length}
-          filtered={isEmployee ? filteredEmployee.length : filteredCompany.length}
+          filtered={rows.length}
         />
       </div>
 

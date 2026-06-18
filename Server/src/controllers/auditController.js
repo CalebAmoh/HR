@@ -1,18 +1,7 @@
 const { prisma } = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
-
-function serialize(obj) {
-  if (typeof obj === 'bigint') return obj.toString();
-  if (obj instanceof Date) return obj.toISOString();
-  if (Array.isArray(obj)) return obj.map(serialize);
-  if (obj !== null && typeof obj === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) out[k] = serialize(v);
-    return out;
-  }
-  return obj;
-}
+const { serialize } = require('../helpers/controllerHelpers');
 
 async function query(sql, ...params) {
   const rows = await prisma.$queryRawUnsafe(sql, ...params);
@@ -22,29 +11,6 @@ async function query(sql, ...params) {
 async function exec(sql, ...params) {
   return prisma.$executeRawUnsafe(sql, ...params);
 }
-
-// ── Init ──────────────────────────────────────────────────────────────────────
-(async () => {
-  try {
-    await exec(`
-      CREATE TABLE IF NOT EXISTS auditlogs (
-        id           BIGINT AUTO_INCREMENT PRIMARY KEY,
-        module       VARCHAR(60)  NOT NULL,
-        action       VARCHAR(60)  NOT NULL,
-        entity_id    VARCHAR(60)  NULL,
-        entity_name  VARCHAR(255) NULL,
-        user_id      BIGINT       NULL,
-        user_name    VARCHAR(200) NULL,
-        ip_address   VARCHAR(60)  NULL,
-        details      TEXT         NULL,
-        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    console.log('[auditController] Table ready');
-  } catch (e) {
-    console.error('[auditController] Setup error:', e.message);
-  }
-})();
 
 // ── Log helper (fire-and-forget, safe to call without await) ──────────────────
 async function logActivity({ module, action, entityId = null, entityName = null, userId = null, userName = null, ip = null, details = null } = {}) {

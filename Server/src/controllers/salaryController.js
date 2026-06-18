@@ -2,23 +2,7 @@ const { prisma } = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 
-function serialize(obj) {
-  if (typeof obj === 'bigint') return obj.toString();
-  if (obj && typeof obj === 'object' && typeof obj.toString === 'function' && obj.constructor?.name === 'Decimal') return obj.toString();
-  if (obj instanceof Date) return obj.toISOString();
-  if (Array.isArray(obj)) return obj.map(serialize);
-  if (obj !== null && typeof obj === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) out[k] = serialize(v);
-    return out;
-  }
-  return obj;
-}
-
-function toBigInt(val) {
-  if (!val && val !== 0) return null;
-  try { return BigInt(val); } catch { return null; }
-}
+const { serialize, toBigInt } = require('../helpers/controllerHelpers');
 
 function toInt(val) {
   if (val === undefined || val === null || val === '') return null;
@@ -41,21 +25,14 @@ async function exec(sql, ...params) {
   return prisma.$executeRawUnsafe(sql, ...params);
 }
 
-// ── Auto-add missing columns ───────────────────────────────────────────────────
-(async () => {
-  try {
-    const { prisma: _p } = require('../helpers/dbQueryHelper');
-    await _p.$executeRawUnsafe(`ALTER TABLE salarycomponent ADD COLUMN is_notch_linked TINYINT(1) NOT NULL DEFAULT 0`).catch(() => {});
-    await _p.$executeRawUnsafe(`ALTER TABLE paymenttype ADD COLUMN generate_payslip TINYINT(1) NOT NULL DEFAULT 1`).catch(() => {});
-  } catch (e) { /* ignore */ }
-})();
-
-// Salary component types use raw SQL because the Prisma model is @@ignore.
+// GET /salary/component-types — list all salary component type categories (e.g. Basic, Allowance, Deduction).
+// Uses raw SQL because the Prisma model for salarycomponenttype is @@ignore.
 const getSalaryComponentTypes = asyncHandler(async (_req, res) => {
   const rows = await query('SELECT id, code, name, description FROM salarycomponenttype ORDER BY name ASC');
   respond.ok(res, 'Salary component types retrieved', rows);
 });
 
+// POST /salary/component-types — create a new salary component type; enforces unique code.
 const createSalaryComponentType = asyncHandler(async (req, res) => {
   const { code, name, description } = req.body;
   if (!code?.trim()) return respond.badReq(res, 'Code is required');
@@ -76,6 +53,7 @@ const createSalaryComponentType = asyncHandler(async (req, res) => {
   respond.created(res, 'Salary component type created', created);
 });
 
+// PUT /salary/component-types/:id — update a salary component type; blocks duplicate codes.
 const updateSalaryComponentType = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid component type ID');
@@ -99,6 +77,7 @@ const updateSalaryComponentType = asyncHandler(async (req, res) => {
   respond.ok(res, 'Salary component type updated', updated);
 });
 
+// DELETE /salary/component-types/:id — delete a component type; blocked if any salary components use it.
 const deleteSalaryComponentType = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid component type ID');
@@ -108,6 +87,7 @@ const deleteSalaryComponentType = asyncHandler(async (req, res) => {
   respond.ok(res, 'Salary component type deleted', null);
 });
 
+// GET /salary/components — list all salary components joined with their type name.
 const getSalaryComponents = asyncHandler(async (_req, res) => {
   const rows = await query(`
     SELECT sc.id, sc.name, sc.salarycomp_gl, sc.branch, sc.summary, sc.processing_code,
@@ -120,6 +100,7 @@ const getSalaryComponents = asyncHandler(async (_req, res) => {
   respond.ok(res, 'Salary components retrieved', rows);
 });
 
+// POST /salary/components — create a salary component; marks it notch-linked (clearing any prior notch link) if flagged.
 const createSalaryComponent = asyncHandler(async (req, res) => {
   const { name, componentType, details, salarycomp_gl, branch, summary, processing_code, is_notch_linked } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
@@ -150,6 +131,8 @@ const createSalaryComponent = asyncHandler(async (req, res) => {
   respond.created(res, 'Salary component created', row);
 });
 
+// PUT /salary/components/:id — update a salary component and cascade-rename its reference in payrollcolumns
+// and savedcalculations so existing payroll configs stay consistent after a name change.
 const updateSalaryComponent = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid salary component ID');
@@ -208,6 +191,7 @@ const updateSalaryComponent = asyncHandler(async (req, res) => {
   respond.ok(res, 'Salary component updated', row);
 });
 
+// DELETE /salary/components/:id — delete a salary component; blocked if it is assigned to any employee.
 const deleteSalaryComponent = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid salary component ID');
@@ -217,6 +201,8 @@ const deleteSalaryComponent = asyncHandler(async (req, res) => {
   respond.ok(res, 'Salary component deleted', null);
 });
 
+// GET /salary/employee-components — list all salary component assignments across every employee,
+// joined with employee name/ID and component name.
 const getEmployeeSalaryComponents = asyncHandler(async (_req, res) => {
   const rows = await query(`
     SELECT es.id, es.employee, es.component, es.working_days, es.pay_frequency, es.currency,
@@ -261,23 +247,6 @@ async function enrichEmployeeSalaries(rows) {
 }
 
 // ── Salary history ────────────────────────────────────────────────────────────
-(async () => {
-  await exec(`
-    CREATE TABLE IF NOT EXISTS salary_history (
-      id             BIGINT AUTO_INCREMENT PRIMARY KEY,
-      employee_id    BIGINT NOT NULL,
-      component_id   BIGINT NOT NULL,
-      component_name VARCHAR(200) NULL,
-      action         ENUM('created','updated','deleted') NOT NULL,
-      old_amount     VARCHAR(30) NULL,
-      new_amount     VARCHAR(30) NULL,
-      old_currency   VARCHAR(10) NULL,
-      new_currency   VARCHAR(10) NULL,
-      changed_by     VARCHAR(200) NULL,
-      created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `).catch(() => {});
-})();
 
 async function recordHistory({ employeeId, componentId, componentName, action, oldAmount, newAmount, oldCurrency, newCurrency, changedBy }) {
   await exec(
@@ -288,6 +257,8 @@ async function recordHistory({ employeeId, componentId, componentName, action, o
   ).catch(() => {});
 }
 
+// GET /salary/employee-history/:employeeId — retrieve the last 200 salary change events (create/update/delete)
+// for a specific employee, useful for auditing pay adjustments over time.
 const getEmployeeSalaryHistory = asyncHandler(async (req, res) => {
   const empId = toBigInt(req.params.employeeId);
   if (!empId) return respond.badReq(res, 'Invalid employee ID');
@@ -299,6 +270,8 @@ const getEmployeeSalaryHistory = asyncHandler(async (req, res) => {
   respond.ok(res, 'Salary history retrieved', rows);
 });
 
+// POST /salary/employee-components — assign a salary component to an employee; blocks duplicate assignments
+// and records a 'created' entry in salary_history for audit purposes.
 const createEmployeeSalaryComponent = asyncHandler(async (req, res) => {
   const { employee, component, working_days, pay_frequency, currency, amount } = req.body;
   const employeeId = toBigInt(employee);
@@ -336,6 +309,8 @@ const createEmployeeSalaryComponent = asyncHandler(async (req, res) => {
   respond.created(res, 'Employee salary component created', enriched);
 });
 
+// PUT /salary/employee-components/:id — update an employee's salary component assignment (amount, frequency, currency);
+// records an 'updated' entry in salary_history capturing old vs new values.
 const updateEmployeeSalaryComponent = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid employee salary component ID');
@@ -380,6 +355,8 @@ const updateEmployeeSalaryComponent = asyncHandler(async (req, res) => {
   respond.ok(res, 'Employee salary component updated', enriched);
 });
 
+// DELETE /salary/employee-components/:id — remove a salary component from an employee and record a
+// 'deleted' entry in salary_history to preserve the audit trail of what was removed.
 const deleteEmployeeSalaryComponent = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid employee salary component ID');
@@ -399,6 +376,7 @@ const deleteEmployeeSalaryComponent = asyncHandler(async (req, res) => {
   respond.ok(res, 'Employee salary component deleted', null);
 });
 
+// GET /salary/notches — list all salary notches (named pay points within a paygrade band).
 const getNotches = asyncHandler(async (_req, res) => {
   const rows = await query(
     'SELECT id, name, paygrade, currency, CAST(amount AS CHAR) AS amount FROM notches ORDER BY name ASC'
@@ -406,6 +384,8 @@ const getNotches = asyncHandler(async (_req, res) => {
   respond.ok(res, 'Notches retrieved', rows);
 });
 
+// POST /salary/notches — create a notch within a paygrade; validates that the amount falls within the
+// paygrade's min–max salary band to maintain structural integrity.
 const createNotch = asyncHandler(async (req, res) => {
   const { name, paygrade, currency, amount } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Notch name is required');
@@ -436,6 +416,7 @@ const createNotch = asyncHandler(async (req, res) => {
   respond.created(res, 'Notch created', serialize(row));
 });
 
+// PUT /salary/notches/:id — update a notch's name, amount, or currency; same paygrade band validation as create.
 const updateNotch = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid notch ID');
@@ -469,6 +450,7 @@ const updateNotch = asyncHandler(async (req, res) => {
   respond.ok(res, 'Notch updated', serialize(row));
 });
 
+// DELETE /salary/notches/:id — permanently delete a notch.
 const deleteNotch = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid notch ID');
@@ -478,16 +460,7 @@ const deleteNotch = asyncHandler(async (req, res) => {
 
 // ─── Paygrades ────────────────────────────────────────────────────────────────
 
-// Widen paygrades.currency once so labels like "Cedis" (>3 chars) fit.
-// Safe to run on every startup — MODIFY COLUMN is a no-op if already wide enough.
-(async () => {
-  try {
-    await prisma.$executeRawUnsafe(
-      'ALTER TABLE `paygrades` MODIFY COLUMN `currency` VARCHAR(50) NOT NULL DEFAULT \'\''
-    );
-  } catch { /* column already correct or table doesn't exist yet */ }
-})();
-
+// GET /salary/paygrades — list all paygrade bands with their salary range and currency.
 const getPaygrades = asyncHandler(async (_req, res) => {
   const rows = await query(
     'SELECT id, name, currency, CAST(min_salary AS CHAR) AS min_salary, CAST(max_salary AS CHAR) AS max_salary FROM paygrades ORDER BY name ASC'
@@ -495,6 +468,7 @@ const getPaygrades = asyncHandler(async (_req, res) => {
   respond.ok(res, 'Paygrades retrieved', rows);
 });
 
+// POST /salary/paygrades — create a named paygrade band (e.g. Grade A) with a min/max salary range; blocks duplicate names.
 const createPaygrade = asyncHandler(async (req, res) => {
   const { name, currency, min_salary, max_salary } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Paygrade name is required');
@@ -514,6 +488,7 @@ const createPaygrade = asyncHandler(async (req, res) => {
   respond.created(res, 'Paygrade created', serialize(row));
 });
 
+// PUT /salary/paygrades/:id — update paygrade name, currency, or salary band; blocks duplicate names.
 const updatePaygrade = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid paygrade ID');
@@ -540,6 +515,7 @@ const updatePaygrade = asyncHandler(async (req, res) => {
   respond.ok(res, 'Paygrade updated', serialize(row));
 });
 
+// DELETE /salary/paygrades/:id — delete a paygrade; blocked if any notches are assigned to it by name.
 const deletePaygrade = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid paygrade ID');
@@ -559,11 +535,13 @@ const deletePaygrade = asyncHandler(async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// GET /salary/payment-types — list all payment types (e.g. Bank Transfer, Cash) with their payslip generation flag.
 const getPaymentTypes = asyncHandler(async (_req, res) => {
   const rows = await query('SELECT id, name, description, generate_payslip FROM paymenttype ORDER BY name ASC');
   respond.ok(res, 'Payment types retrieved', rows);
 });
 
+// POST /salary/payment-types — create a payment type; defaults generate_payslip to true if not specified.
 const createPaymentType = asyncHandler(async (req, res) => {
   const { name, description, generate_payslip } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Payment type is required');
@@ -575,6 +553,7 @@ const createPaymentType = asyncHandler(async (req, res) => {
   respond.created(res, 'Payment type created', row);
 });
 
+// PUT /salary/payment-types/:id — update a payment type's name, description, or payslip generation flag.
 const updatePaymentType = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid payment type ID');
@@ -587,6 +566,7 @@ const updatePaymentType = asyncHandler(async (req, res) => {
   respond.ok(res, 'Payment type updated', row);
 });
 
+// DELETE /salary/payment-types/:id — permanently delete a payment type.
 const deletePaymentType = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid payment type ID');
@@ -594,11 +574,14 @@ const deletePaymentType = asyncHandler(async (req, res) => {
   respond.ok(res, 'Payment type deleted', null);
 });
 
+// GET /salary/notch-movements — list all historical notch increment/decrement operations applied to salary levels.
 const getNotchMovements = asyncHandler(async (_req, res) => {
   const rows = await query('SELECT id, date, employees, no_notches FROM notchmovement ORDER BY date DESC, id DESC');
   respond.ok(res, 'Salary increment/decrement records retrieved', rows);
 });
 
+// POST /salary/notch-movements — apply a percentage increment or decrement to a notch's amount and log the movement.
+// The notch amount is updated in-place; the movement record preserves the operation for historical reference.
 const createNotchMovement = asyncHandler(async (req, res) => {
   const { notchId, operation, percentage, date } = req.body;
   const id = toBigInt(notchId);
@@ -623,9 +606,11 @@ const createNotchMovement = asyncHandler(async (req, res) => {
   respond.created(res, 'Salary increment/decrement applied', created);
 });
 
+// GET /salary/refs — single endpoint that returns all salary-related lookup lists (employees, components,
+// component types, notches, paygrades, payment types) for populating form dropdowns in one round trip.
 const getSalaryRefs = asyncHandler(async (_req, res) => {
   const [employees, components, componentTypes, notches, paygrades, paymentTypes] = await Promise.all([
-    prisma.employee.findMany({ select: { id: true, firstName: true, lastName: true, employee_id: true }, orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }] }),
+    prisma.employee.findMany({ where: { approvalStatus: 'APPROVED' }, select: { id: true, firstName: true, lastName: true, employee_id: true }, orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }] }),
     prisma.salarycomponent.findMany({ select: { id: true, name: true }, orderBy: { name: 'asc' } }),
     query('SELECT id, code, name, description FROM salarycomponenttype ORDER BY name ASC'),
     query('SELECT id, name, paygrade, currency, CAST(amount AS CHAR) AS amount FROM notches ORDER BY name ASC'),

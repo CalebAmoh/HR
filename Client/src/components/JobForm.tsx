@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { useFormState } from '../hooks/useFormState';
 import { FormModal } from './ui/FormModal';
 import { FormField, inputClass } from './ui/FormField';
+import { CountedTextarea } from './ui/CountedTextarea';
 import { SearchSelect } from './ui/SearchSelect';
 import api from '../../lib/api';
 import { getSettings } from '../../lib/settings';
@@ -99,7 +100,7 @@ export function JobForm({ onClose, initialData, onSave, isDuplicate = false }: a
       const emps: any[] = empRes.data.data ?? [];
       setEmployees(emps.map((e: any) => ({
         id:    e.name,
-        label: e.name,
+        label: e.jobTitle ? `${e.name} — ${e.jobTitle}` : e.name,
       })));
 
       // Company name from payslip settings
@@ -382,16 +383,16 @@ export function JobForm({ onClose, initialData, onSave, isDuplicate = false }: a
           <p className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-4">Job Content</p>
           <div className="space-y-5">
             <FormField label="Short Description">
-              <textarea name="shortDescription" value={formData.shortDescription} onChange={handleChange} rows={2} className={inputClass} />
+              <CountedTextarea name="shortDescription" value={formData.shortDescription} onChange={handleChange} rows={2} maxChars={300} className={inputClass} />
             </FormField>
             <FormField label="Full Description">
-              <textarea name="description" value={formData.description} onChange={handleChange} rows={5} className={inputClass} />
+              <CountedTextarea name="description" value={formData.description} onChange={handleChange} rows={5} maxChars={5000} className={inputClass} />
             </FormField>
             <FormField label="Requirements">
-              <textarea name="requirements" value={formData.requirements} onChange={handleChange} rows={4} className={inputClass} />
+              <CountedTextarea name="requirements" value={formData.requirements} onChange={handleChange} rows={4} maxChars={5000} className={inputClass} />
             </FormField>
             <FormField label="Benefits">
-              <textarea name="benefits" value={formData.benefits} onChange={handleChange} rows={3} className={inputClass} />
+              <CountedTextarea name="benefits" value={formData.benefits} onChange={handleChange} rows={3} maxChars={2000} className={inputClass} />
             </FormField>
           </div>
         </div>

@@ -64,6 +64,13 @@ body {
   .pill-danger { background: var(--danger-dim); color: var(--danger); border: 1px solid rgba(220,38,38,0.2); }
   .pill-warning { background: var(--warning-dim); color: var(--warning); border: 1px solid rgba(217,119,6,0.2); }
   .pill-accent { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(37,99,235,0.2); }
+  .pill-neutral { background: var(--surface-hover); color: var(--text-secondary); border: 1px solid var(--border); }
+
+  /* Read-only section (no manage permission): grey everything out, block interaction,
+     and hide the primary action/save buttons so the page clearly reads as view-only. */
+  .readonly-section { opacity: 0.6; pointer-events: none; filter: grayscale(0.25); }
+  .readonly-section .primary-btn,
+  .readonly-section .success-btn { display: none !important; }
 
   .tab-btn { font-family: var(--font-sans); font-size: 13px; font-weight: 500; padding: 9px 18px; border-radius: 8px; border: none; cursor: pointer; transition: all 0.18s; white-space: nowrap; }
   .tab-btn.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; box-shadow: 0 0 0 1px rgba(37,99,235,0.2) inset; }
@@ -144,10 +151,19 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background-color: #94a3b8;
 }
+.dark ::-webkit-scrollbar-thumb {
+  background-color: #475569;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background-color: #64748b;
+}
 
 * {
   scrollbar-width: thin;
   scrollbar-color: #cbd5e1 transparent;
+}
+.dark, .dark * {
+  scrollbar-color: #475569 transparent;
 }
 
 @layer utilities {
@@ -187,6 +203,105 @@ body {
   .dark .bg-slate-50 {
     background-color: var(--bg) !important;
   }
+
+  /* ── Dark remap for pastel status colours ──────────────────────────────────
+     Components use light-only Tailwind shades for pills, notices, and badges
+     (bg-*-50, text-*-700, border-*-200, …). Remap every family once here so
+     dark mode works app-wide without touching individual components.
+     Pattern per family: light bg → translucent tint, dark text → 400 shade,
+     light border → translucent border. */
+
+  /* amber */
+  .dark .bg-amber-50, .dark .bg-amber-100 { background-color: color-mix(in srgb, #f59e0b 14%, transparent) !important; }
+  .dark .text-amber-600, .dark .text-amber-700, .dark .text-amber-800,
+  .dark .text-amber-600\/90 { color: #fbbf24 !important; }
+  .dark .border-amber-100, .dark .border-amber-200, .dark .border-amber-300,
+  .dark .border-amber-200\/50 { border-color: color-mix(in srgb, #f59e0b 35%, transparent) !important; }
+
+  /* blue */
+  .dark .bg-blue-50, .dark .bg-blue-100 { background-color: color-mix(in srgb, #3b82f6 14%, transparent) !important; }
+  .dark .text-blue-600, .dark .text-blue-700, .dark .text-blue-800 { color: #60a5fa !important; }
+  .dark .border-blue-100, .dark .border-blue-200, .dark .border-blue-300,
+  .dark .border-blue-200\/50 { border-color: color-mix(in srgb, #3b82f6 35%, transparent) !important; }
+
+  /* red */
+  .dark .bg-red-50, .dark .bg-red-100 { background-color: color-mix(in srgb, #ef4444 14%, transparent) !important; }
+  .dark .text-red-600, .dark .text-red-700, .dark .text-red-800 { color: #f87171 !important; }
+  .dark .border-red-100, .dark .border-red-200, .dark .border-red-300,
+  .dark .border-red-200\/50 { border-color: color-mix(in srgb, #ef4444 35%, transparent) !important; }
+
+  /* rose */
+  .dark .bg-rose-50, .dark .bg-rose-100 { background-color: color-mix(in srgb, #f43f5e 14%, transparent) !important; }
+  .dark .text-rose-600, .dark .text-rose-700, .dark .text-rose-800 { color: #fb7185 !important; }
+  .dark .border-rose-100, .dark .border-rose-200, .dark .border-rose-300 { border-color: color-mix(in srgb, #f43f5e 35%, transparent) !important; }
+
+  /* emerald */
+  .dark .bg-emerald-50, .dark .bg-emerald-100 { background-color: color-mix(in srgb, #10b981 14%, transparent) !important; }
+  .dark .text-emerald-600, .dark .text-emerald-700, .dark .text-emerald-800 { color: #34d399 !important; }
+  .dark .border-emerald-100, .dark .border-emerald-200, .dark .border-emerald-300 { border-color: color-mix(in srgb, #10b981 35%, transparent) !important; }
+
+  /* green */
+  .dark .bg-green-50, .dark .bg-green-100 { background-color: color-mix(in srgb, #22c55e 14%, transparent) !important; }
+  .dark .text-green-600, .dark .text-green-700, .dark .text-green-800 { color: #4ade80 !important; }
+  .dark .border-green-100, .dark .border-green-200, .dark .border-green-300 { border-color: color-mix(in srgb, #22c55e 35%, transparent) !important; }
+
+  /* indigo */
+  .dark .bg-indigo-50, .dark .bg-indigo-100 { background-color: color-mix(in srgb, #6366f1 14%, transparent) !important; }
+  .dark .text-indigo-600, .dark .text-indigo-700, .dark .text-indigo-800,
+  .dark .text-indigo-600\/80 { color: #818cf8 !important; }
+  .dark .border-indigo-100, .dark .border-indigo-200, .dark .border-indigo-300 { border-color: color-mix(in srgb, #6366f1 35%, transparent) !important; }
+
+  /* violet */
+  .dark .bg-violet-50, .dark .bg-violet-100 { background-color: color-mix(in srgb, #8b5cf6 14%, transparent) !important; }
+  .dark .text-violet-600, .dark .text-violet-700, .dark .text-violet-800 { color: #a78bfa !important; }
+  .dark .border-violet-100, .dark .border-violet-200, .dark .border-violet-300 { border-color: color-mix(in srgb, #8b5cf6 35%, transparent) !important; }
+
+  /* purple */
+  .dark .bg-purple-50, .dark .bg-purple-100 { background-color: color-mix(in srgb, #a855f7 14%, transparent) !important; }
+  .dark .text-purple-600, .dark .text-purple-700, .dark .text-purple-800 { color: #c084fc !important; }
+  .dark .border-purple-100, .dark .border-purple-200, .dark .border-purple-300,
+  .dark .border-purple-200\/50 { border-color: color-mix(in srgb, #a855f7 35%, transparent) !important; }
+
+  /* orange */
+  .dark .bg-orange-50, .dark .bg-orange-100 { background-color: color-mix(in srgb, #f97316 14%, transparent) !important; }
+  .dark .text-orange-600, .dark .text-orange-700, .dark .text-orange-800 { color: #fb923c !important; }
+  .dark .border-orange-100, .dark .border-orange-200, .dark .border-orange-300 { border-color: color-mix(in srgb, #f97316 35%, transparent) !important; }
+
+  /* sky */
+  .dark .bg-sky-50, .dark .bg-sky-100 { background-color: color-mix(in srgb, #0ea5e9 14%, transparent) !important; }
+  .dark .text-sky-600, .dark .text-sky-700, .dark .text-sky-800 { color: #38bdf8 !important; }
+  .dark .border-sky-100, .dark .border-sky-200, .dark .border-sky-300 { border-color: color-mix(in srgb, #0ea5e9 35%, transparent) !important; }
+
+  /* teal */
+  .dark .bg-teal-50, .dark .bg-teal-100 { background-color: color-mix(in srgb, #14b8a6 14%, transparent) !important; }
+  .dark .text-teal-600, .dark .text-teal-700, .dark .text-teal-800 { color: #2dd4bf !important; }
+  .dark .border-teal-100, .dark .border-teal-200, .dark .border-teal-300 { border-color: color-mix(in srgb, #14b8a6 35%, transparent) !important; }
+
+  /* cyan */
+  .dark .bg-cyan-50, .dark .bg-cyan-100 { background-color: color-mix(in srgb, #06b6d4 14%, transparent) !important; }
+  .dark .text-cyan-600, .dark .text-cyan-700, .dark .text-cyan-800 { color: #22d3ee !important; }
+  .dark .border-cyan-100, .dark .border-cyan-200, .dark .border-cyan-300 { border-color: color-mix(in srgb, #06b6d4 35%, transparent) !important; }
+
+  /* gray — same neutral mapping as slate */
+  .dark .bg-gray-50 { background-color: var(--bg) !important; }
+  .dark .bg-gray-100 { background-color: var(--surface-hover) !important; }
+  .dark .text-gray-700, .dark .text-gray-800 { color: var(--text-primary) !important; }
+  .dark .text-gray-600 { color: var(--text-secondary) !important; }
+  .dark .text-gray-500 { color: var(--text-muted) !important; }
+  .dark .border-gray-100, .dark .border-gray-200 { border-color: var(--border) !important; }
+
+  /* opacity variants of light neutrals (modal headers/footers) */
+  .dark .bg-slate-50\/50, .dark .bg-slate-50\/60, .dark .bg-gray-50\/60 { background-color: var(--bg) !important; }
+
+  /* light hover states — flash white in dark without these */
+  .dark .hover\:bg-slate-200:hover, .dark .hover\:bg-slate-100:hover { background-color: var(--surface-hover) !important; }
+  .dark .hover\:bg-slate-50:hover { background-color: var(--bg) !important; }
+  .dark .hover\:bg-blue-50:hover { background-color: color-mix(in srgb, #3b82f6 14%, transparent) !important; }
+  .dark .hover\:bg-sky-50:hover { background-color: color-mix(in srgb, #0ea5e9 14%, transparent) !important; }
+  .dark .hover\:bg-rose-50:hover, .dark .hover\:bg-rose-100:hover { background-color: color-mix(in srgb, #f43f5e 18%, transparent) !important; }
+  .dark .hover\:bg-red-50:hover { background-color: color-mix(in srgb, #ef4444 18%, transparent) !important; }
+  .dark .hover\:bg-emerald-100:hover { background-color: color-mix(in srgb, #10b981 18%, transparent) !important; }
+  .dark .hover\:bg-amber-100:hover { background-color: color-mix(in srgb, #f59e0b 18%, transparent) !important; }
 }
 
 /* ── Table flash prevention ─────────────────────────────────────────────── */

@@ -3,31 +3,34 @@ import { Plus, Trash2 } from 'lucide-react';
 import { useFormState } from '../hooks/useFormState';
 import { FormModal } from './ui/FormModal';
 import { FormField, inputClass } from './ui/FormField';
+import { CountedTextarea } from './ui/CountedTextarea';
 import { SearchSelect, MultiSearchSelect } from './ui/SearchSelect';
 
 export function InterviewForm({ onClose, initialData, onSave, candidates = [], jobs = [], interviews = [], employees = [] }: any) {
   const { formData, handleChange } = useFormState(
-    {
-      job: '',
-      candidate: '',
-      level: '',
-      scheduled: '',
-      location: '',
-      notes: '',
-      interviewers: '',
-      status: 'Scheduled',
-      outcome: '',
-      feedback: '',
-    },
+    { job: '', candidate: '', level: '', location: '', notes: '', interviewers: '', status: 'Scheduled', outcome: '', feedback: '' },
     initialData
       ? {
           ...initialData,
           job:       initialData.job       ? String(initialData.job)       : '',
           candidate: initialData.candidate ? String(initialData.candidate) : '',
-          scheduled: initialData.scheduled ? initialData.scheduled.slice(0, 16) : '',
         }
       : undefined
   );
+
+  // Date/time broken into three separate fields for better UX
+  const [interviewDate, setInterviewDate] = useState<string>(() => {
+    if (!initialData?.scheduled) return '';
+    return String(initialData.scheduled).slice(0, 10);
+  });
+  const [startTime, setStartTime] = useState<string>(() => {
+    if (!initialData?.scheduled) return '';
+    return String(initialData.scheduled).slice(11, 16);
+  });
+  const [endTime, setEndTime] = useState<string>(() => {
+    if (!initialData?.scheduled_end) return '';
+    return String(initialData.scheduled_end).slice(11, 16);
+  });
 
   const [selectedCandidates, setSelectedCandidates] = useState<string[]>([]);
 
@@ -60,24 +63,50 @@ export function InterviewForm({ onClose, initialData, onSave, candidates = [], j
     }
   }, [formData.job]);
 
-  const [slots, setSlots] = useState<string[]>(() => {
-    try { return JSON.parse(initialData?.schedule_options || '[]'); } catch { return []; }
+  // Auto-reset status to Scheduled when the date changes (e.g. rescheduling a cancelled interview)
+  const hasMounted = useRef(false);
+  useEffect(() => {
+    if (!hasMounted.current) { hasMounted.current = true; return; }
+    if (formData.status === 'Cancelled' || formData.status === 'No Show') {
+      handleChange({ target: { name: 'status', value: 'Scheduled' } } as any);
+    }
+  }, [interviewDate]);
+
+  type Slot = { date: string; startTime: string; endTime: string };
+  const [slots, setSlots] = useState<Slot[]>(() => {
+    try {
+      const raw = JSON.parse(initialData?.schedule_options || '[]');
+      return raw.map((s: any) => {
+        if (typeof s === 'string') return { date: s.slice(0, 10), startTime: s.slice(11, 16), endTime: '' };
+        return {
+          date:      s.start ? String(s.start).slice(0, 10) : '',
+          startTime: s.start ? String(s.start).slice(11, 16) : '',
+          endTime:   s.end   ? String(s.end).slice(11, 16)   : '',
+        };
+      });
+    } catch { return []; }
   });
 
-  const addSlot    = () => setSlots(prev => [...prev, '']);
+  const addSlot    = () => setSlots(prev => [...prev, { date: interviewDate || '', startTime: '', endTime: '' }]);
   const removeSlot = (i: number) => setSlots(prev => prev.filter((_, idx) => idx !== i));
-  const updateSlot = (i: number, val: string) =>
-    setSlots(prev => prev.map((s, idx) => (idx === i ? val : s)));
+  const updateSlot = (i: number, field: keyof Slot, val: string) =>
+    setSlots(prev => prev.map((s, idx) => idx === i ? { ...s, [field]: val } : s));
 
   const employeeOptions = useMemo(
-    () => employees.map((e: any) => ({ id: e.name, label: e.name })),
+    () => employees.map((e: any) => ({ id: e.name, label: e.jobTitle ? `${e.name} — ${e.jobTitle}` : e.name })),
     [employees]
   );
 
   const handleSave = () => {
-    const validSlots = slots.filter(Boolean);
+    const validSlots = slots
+      .filter(s => s.date && s.startTime)
+      .map(s => ({ start: `${s.date}T${s.startTime}`, end: s.endTime ? `${s.date}T${s.endTime}` : null }));
+    const scheduled     = interviewDate && startTime ? `${interviewDate}T${startTime}` : null;
+    const scheduled_end = interviewDate && endTime   ? `${interviewDate}T${endTime}`   : null;
     const base = {
       ...formData,
+      scheduled,
+      scheduled_end,
       schedule_options: validSlots.length ? JSON.stringify(validSlots) : null,
       interviewers: selectedInterviewers.join(', '),
     };
@@ -172,9 +201,40 @@ export function InterviewForm({ onClose, initialData, onSave, candidates = [], j
           </select>
         </FormField>
 
-        <FormField label="Scheduled Date & Time" required>
-          <input type="datetime-local" name="scheduled" value={formData.scheduled} onChange={handleChange} className={inputClass} />
-        </FormField>
+        <div className="sm:col-span-2">
+          <FormField label="Date & Time" required>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-3 sm:col-span-1">
+                <input
+                  type="date"
+                  value={interviewDate}
+                  onChange={e => setInterviewDate(e.target.value)}
+                  className={inputClass}
+                  placeholder="Date"
+                />
+              </div>
+              <div>
+                <input
+                  type="time"
+                  value={startTime}
+                  onChange={e => setStartTime(e.target.value)}
+                  className={inputClass}
+                  title="Start time"
+                />
+              </div>
+              <div>
+                <input
+                  type="time"
+                  value={endTime}
+                  onChange={e => setEndTime(e.target.value)}
+                  className={inputClass}
+                  title="End time"
+                />
+              </div>
+            </div>
+            <p className="text-[11px] text-[var(--text-muted)] mt-1.5">Date &nbsp;·&nbsp; Start time &nbsp;·&nbsp; End time</p>
+          </FormField>
+        </div>
 
         <FormField label="Location / Video Link">
           <input type="text" name="location" value={formData.location} onChange={handleChange} className={inputClass} placeholder="Room B or https://meet.example.com/..." />
@@ -202,14 +262,14 @@ export function InterviewForm({ onClose, initialData, onSave, candidates = [], j
 
         <div className="sm:col-span-2">
           <FormField label="Notes">
-            <textarea name="notes" value={formData.notes} onChange={handleChange} rows={2} className={inputClass} />
+            <CountedTextarea name="notes" value={formData.notes} onChange={handleChange} rows={2} maxChars={1000} className={inputClass} />
           </FormField>
         </div>
 
         {formData.status === 'Completed' && (
           <div className="sm:col-span-2">
             <FormField label="Feedback">
-              <textarea name="feedback" value={formData.feedback} onChange={handleChange} rows={3} className={inputClass} />
+              <CountedTextarea name="feedback" value={formData.feedback} onChange={handleChange} rows={3} maxChars={2000} className={inputClass} />
             </FormField>
           </div>
         )}
@@ -237,12 +297,28 @@ export function InterviewForm({ onClose, initialData, onSave, candidates = [], j
               <div className="flex flex-col gap-2">
                 {slots.map((slot, i) => (
                   <div key={i} className="flex items-center gap-2">
-                    <input
-                      type="datetime-local"
-                      value={slot}
-                      onChange={e => updateSlot(i, e.target.value)}
-                      className={`${inputClass} flex-1`}
-                    />
+                    <div className="grid grid-cols-3 gap-2 flex-1">
+                      <input
+                        type="date"
+                        value={slot.date}
+                        onChange={e => updateSlot(i, 'date', e.target.value)}
+                        className={inputClass}
+                      />
+                      <input
+                        type="time"
+                        value={slot.startTime}
+                        onChange={e => updateSlot(i, 'startTime', e.target.value)}
+                        className={inputClass}
+                        title="Start time"
+                      />
+                      <input
+                        type="time"
+                        value={slot.endTime}
+                        onChange={e => updateSlot(i, 'endTime', e.target.value)}
+                        className={inputClass}
+                        title="End time"
+                      />
+                    </div>
                     <button
                       type="button"
                       onClick={() => removeSlot(i)}
@@ -252,6 +328,7 @@ export function InterviewForm({ onClose, initialData, onSave, candidates = [], j
                     </button>
                   </div>
                 ))}
+                <p className="text-[11px] text-[var(--text-muted)] mt-0.5">Date &nbsp;·&nbsp; Start time &nbsp;·&nbsp; End time</p>
               </div>
             )}
           </div>

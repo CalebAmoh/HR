@@ -1,24 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { Zap, Menu, LayoutGrid, UserCircle, CalendarDays, Bell, Search, Settings, LogOut, Moon, Sun } from 'lucide-react';
 import { AppUser } from '@/types/permissions';
+import { setTheme } from '@/lib/theme';
 
 export function Header({ onMenuToggle, onLogout, currentUser }: { onMenuToggle: () => void; onLogout?: () => void; currentUser?: AppUser | null }) {
-  const [isDark, setIsDark] = useState(false);
+  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
 
+  // Keep the toggle in sync if the applied theme changes elsewhere (e.g. login).
   useEffect(() => {
-    if (document.documentElement.classList.contains('dark')) {
-      setIsDark(true);
-    }
-  }, []);
+    setIsDark(document.documentElement.classList.contains('dark'));
+  }, [currentUser]);
 
   const toggleDarkMode = () => {
-    if (isDark) {
-      document.documentElement.classList.remove('dark');
-      setIsDark(false);
-    } else {
-      document.documentElement.classList.add('dark');
-      setIsDark(true);
-    }
+    const next = isDark ? 'light' : 'dark';
+    setIsDark(!isDark);
+    setTheme(next);   // applies the class, updates the cached user, and persists to the server
   };
   const currentDate = new Date().toLocaleDateString('en-US', {
     weekday: 'long',

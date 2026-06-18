@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { FormField, inputClass } from './ui/FormField';
+import { CountedTextarea } from './ui/CountedTextarea';
 import api from '../../lib/api';
 import { getCurrentUser } from '../../lib/auth';
 
@@ -47,7 +48,18 @@ function ModulePill({ module }: { module: ApprovalModule }) {
 }
 
 // ── Employee detail panel ─────────────────────────────────────────────────────
-function EmployeeDetail({ emp, onApprove, onClose, busy }: { emp: any; onApprove: () => void; onClose: () => void; busy: boolean }) {
+function EmployeeDetail({ emp, onApprove, onReject, onClose, busy }: { emp: any; onApprove: () => void; onReject: (reason: string) => void; onClose: () => void; busy: boolean }) {
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason]       = useState('');
+
+  const pendingAction = emp.pending_lifecycle_action as string | null | undefined;
+  const actionLabels: Record<string, { subtitle: string; btnLabel: string; btnClass: string; iconColor: string }> = {
+    SUSPENDED:  { subtitle: 'Suspension pending approval',  btnLabel: 'Approve Suspension',  btnClass: '!bg-amber-500 hover:!bg-amber-600', iconColor: 'text-amber-500' },
+    TERMINATED: { subtitle: 'Termination pending approval', btnLabel: 'Approve Termination', btnClass: '!bg-red-600 hover:!bg-red-700',    iconColor: 'text-red-600'   },
+    RESIGNED:   { subtitle: 'Resignation pending approval', btnLabel: 'Approve Resignation', btnClass: '!bg-rose-600 hover:!bg-rose-700',  iconColor: 'text-rose-600'  },
+  };
+  const actionMeta = pendingAction ? (actionLabels[pendingAction] ?? null) : null;
+
   const rows = [
     ['Employee ID', emp.employee_id || emp.employeeId || '—'],
     ['Department',  toStr(emp.department)  || '—'],
@@ -62,13 +74,21 @@ function EmployeeDetail({ emp, onApprove, onClose, busy }: { emp: any; onApprove
     <div className="space-y-4">
       <div className="flex items-center gap-3 pb-3 border-b border-[var(--border)]">
         <div className="w-10 h-10 rounded-full bg-[color-mix(in_srgb,var(--accent)_15%,transparent)] flex items-center justify-center">
-          <Users size={18} className="text-[var(--accent)]" />
+          <Users size={18} className={actionMeta?.iconColor ?? 'text-[var(--accent)]'} />
         </div>
         <div>
           <p className="font-bold text-[var(--text-primary)]">{emp.firstName} {emp.lastName}</p>
-          <p className="text-xs text-[var(--text-muted)]">New employee pending approval</p>
+          <p className="text-xs text-[var(--text-muted)]">{actionMeta?.subtitle ?? 'New employee pending approval'}</p>
         </div>
       </div>
+
+      {emp.actionReason && (
+        <div className="rounded-lg bg-slate-50 border border-slate-200 px-4 py-3">
+          <p className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1">Reason</p>
+          <p className="text-[12px] text-[var(--text-primary)]">{emp.actionReason}</p>
+        </div>
+      )}
+
       <dl className="grid grid-cols-2 gap-x-6 gap-y-2">
         {rows.map(([label, value]) => (
           <div key={label}>
@@ -77,12 +97,39 @@ function EmployeeDetail({ emp, onApprove, onClose, busy }: { emp: any; onApprove
           </div>
         ))}
       </dl>
+
+      {rejecting && (
+        <FormField label="Rejection Reason">
+          <CountedTextarea className={inputClass + ' resize-none'} rows={3} maxChars={500}
+            placeholder="Enter reason for rejection…"
+            value={reason} onChange={e => setReason(e.target.value)} />
+        </FormField>
+      )}
+
       <div className="flex justify-end gap-3 pt-2 border-t border-[var(--border)]">
         <button className="secondary-btn" onClick={onClose} disabled={busy}>Cancel</button>
-        <button className="primary-btn bg-green-600 hover:bg-green-700" onClick={onApprove} disabled={busy}>
-          <Check size={14} />
-          <span>{busy ? 'Approving…' : 'Approve Employee'}</span>
-        </button>
+        {rejecting ? (
+          <>
+            <button className="secondary-btn" onClick={() => setRejecting(false)} disabled={busy}>Back</button>
+            <button className="primary-btn !bg-red-600 hover:!bg-red-700"
+              onClick={() => onReject(reason)} disabled={busy || !reason.trim()}>
+              <XCircle size={14} /><span>{busy ? 'Rejecting…' : 'Confirm Reject'}</span>
+            </button>
+          </>
+        ) : (
+          <>
+            {actionMeta && (
+              <button className="secondary-btn !border-red-500 !text-red-600 hover:!bg-red-50"
+                onClick={() => setRejecting(true)} disabled={busy}>
+                <XCircle size={14} /><span>Reject</span>
+              </button>
+            )}
+            <button className={`primary-btn ${actionMeta?.btnClass ?? '!bg-green-600 hover:!bg-green-700'}`} onClick={onApprove} disabled={busy}>
+              <Check size={14} />
+              <span>{busy ? 'Approving…' : (actionMeta?.btnLabel ?? 'Approve Employee')}</span>
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -125,9 +172,10 @@ function PayrollDetail({ run, onApprove, onReject, onClose, busy }: { run: any; 
       {rejecting && (
         <div>
           <FormField label="Rejection Reason">
-            <textarea
+            <CountedTextarea
               className={inputClass + ' resize-none'}
               rows={3}
+              maxChars={500}
               placeholder="Enter reason for rejection…"
               value={reason}
               onChange={e => setReason(e.target.value)}
@@ -272,7 +320,7 @@ function MedicalDetail({ rec, onApprove, onReject, onClose, busy }: {
 
       {rejecting && (
         <FormField label="Rejection Reason">
-          <textarea className={inputClass + ' resize-none'} rows={3}
+          <CountedTextarea className={inputClass + ' resize-none'} rows={3} maxChars={500}
             placeholder="Enter reason for rejection…"
             value={reason} onChange={e => setReason(e.target.value)} />
         </FormField>
@@ -393,7 +441,7 @@ function LeaveApprovalDetail({ item, onApprove, onReject, onApproveAllowance, on
 
       {rejecting && (
         <FormField label="Rejection Reason">
-          <textarea className={inputClass + ' resize-none'} rows={3}
+          <CountedTextarea className={inputClass + ' resize-none'} rows={3} maxChars={500}
             placeholder="Enter reason for rejection…"
             value={reason} onChange={e => setReason(e.target.value)} />
         </FormField>
@@ -438,10 +486,25 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
     setBusy(true);
     try {
       await api.put(`/employees/${item.id}/approve`);
-      toast.success('Employee approved');
+      toast.success(item.raw.pending_lifecycle_action
+        ? `${item.raw.pending_lifecycle_action.toLowerCase()} approved`
+        : 'Employee approved');
       onDone(item.id);
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Approval failed');
+    } finally { setBusy(false); }
+  }
+
+  async function rejectEmployee(reason: string) {
+    setBusy(true);
+    try {
+      await api.put(`/employees/${item.id}/reject`, { reason });
+      toast.success(item.raw.pending_lifecycle_action
+        ? `${item.raw.pending_lifecycle_action.toLowerCase()} request rejected`
+        : 'Employee application rejected');
+      onDone(item.id);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Rejection failed');
     } finally { setBusy(false); }
   }
 
@@ -546,7 +609,7 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
 
         <div className="flex-1 overflow-y-auto p-6">
           {item.module === 'Employee' ? (
-            <EmployeeDetail emp={item.raw} onApprove={approveEmployee} onClose={onClose} busy={busy} />
+            <EmployeeDetail emp={item.raw} onApprove={approveEmployee} onReject={rejectEmployee} onClose={onClose} busy={busy} />
           ) : item.module === 'Payroll' ? (
             <PayrollDetail run={item.raw} onApprove={approvePayroll} onReject={rejectPayroll} onClose={onClose} busy={busy} />
           ) : item.module === 'Leave' ? (
@@ -605,11 +668,18 @@ export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) =>
         emps
           .filter((e: any) => e.approvalStatus === 'PENDING' || e.approvalStatus === 'Pending')
           .forEach((e: any) => {
+            const lifecycleLabels: Record<string, string> = {
+              SUSPENDED: 'Suspension pending approval', TERMINATED: 'Termination pending approval',
+              RESIGNED:  'Resignation pending approval',
+            };
+            const subtitle = e.pending_lifecycle_action
+              ? (lifecycleLabels[e.pending_lifecycle_action] ?? e.pending_lifecycle_action)
+              : (toStr(e.jobTitle) || toStr(e.department) || String(e.email || ''));
             pending.push({
               id:          String(e.id),
               module:      'Employee',
               title:       `${e.firstName ?? ''} ${e.lastName ?? ''}`.trim() || 'Unknown Employee',
-              subtitle:    toStr(e.jobTitle) || toStr(e.department) || String(e.email || ''),
+              subtitle,
               submittedAt: e.createdAt || e.created_at || null,
               status:      e.approvalStatus === 'PENDING' ? 'Pending' : (e.approvalStatus || 'Pending'),
               raw:         e,

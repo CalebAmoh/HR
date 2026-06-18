@@ -1,33 +1,14 @@
 const { prisma }    = require('../helpers/dbQueryHelper');
 const asyncHandler  = require('../middleware/asyncHandler');
 const respond       = require('../helpers/respondHelper');
-const { postToGL, cfg: glCfg } = require('../helpers/glHelper');
+const { postToGL } = require('../helpers/glHelper');
+const { toBigInt, s } = require('../helpers/controllerHelpers');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function toBigInt(val) {
-  if (!val && val !== 0) return null;
-  try { return BigInt(val); } catch { return null; }
-}
 
 function toInt(val) {
   const n = parseInt(val, 10);
   return isNaN(n) ? null : n;
-}
-
-// Recursively serialise BigInt / Date / Prisma Decimal so JSON.stringify works
-function s(obj) {
-  if (typeof obj === 'bigint')               return obj.toString();
-  if (obj instanceof Date)                   return obj.toISOString();
-  if (Array.isArray(obj))                    return obj.map(s);
-  if (obj !== null && typeof obj === 'object') {
-    // Prisma Decimal has toFixed / toNumber / toString methods
-    if (typeof obj.toFixed === 'function')   return obj.toString();
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) out[k] = s(v);
-    return out;
-  }
-  return obj;
 }
 
 // Build userId → display name map (joins users → employee for full name)
@@ -71,33 +52,7 @@ async function clvMap(ids) {
   } catch { return {}; }
 }
 
-// Run ALTER TABLE quietly — ignores "Duplicate column" errors
-async function safeAlter(sql) {
-  try {
-    await prisma.$executeRawUnsafe(sql);
-  } catch {}
-}
 
-// ── One-time schema patches ───────────────────────────────────────────────────
-
-(async () => {
-  await safeAlter(`ALTER TABLE medicallimit ADD COLUMN paygrade_id BIGINT NULL`);
-  await safeAlter(`ALTER TABLE medicallimit ADD COLUMN currency VARCHAR(10) NULL DEFAULT 'SLE'`);
-  await safeAlter(`ALTER TABLE dependentmedical ADD COLUMN dependent_id BIGINT NULL`);
-  await safeAlter(`ALTER TABLE staffmedical ADD COLUMN approved_by BIGINT NULL`);
-  await safeAlter(`ALTER TABLE staffmedical ADD COLUMN rejection_reason TEXT NULL`);
-  await safeAlter(`ALTER TABLE staffmedical ADD COLUMN submitted_by BIGINT NULL`);
-  await safeAlter(`ALTER TABLE dependentmedical ADD COLUMN approved_by BIGINT NULL`);
-  await safeAlter(`ALTER TABLE dependentmedical ADD COLUMN rejection_reason TEXT NULL`);
-  await safeAlter(`ALTER TABLE dependentmedical ADD COLUMN submitted_by BIGINT NULL`);
-  await safeAlter(`ALTER TABLE registeredhospitals ADD COLUMN type VARCHAR(20) NOT NULL DEFAULT 'Hospital'`);
-  await safeAlter(`ALTER TABLE hospitalclaims ADD COLUMN document_ref VARCHAR(100) NULL`);
-  await safeAlter(`ALTER TABLE hospitalclaims ADD COLUMN payment_log TEXT NULL`);
-  await safeAlter(`ALTER TABLE staffmedical ADD COLUMN document_ref VARCHAR(100) NULL`);
-  await safeAlter(`ALTER TABLE staffmedical ADD COLUMN payment_log TEXT NULL`);
-  await safeAlter(`ALTER TABLE dependentmedical ADD COLUMN document_ref VARCHAR(100) NULL`);
-  await safeAlter(`ALTER TABLE dependentmedical ADD COLUMN payment_log TEXT NULL`);
-})();
 
 // ── WHT settings helpers ──────────────────────────────────────────────────────
 
@@ -127,6 +82,7 @@ async function getWhtRate(hospitalType) {
   return parseFloat(row?.value ?? 0);
 }
 
+// GET /medical/settings — retrieve WHT (withholding tax) rates for hospitals and pharmacies.
 exports.getMedicalSettings = asyncHandler(async (req, res) => {
   const rows = await prisma.$queryRawUnsafe(
     `SELECT name, value FROM settings WHERE category = ?`, SETTINGS_CAT
@@ -145,6 +101,7 @@ const GL_EXPENSE_KEY  = 'medical_expense_gl';
 const GL_WHT_KEY      = 'medical_wht_gl';
 const GL_BRANCH_KEY   = 'medical_gl_branch';
 
+// GET /medical/gl-settings — retrieve GL account codes for medical expense, WHT payable, and branch.
 exports.getMedicalGLSettings = asyncHandler(async (req, res) => {
   const rows = await prisma.$queryRawUnsafe(
     `SELECT name, value FROM settings WHERE category = ?`, GL_CAT
@@ -157,6 +114,7 @@ exports.getMedicalGLSettings = asyncHandler(async (req, res) => {
   });
 });
 
+// PUT /medical/gl-settings — save GL account codes used when posting medical payments to the general ledger.
 exports.updateMedicalGLSettings = asyncHandler(async (req, res) => {
   const { medical_expense_gl = '', medical_wht_gl = '', medical_gl_branch = '' } = req.body;
   await upsertSetting(GL_EXPENSE_KEY, String(medical_expense_gl), GL_CAT);
@@ -214,6 +172,7 @@ async function loadGLSettings() {
   };
 }
 
+// PUT /medical/settings — update WHT rates for hospitals and pharmacies; validates 0–100 range.
 exports.updateMedicalSettings = asyncHandler(async (req, res) => {
   const { wht_rate_hospital, wht_rate_pharmacy } = req.body;
   const h = parseFloat(wht_rate_hospital ?? 0);
@@ -227,11 +186,14 @@ exports.updateMedicalSettings = asyncHandler(async (req, res) => {
 
 // ── STAFF MEDICAL ─────────────────────────────────────────────────────────────
 
+// GET /medical/staff — list staff medical records. Anyone who can view Manage Medical
+// (view_medical permission) sees all submitted records plus their own drafts; everyone
+// else sees only their own records across all statuses.
 exports.getStaffMedical = asyncHandler(async (req, res) => {
-  const isAdmin = (req.user?.roles ?? []).some(r => ['admin', 'super-admin'].includes(r));
+  const canViewAll = (req.user?.permissions ?? []).includes('view_medical');
   let rows;
-  if (isAdmin) {
-    // Admins see submitted records + their own Drafts
+  if (canViewAll) {
+    // Manage Medical viewers see submitted records + their own Drafts
     rows = await prisma.$queryRawUnsafe(
       `SELECT * FROM staffmedical WHERE status != 'Draft' OR posted_by = ? ORDER BY id DESC`,
       Number(req.user?.id || 0)
@@ -267,6 +229,7 @@ exports.getStaffMedical = asyncHandler(async (req, res) => {
   })));
 });
 
+// POST /medical/staff — create a new staff medical record in Draft status.
 exports.createStaffMedical = asyncHandler(async (req, res) => {
   const {
     employee, admission_date, discharged_date, admission_type,
@@ -303,9 +266,40 @@ exports.createStaffMedical = asyncHandler(async (req, res) => {
   respond.created(res, 'Staff medical record created', s(created[0] ?? {}));
 });
 
+// PUT /medical/staff/:id — patch a staff medical record; handles status changes (approve/reject) separately
+// from field edits. Editing a Rejected record automatically resets it to Draft for resubmission.
+// A non-admin user may only mutate medical requests they originated themselves.
+// Admin/HR holding the relevant medical permission can act on any record.
+async function assertCanMutateMedical(req, res, table, id, perm) {
+  const [rec] = await prisma.$queryRawUnsafe(`SELECT posted_by FROM ${table} WHERE id = ? LIMIT 1`, id);
+  if (!rec) { respond.notFound(res, 'Record not found'); return false; }
+  const owns    = String(rec.posted_by ?? '') === String(req.user?.id ?? '');
+  const hasPerm = (req.user?.permissions ?? []).includes(perm);
+  if (!owns && !hasPerm) { respond.forbidden(res, 'You can only modify medical requests you created'); return false; }
+  return true;
+}
+
+// Enforce the "Allow Self-Approval" control (Settings → Medical Approval). When the setting is
+// OFF, the user who originated a request may not approve it themselves — a different approver
+// must act. Defaults to allowed when the setting has never been saved.
+async function assertCanSelfApprove(req, res, record) {
+  const sameUser = String(record.posted_by ?? '') === String(req.user?.id ?? '');
+  if (!sameUser) return true;
+  const [row] = await prisma.$queryRawUnsafe(
+    `SELECT value FROM settings WHERE name='approval_medical_self' AND category='app_controls' LIMIT 1`
+  ).catch(() => []);
+  const selfApprovalAllowed = row ? row.value === '1' : true;
+  if (!selfApprovalAllowed) {
+    respond.forbidden(res, 'Self-approval is disabled — a different approver must review this request');
+    return false;
+  }
+  return true;
+}
+
 exports.updateStaffMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
+  if (!(await assertCanMutateMedical(req, res, 'staffmedical', id, 'edit_medical'))) return;
 
   const {
     employee, admission_date, discharged_date, admission_type,
@@ -356,19 +350,23 @@ exports.updateStaffMedical = asyncHandler(async (req, res) => {
   respond.ok(res, 'Staff medical record updated', s(updated[0] ?? {}));
 });
 
+// DELETE /medical/staff/:id — permanently remove a staff medical record.
 exports.deleteStaffMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
+  if (!(await assertCanMutateMedical(req, res, 'staffmedical', id, 'delete_medical'))) return;
   await prisma.staffmedical.delete({ where: { id } });
   respond.ok(res, 'Deleted');
 });
 
 // ── DEPENDENT MEDICAL ─────────────────────────────────────────────────────────
 
+// GET /medical/dependent — list dependent medical records with the same view_medical/self visibility rules as staff medical.
+// Resolves relationship labels from CodeListValue and resolves dependent name from the register.
 exports.getDependentMedical = asyncHandler(async (req, res) => {
-  const isAdmin = (req.user?.roles ?? []).some(r => ['admin', 'super-admin'].includes(r));
+  const canViewAll = (req.user?.permissions ?? []).includes('view_medical');
   let rows;
-  if (isAdmin) {
+  if (canViewAll) {
     rows = await prisma.$queryRawUnsafe(
       `SELECT * FROM dependentmedical WHERE status != 'Draft' OR posted_by = ? ORDER BY id DESC`,
       Number(req.user?.id || 0)
@@ -409,6 +407,8 @@ exports.getDependentMedical = asyncHandler(async (req, res) => {
   })));
 });
 
+// POST /medical/dependent — create a dependent medical record in Draft status; looks up dependent name
+// from the employeedependents register when dependent_id is provided.
 exports.createDependentMedical = asyncHandler(async (req, res) => {
   const {
     employee, dependent_id, relationship, dob,
@@ -464,9 +464,11 @@ exports.createDependentMedical = asyncHandler(async (req, res) => {
   respond.created(res, 'Dependent medical record created', s(created[0] ?? {}));
 });
 
+// PUT /medical/dependent/:id — patch a dependent medical record; same approve/reject + auto-Draft-restore logic as updateStaffMedical.
 exports.updateDependentMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
+  if (!(await assertCanMutateMedical(req, res, 'dependentmedical', id, 'edit_medical'))) return;
 
   const {
     employee, dependent_id, relationship, dob,
@@ -535,15 +537,18 @@ exports.updateDependentMedical = asyncHandler(async (req, res) => {
   respond.ok(res, 'Dependent medical record updated', s(updatedDep[0] ?? {}));
 });
 
+// DELETE /medical/dependent/:id — permanently remove a dependent medical record.
 exports.deleteDependentMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
+  if (!(await assertCanMutateMedical(req, res, 'dependentmedical', id, 'delete_medical'))) return;
   await prisma.dependentmedical.delete({ where: { id } });
   respond.ok(res, 'Deleted');
 });
 
 // ── MEDICAL LIMITS ────────────────────────────────────────────────────────────
 
+// GET /medical/limits — list all paygrade medical limits (max claimable amount per pay grade + currency).
 exports.getMedicalLimits = asyncHandler(async (req, res) => {
   const rows = await prisma.$queryRawUnsafe(`
     SELECT ml.*, pg.name AS grade_name
@@ -557,6 +562,7 @@ exports.getMedicalLimits = asyncHandler(async (req, res) => {
   })));
 });
 
+// POST /medical/limits — create a new medical limit for a pay grade; resolves grade name from the paygrades table.
 exports.createMedicalLimit = asyncHandler(async (req, res) => {
   const { paygrade, currency, amount } = req.body;
   if (!paygrade) return respond.badReq(res, 'Pay grade is required');
@@ -578,6 +584,7 @@ exports.createMedicalLimit = asyncHandler(async (req, res) => {
   respond.created(res, 'Medical limit created', { id: Number(row.insertId ?? 0) });
 });
 
+// PUT /medical/limits/:id — update a medical limit's pay grade, currency, or amount.
 exports.updateMedicalLimit = asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -597,6 +604,7 @@ exports.updateMedicalLimit = asyncHandler(async (req, res) => {
   respond.ok(res, 'Medical limit updated');
 });
 
+// DELETE /medical/limits/:id — remove a medical limit entry.
 exports.deleteMedicalLimit = asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -606,6 +614,8 @@ exports.deleteMedicalLimit = asyncHandler(async (req, res) => {
 
 // ── STAFF MEDICAL ENQUIRY ─────────────────────────────────────────────────────
 
+// GET /medical/enquiry — aggregate view of medical utilisation for all active employees: limit, staff-used,
+// dependent-used, total utilised, and remaining balance. Includes amounts from approved hospital claim items.
 exports.getMedicalEnquiry = asyncHandler(async (req, res) => {
   // Raw join: paygrades relation is not defined in Prisma schema
   const employees = await prisma.$queryRawUnsafe(`
@@ -680,6 +690,8 @@ exports.getMedicalEnquiry = asyncHandler(async (req, res) => {
   respond.ok(res, 'Medical enquiry', s(rows));
 });
 
+// GET /medical/enquiry/:id — detailed utilisation breakdown for a single employee including all approved
+// staff and dependent medical records and approved hospital claim line items.
 exports.getMedicalEnquiryByEmployee = asyncHandler(async (req, res) => {
   const empIdStr = String(req.params.id);
   const empIdBig = toBigInt(empIdStr);
@@ -773,6 +785,8 @@ exports.getMedicalEnquiryByEmployee = asyncHandler(async (req, res) => {
 
 // ── PERSONAL MEDICAL ENQUIRY (current user's employee) ───────────────────────
 
+// GET /medical/my-enquiry — return the authenticated user's own medical limit, utilisation, and full record history
+// (all statuses). Utilisation includes Approved, Pending Approval, and Draft records to show worst-case balance.
 exports.getMyMedicalEnquiry = asyncHandler(async (req, res) => {
   // Find the employee linked to this user
   const userRow = await prisma.$queryRawUnsafe(
@@ -850,11 +864,13 @@ exports.getMyMedicalEnquiry = asyncHandler(async (req, res) => {
 
 // ── REGISTERED HOSPITALS ──────────────────────────────────────────────────────
 
+// GET /medical/hospitals — list all registered hospitals and pharmacies with their GL account and type.
 exports.getHospitals = asyncHandler(async (req, res) => {
   const rows = await prisma.registeredhospitals.findMany({ orderBy: { id: 'desc' } });
   respond.ok(res, 'Hospitals', rows.map(r => s(r)));
 });
 
+// POST /medical/hospitals — register a new hospital or pharmacy with its GL credit account.
 exports.createHospital = asyncHandler(async (req, res) => {
   const { name, account, type = 'Hospital' } = req.body;
   if (!name?.trim())    return respond.badReq(res, 'Name is required');
@@ -865,6 +881,7 @@ exports.createHospital = asyncHandler(async (req, res) => {
   respond.created(res, 'Hospital registered', s(row));
 });
 
+// PUT /medical/hospitals/:id — update a registered hospital's name, account, or type.
 exports.updateHospital = asyncHandler(async (req, res) => {
   const id  = toInt(req.params.id);
   if (!id)  return respond.badReq(res, 'Invalid ID');
@@ -881,6 +898,7 @@ exports.updateHospital = asyncHandler(async (req, res) => {
   respond.ok(res, 'Hospital updated', s(row));
 });
 
+// DELETE /medical/hospitals/:id — remove a registered hospital from the system.
 exports.deleteHospital = asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -892,6 +910,7 @@ exports.deleteHospital = asyncHandler(async (req, res) => {
 // items = JSON array: [{ employee_id, employee_name, type:'self'|'dependent',
 //                        dependent_id, dependent_name, narration, amount }]
 
+// GET /medical/hospital-claims — list all hospital claims with resolved hospital name/type, item count, and totals.
 exports.getHospitalClaims = asyncHandler(async (req, res) => {
   const rows = await prisma.$queryRawUnsafe(`SELECT * FROM hospitalclaims ORDER BY id DESC`);
 
@@ -919,6 +938,8 @@ exports.getHospitalClaims = asyncHandler(async (req, res) => {
   }));
 });
 
+// POST /medical/hospital-claims — create a hospital claim in Draft status; automatically calculates
+// withholding tax from the hospital's WHT rate and derives total_credit_amount = total - WHT.
 exports.createHospitalClaim = asyncHandler(async (req, res) => {
   const { hospital, items, comment = '' } = req.body;
   if (!hospital)                                   return respond.badReq(res, 'Hospital is required');
@@ -951,6 +972,7 @@ exports.createHospitalClaim = asyncHandler(async (req, res) => {
   respond.created(res, 'Claim created', s(row));
 });
 
+// PUT /medical/hospital-claims/:id — replace items and recalculate WHT totals for a hospital claim.
 exports.updateHospitalClaim = asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -985,6 +1007,7 @@ exports.updateHospitalClaim = asyncHandler(async (req, res) => {
   respond.ok(res, 'Claim updated');
 });
 
+// DELETE /medical/hospital-claims/:id — permanently remove a hospital claim.
 exports.deleteHospitalClaim = asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -992,6 +1015,7 @@ exports.deleteHospitalClaim = asyncHandler(async (req, res) => {
   respond.ok(res, 'Deleted');
 });
 
+// POST /medical/hospital-claims/:id/submit — move a Draft hospital claim to Pending Approval.
 exports.submitHospitalClaim = asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -999,18 +1023,24 @@ exports.submitHospitalClaim = asyncHandler(async (req, res) => {
   respond.ok(res, 'Claim submitted for approval');
 });
 
+// POST /medical/hospital-claims/:id/approve — approve a hospital claim and post to GL: debit medical expense
+// per line item, credit hospital account (net of WHT), credit WHT payable GL. Sets status to 'GL Failed'
+// on posting error so a retry is possible without re-approving.
 exports.approveHospitalClaim = asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
 
   // Fetch claim + hospital account
   const [claim] = await prisma.$queryRawUnsafe(`
-    SELECT hc.id, hc.hospital, hc.items, hc.total_amount, hc.withholding_tax, hc.total_credit_amount,
+    SELECT hc.id, hc.hospital, hc.items, hc.total_amount, hc.withholding_tax, hc.total_credit_amount, hc.posted_by,
            rh.name AS hospital_name, rh.account AS hospital_account
     FROM hospitalclaims hc
     JOIN registeredhospitals rh ON rh.id = hc.hospital
     WHERE hc.id = ? LIMIT 1
   `, id).catch(() => []);
+
+  // Enforce the "Allow Self-Approval" control — the originator can't approve their own claim when it's off.
+  if (claim && !(await assertCanSelfApprove(req, res, claim))) return;
 
   // Approve the claim
   await prisma.hospitalclaims.update({
@@ -1115,6 +1145,7 @@ exports.approveHospitalClaim = asyncHandler(async (req, res) => {
   respond.ok(res, 'Claim approved', s(updated));
 });
 
+// POST /medical/hospital-claims/:id/reject — reject a hospital claim with an optional reason.
 exports.rejectHospitalClaim = asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -1128,9 +1159,11 @@ exports.rejectHospitalClaim = asyncHandler(async (req, res) => {
 
 // ── STAFF MEDICAL — Action endpoints (mirrors payroll submit/approve/reject/finalize) ──
 
+// POST /medical/staff/:id/submit — move a Draft staff medical record to Pending Approval.
 exports.submitStaffMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
+  if (!(await assertCanMutateMedical(req, res, 'staffmedical', id, 'create_medical'))) return;
   const [rec] = await prisma.$queryRawUnsafe(`SELECT id, status FROM staffmedical WHERE id = ?`, id);
   if (!rec) return respond.notFound(res, 'Record not found');
   if (rec.status !== 'Draft') return respond.badReq(res, 'Only Draft records can be submitted');
@@ -1143,12 +1176,15 @@ exports.submitStaffMedical = asyncHandler(async (req, res) => {
   respond.ok(res, 'Submitted for approval', s(updated));
 });
 
+// POST /medical/staff/:id/approve — approve a staff medical claim and GL-post the reimbursement to the
+// employee's bank account. Sets status to 'GL Failed' on posting error for retry without re-approving.
 exports.approveStaffMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
   const [rec] = await prisma.$queryRawUnsafe(`SELECT * FROM staffmedical WHERE id = ?`, id);
   if (!rec) return respond.notFound(res, 'Record not found');
   if (rec.status !== 'Pending Approval') return respond.badReq(res, 'Record is not pending approval');
+  if (!(await assertCanSelfApprove(req, res, rec))) return;
   const userId = req.user?.id ? Number(req.user.id) : null;
   await prisma.$executeRawUnsafe(
     `UPDATE staffmedical SET status='Approved', approved_by=?, updatedAt=NOW() WHERE id=?`,
@@ -1190,6 +1226,7 @@ exports.approveStaffMedical = asyncHandler(async (req, res) => {
   respond.ok(res, 'Approved', { ...s(updated), gl_payload: glPayload });
 });
 
+// POST /medical/staff/:id/reject — reject a Pending Approval staff medical record with an optional reason.
 exports.rejectStaffMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -1206,6 +1243,8 @@ exports.rejectStaffMedical = asyncHandler(async (req, res) => {
   respond.ok(res, 'Rejected', s(updated));
 });
 
+// POST /medical/staff/:id/finalize — directly approve a Draft record and trigger GL posting in one step,
+// bypassing the submit → approve flow. Useful for HR entering retrospective claims.
 exports.finalizeStaffMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -1255,9 +1294,11 @@ exports.finalizeStaffMedical = asyncHandler(async (req, res) => {
 
 // ── DEPENDENT MEDICAL — Action endpoints ──────────────────────────────────────
 
+// POST /medical/dependent/:id/submit — move a Draft dependent medical record to Pending Approval.
 exports.submitDependentMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
+  if (!(await assertCanMutateMedical(req, res, 'dependentmedical', id, 'create_medical'))) return;
   const [rec] = await prisma.$queryRawUnsafe(`SELECT id, status FROM dependentmedical WHERE id = ?`, id);
   if (!rec) return respond.notFound(res, 'Record not found');
   if (rec.status !== 'Draft') return respond.badReq(res, 'Only Draft records can be submitted');
@@ -1270,12 +1311,15 @@ exports.submitDependentMedical = asyncHandler(async (req, res) => {
   respond.ok(res, 'Submitted for approval', s(updated));
 });
 
+// POST /medical/dependent/:id/approve — approve a dependent medical claim and GL-post reimbursement to
+// the employee's bank account. Sets status to 'GL Failed' on posting error for retry.
 exports.approveDependentMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
   const [rec] = await prisma.$queryRawUnsafe(`SELECT * FROM dependentmedical WHERE id = ?`, id);
   if (!rec) return respond.notFound(res, 'Record not found');
   if (rec.status !== 'Pending Approval') return respond.badReq(res, 'Record is not pending approval');
+  if (!(await assertCanSelfApprove(req, res, rec))) return;
   const userId = req.user?.id ? Number(req.user.id) : null;
   await prisma.$executeRawUnsafe(
     `UPDATE dependentmedical SET status='Approved', approved_by=? WHERE id=?`,
@@ -1318,6 +1362,7 @@ exports.approveDependentMedical = asyncHandler(async (req, res) => {
   respond.ok(res, 'Approved', { ...s(updated), gl_payload: glPayload });
 });
 
+// POST /medical/dependent/:id/reject — reject a Pending Approval dependent medical record with an optional reason.
 exports.rejectDependentMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -1334,6 +1379,7 @@ exports.rejectDependentMedical = asyncHandler(async (req, res) => {
   respond.ok(res, 'Rejected', s(updated));
 });
 
+// POST /medical/dependent/:id/finalize — directly approve a Draft dependent record and GL-post in one step.
 exports.finalizeDependentMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -1382,7 +1428,7 @@ exports.finalizeDependentMedical = asyncHandler(async (req, res) => {
   respond.ok(res, 'Finalized', { ...s(updated), gl_payload: glPayload });
 });
 
-// ── GL Retry helpers ──────────────────────────────────────────────────────────
+// ── GL Retry endpoints ────────────────────────────────────────────────────────
 
 async function retryMedicalGL(table, id, req) {
   const [rec] = await prisma.$queryRawUnsafe(`SELECT * FROM ${table} WHERE id = ?`, id);
@@ -1413,6 +1459,8 @@ async function retryMedicalGL(table, id, req) {
   return result;
 }
 
+// POST /medical/staff/:id/retry-gl — re-attempt GL posting for a staff medical record stuck in 'GL Failed'.
+// Blocked if the GL already posted (document_ref exists) or POSTING_API_URL is not configured.
 exports.retryStaffMedicalGL = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -1440,6 +1488,7 @@ exports.retryStaffMedicalGL = asyncHandler(async (req, res) => {
   respond.ok(res, 'GL retry complete', s(updated));
 });
 
+// POST /medical/dependent/:id/retry-gl — re-attempt GL posting for a dependent medical record stuck in 'GL Failed'.
 exports.retryDependentMedicalGL = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -1467,6 +1516,8 @@ exports.retryDependentMedicalGL = asyncHandler(async (req, res) => {
   respond.ok(res, 'GL retry complete', s(updated));
 });
 
+// POST /medical/hospital-claims/:id/retry-gl — re-attempt full GL posting for a hospital claim stuck in 'GL Failed';
+// rebuilds the same debit/credit/WHT journal as the original approve.
 exports.retryHospitalClaimGL = asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');

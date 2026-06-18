@@ -16,6 +16,7 @@ export interface LoginResponseData {
   userType?:     'employee' | 'guardian' | 'student' | 'admin';
   roles:         string[];      // e.g. ["admin", "Supervisor"] — names only
   permissions:   string[];      // already resolved by backend
+  theme?:        string | null; // saved UI theme preference ('dark' | 'light')
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -58,6 +59,7 @@ export interface ApiUser {
     permissions: string[];   // flat string array e.g. ["view_students", "create_users"]
   }[];
   direct_permissions: string[];  // flat string array, prefix "!" means revoke
+  theme?: string | null;         // saved UI theme preference ('dark' | 'light')
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -88,4 +90,5 @@ export interface AppUser {
   allRoles: AppRole[];         // all assigned roles
   directPermissions: string[]; // direct overrides — prefix "!" to revoke
   resolvedPermissions: Set<string>; // final computed set, ready to use
+  theme?: 'dark' | 'light' | null;  // saved UI theme preference (per user, server-backed)
 }
