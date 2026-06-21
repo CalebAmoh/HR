@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
+import { RowActions } from './ui/RowActions';
 import { FormField, inputClass } from './ui/FormField';
 import { CountedTextarea } from './ui/CountedTextarea';
 import { DetailSlideOver } from './ui/DetailSlideOver';
@@ -680,7 +681,7 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                 </button>) : undefined
               }
             />
-            <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
+            <div className="overflow-auto flex-1 min-h-0">
               <table className="w-full border-collapse">
                 <thead>
                   <tr>
@@ -703,21 +704,13 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                       <td className="td"><JobStatusPill status={job.status} /></td>
                       <td className="td">{job.closingDate ? new Date(job.closingDate).toLocaleDateString() : '—'}</td>
                       <td className="td">
-                        <div className="flex items-center justify-end gap-1">
-                          <button className="action-btn text-[var(--accent)]" title="View" onClick={() => setSelectedJobId(job.id)}>
-                            <Eye size={14} />
-                          </button>
-                          {canJobs && (<>
-                          <button className="action-btn text-[var(--warning)]" title="Edit" onClick={() => { setEditTarget(job); setShowJobForm(true); }}>
-                            <FileEdit size={14} />
-                          </button>
-                          <button className="action-btn text-[var(--text-muted)]" title="Duplicate" onClick={() => duplicateJob(job)}>
-                            <Copy size={14} />
-                          </button>
-                          <button className="action-btn text-[var(--danger)]" title="Delete" onClick={() => deleteJob(job.id)}>
-                            <Trash2 size={14} />
-                          </button>
-                          </>)}
+                        <div className="flex justify-end">
+                          <RowActions actions={[
+                            { label: 'View', icon: Eye, onClick: () => setSelectedJobId(job.id) },
+                            { label: 'Edit', icon: FileEdit, onClick: () => { setEditTarget(job); setShowJobForm(true); }, hidden: !canJobs },
+                            { label: 'Duplicate', icon: Copy, onClick: () => duplicateJob(job), hidden: !canJobs },
+                            { label: 'Delete', icon: Trash2, danger: true, onClick: () => deleteJob(job.id), hidden: !canJobs },
+                          ]} />
                         </div>
                       </td>
                     </motion.tr>
@@ -750,7 +743,7 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                 </div>
               }
             />
-            <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
+            <div className="overflow-auto flex-1 min-h-0">
               <table className="w-full border-collapse">
                 <thead>
                   <tr>
@@ -785,18 +778,12 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                         <span className="pill pill-accent text-[11px]">{c.source ?? 'Sourced'}</span>
                       </td>
                       <td className="td">
-                        <div className="flex items-center justify-end gap-1">
-                          <button className="action-btn text-[var(--accent)]" title="View profile" onClick={() => setSelectedCandidateId(c.id)}>
-                            <Eye size={14} />
-                          </button>
-                          {canCandidates && (<>
-                          <button className="action-btn text-[var(--warning)]" title="Edit" onClick={() => { setEditTarget(c); setShowCandidateForm(true); }}>
-                            <FileEdit size={14} />
-                          </button>
-                          <button className="action-btn text-[var(--danger)]" title="Delete" onClick={() => deleteCandidate(c.id)}>
-                            <Trash2 size={14} />
-                          </button>
-                          </>)}
+                        <div className="flex justify-end">
+                          <RowActions actions={[
+                            { label: 'View Profile', icon: Eye, onClick: () => setSelectedCandidateId(c.id) },
+                            { label: 'Edit', icon: FileEdit, onClick: () => { setEditTarget(c); setShowCandidateForm(true); }, hidden: !canCandidates },
+                            { label: 'Delete', icon: Trash2, danger: true, onClick: () => deleteCandidate(c.id), hidden: !canCandidates },
+                          ]} />
                         </div>
                       </td>
                     </motion.tr>
@@ -812,7 +799,7 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
         {activeTab === 'Applications' && (
           <>
             <TableToolbar searchQuery={search} onSearchChange={setSearch} searchPlaceholder="Search applications..." />
-            <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
+            <div className="overflow-auto flex-1 min-h-0">
               <table className="w-full border-collapse">
                 <thead>
                   <tr>
@@ -840,20 +827,15 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                         <td className="td">{a.created ? new Date(a.created).toLocaleDateString() : '—'}</td>
                         <td className="td text-[var(--text-muted)] max-w-[200px] truncate text-xs">{a.notes ? a.notes.slice(0, 80) + (a.notes.length > 80 ? '…' : '') : '—'}</td>
                         <td className="td">
-                          <div className="flex items-center justify-end gap-1">
-                            <button className="action-btn text-[var(--accent)]" title="View details"
-                              onClick={() => setViewingApplication(a)}>
-                              <Eye size={14} />
-                            </button>
-                            {canApplications && (
-                            <button className="action-btn text-[var(--danger)]" title="Remove application"
-                              onClick={async () => {
-                                try { await api.delete(`/recruitment/applications/${a.id}`); toast.success('Application removed'); fetchAll(); }
-                                catch { toast.error('Failed to delete'); }
-                              }}>
-                              <Trash2 size={14} />
-                            </button>
-                            )}
+                          <div className="flex justify-end">
+                            <RowActions actions={[
+                              { label: 'View Details', icon: Eye, onClick: () => setViewingApplication(a) },
+                              { label: 'Remove Application', icon: Trash2, danger: true, hidden: !canApplications,
+                                onClick: async () => {
+                                  try { await api.delete(`/recruitment/applications/${a.id}`); toast.success('Application removed'); fetchAll(); }
+                                  catch { toast.error('Failed to delete'); }
+                                } },
+                            ]} />
                           </div>
                         </td>
                       </motion.tr>
@@ -879,7 +861,7 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                 </button>) : undefined
               }
             />
-            <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
+            <div className="overflow-auto flex-1 min-h-0">
               <table className="w-full border-collapse">
                 <thead>
                   <tr>
@@ -975,18 +957,12 @@ export function Recruitment({ onNavigate }: { onNavigate?: (view: string) => voi
                               {iv.status === 'Completed' ? <OutcomePill outcome={iv.outcome} /> : <span className="text-[var(--text-muted)]">—</span>}
                             </td>
                             <td className="td">
-                              <div className="flex items-center justify-end gap-1">
-                                <button className="action-btn text-[var(--accent)]" title="View Details" onClick={() => setInterviewDetailTarget(iv)}>
-                                  <Eye size={14} />
-                                </button>
-                                {canInterviews && (<>
-                                <button className="action-btn text-[var(--accent)]" title="Edit Interview" onClick={() => { setEditTarget(iv); setShowInterviewForm(true); }}>
-                                  <FileEdit size={14} />
-                                </button>
-                                <button className="action-btn text-[var(--danger)]" title="Delete" onClick={() => deleteInterview(iv.id)}>
-                                  <Trash2 size={14} />
-                                </button>
-                                </>)}
+                              <div className="flex justify-end">
+                                <RowActions actions={[
+                                  { label: 'View Details', icon: Eye, onClick: () => setInterviewDetailTarget(iv) },
+                                  { label: 'Edit Interview', icon: FileEdit, onClick: () => { setEditTarget(iv); setShowInterviewForm(true); }, hidden: !canInterviews },
+                                  { label: 'Delete', icon: Trash2, danger: true, onClick: () => deleteInterview(iv.id), hidden: !canInterviews },
+                                ]} />
                               </div>
                             </td>
                           </motion.tr>

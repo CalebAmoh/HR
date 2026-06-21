@@ -297,7 +297,7 @@ export function InterviewForm({ onClose, initialData, onSave, candidates = [], j
               <div className="flex flex-col gap-2">
                 {slots.map((slot, i) => (
                   <div key={i} className="flex items-center gap-2">
-                    <div className="grid grid-cols-3 gap-2 flex-1">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 flex-1">
                       <input
                         type="date"
                         value={slot.date}

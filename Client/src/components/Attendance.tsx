@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { PageHeader }      from './ui/PageHeader';
+import { RowActions }      from './ui/RowActions';
 import { TabBar }          from './ui/TabBar';
 import { TableToolbar }    from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
@@ -722,10 +723,12 @@ function DailyLogTab() {
                 <td className="td tabular-nums">{row.worked_minutes != null ? fmtMin(row.worked_minutes) : '—'}</td>
                 <td className="td"><StatusPill status={row.day_status} /></td>
                 <td className="td">
-                  <div className="flex items-center justify-end gap-1">
-                    <button className="action-btn text-[var(--success)]" onClick={() => setViewRec(row)}><Eye size={14} /></button>
-                    {canManage && <button className="action-btn" onClick={() => openEdit(row)}><Edit2 size={14} /></button>}
-                    {canManage && <button className="action-btn text-[var(--danger)]" onClick={() => setPendingVoid(row)}><Trash2 size={14} /></button>}
+                  <div className="flex justify-end">
+                    <RowActions actions={[
+                      { label: 'View', icon: Eye, onClick: () => setViewRec(row) },
+                      { label: 'Edit', icon: Edit2, onClick: () => openEdit(row), hidden: !canManage },
+                      { label: 'Void', icon: Trash2, danger: true, onClick: () => setPendingVoid(row), hidden: !canManage },
+                    ]} />
                   </div>
                 </td>
               </tr>
@@ -964,7 +967,7 @@ function ImportsTab() {
         </button>}
       </div>
 
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-x-auto">
         <table className="w-full text-[13px]">
           <thead>
             <tr className="bg-[var(--bg)]">
@@ -1069,7 +1072,7 @@ function ReportsTab() {
         </p>
       )}
 
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-x-auto">
         <div className="px-4 py-3 border-b border-[var(--border)]">
           <h3 className="font-bold text-[var(--text-primary)] text-[14px]">Daily Breakdown</h3>
         </div>

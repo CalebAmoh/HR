@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FormModal } from './ui/FormModal';
+import { RowActions } from './ui/RowActions';
 import { DetailSlideOver, DetailGrid, DetailField, DetailSection } from './ui/DetailSlideOver';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
@@ -20,6 +21,7 @@ import { getCurrentUser } from '../../lib/auth';
 import { useCan } from '@/hooks/useCan';
 import { toast } from 'sonner';
 import { getSettings } from '../../lib/settings';
+import { PageHeader } from './ui/PageHeader';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -100,6 +102,13 @@ const BLANK_CG      = { name: '', details: '' };
 const BLANK_PROCESS: ProcessItem = {
   lower_limit_condition: 'NO_LOWER_LIMIT', lower_limit: '',
   upper_limit_condition: 'NO_UPPER_LIMIT', upper_limit: '', value: '',
+};
+
+/** Normalize a stored limit (e.g. "0.0000", "600.0000") to exactly 2 decimal places for display/edit. */
+const limit2dp = (v: any): string => {
+  if (v === null || v === undefined || v === '') return '';
+  const n = parseFloat(String(v));
+  return Number.isFinite(n) ? n.toFixed(2) : '';
 };
 
 // Visual payslip mockup for a report template — shared by the designer's live preview
@@ -1890,11 +1899,13 @@ export function Payroll() {
 
   async function savePe() {
     if (!peForm.pay_frequency) return toast.error('Pay frequency is required');
-    if (!peForm.currency)      return toast.error('Currency is required');
+    // Currency is no longer chosen per employee — new records use the system
+    // default from Settings → Controls → General; edits keep their stored value.
+    const payload = { ...peForm, currency: peForm.currency || getSettings().general.currency };
     setPeSaving(true);
     try {
       if (editingPe) {
-        const res = await api.put(`/payroll/employees/${editingPe.id}`, peForm);
+        const res = await api.put(`/payroll/employees/${editingPe.id}`, payload);
         setPeRows(r => r.map(x => x.id === editingPe.id ? res.data.data : x));
         toast.success('Payroll employee updated');
         setPeModalOpen(false);
@@ -1904,7 +1915,7 @@ export function Payroll() {
         const newRows: PayrollEmp[] = [];
         for (const empId of peSelectedEmpIds) {
           try {
-            const res = await api.post('/payroll/employees', { ...peForm, employee: empId });
+            const res = await api.post('/payroll/employees', { ...payload, employee: empId });
             newRows.push(res.data.data);
             added++;
           } catch (e: any) { if (e.response?.status === 409) skipped++; }
@@ -2116,9 +2127,9 @@ export function Payroll() {
         calculation_group_id: full.calculation_group_id ? String(full.calculation_group_id) : '',
         items: (full.items || []).map((item: any) => ({
           lower_limit_condition: item.lower_limit_condition,
-          lower_limit:           item.lower_limit  ?? '',
+          lower_limit:           limit2dp(item.lower_limit),
           upper_limit_condition: item.upper_limit_condition,
-          upper_limit:           item.upper_limit  ?? '',
+          upper_limit:           limit2dp(item.upper_limit),
           value:                 item.value ?? '',
         })),
       });
@@ -2138,9 +2149,9 @@ export function Payroll() {
         calculation_group_id: full.calculation_group_id ? String(full.calculation_group_id) : '',
         items: (full.items || []).map((item: any) => ({
           lower_limit_condition: item.lower_limit_condition,
-          lower_limit:           item.lower_limit  ?? '',
+          lower_limit:           limit2dp(item.lower_limit),
           upper_limit_condition: item.upper_limit_condition,
-          upper_limit:           item.upper_limit  ?? '',
+          upper_limit:           limit2dp(item.upper_limit),
           value:                 item.value ?? '',
         })),
       });
@@ -2209,10 +2220,11 @@ export function Payroll() {
 
   function saveProcess() {
     if (!processForm.value.trim()) return toast.error('Value is required');
+    const normalized = { ...processForm, lower_limit: limit2dp(processForm.lower_limit), upper_limit: limit2dp(processForm.upper_limit) };
     if (editingProcessIdx !== null) {
-      setScForm(f => ({ ...f, items: f.items.map((it, i) => i === editingProcessIdx ? { ...processForm } : it) }));
+      setScForm(f => ({ ...f, items: f.items.map((it, i) => i === editingProcessIdx ? normalized : it) }));
     } else {
-      setScForm(f => ({ ...f, items: [...f.items, { ...processForm }] }));
+      setScForm(f => ({ ...f, items: [...f.items, normalized] }));
     }
     setProcessModalOpen(false);
   }
@@ -2325,14 +2337,12 @@ export function Payroll() {
                   <td className="td font-medium text-[var(--text-primary)]">{cg.name}</td>
                   <td className="td text-[var(--text-muted)] max-w-[500px] truncate">{cg.details || '—'}</td>
                   <td className="td text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      <button className="action-btn text-[var(--accent)]" title="View" onClick={() => setViewRow({ type: 'cg', data: cg })}><Eye size={14} /></button>
-                      {can('manage_calculation_groups') && (<>
-                      <button className="action-btn text-[var(--warning)]" onClick={() => openCgEdit(cg)}><Edit size={14} /></button>
-                      <button className="action-btn text-[var(--danger)]" onClick={() => deleteCg(cg.id)} disabled={cgDeleting === cg.id}>
-                        {cgDeleting === cg.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
-                      </button>
-                      </>)}
+                    <div className="flex justify-end">
+                      <RowActions actions={[
+                        { label: 'View', icon: Eye, onClick: () => setViewRow({ type: 'cg', data: cg }) },
+                        { label: 'Edit', icon: Edit, onClick: () => openCgEdit(cg), hidden: !can('manage_calculation_groups') },
+                        { label: 'Delete', icon: Trash2, danger: true, onClick: () => deleteCg(cg.id), disabled: cgDeleting === cg.id, hidden: !can('manage_calculation_groups') },
+                      ]} />
                     </div>
                   </td>
                 </motion.tr>
@@ -2458,14 +2468,12 @@ export function Payroll() {
                     <td className="td text-[var(--text-muted)]">{curLabel}</td>
                     <td className="td text-[var(--text-muted)]">{pe.group_name || <span className="opacity-50">None</span>}</td>
                     <td className="td text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <button className="action-btn text-[var(--accent)]" title="View" onClick={() => setViewRow({ type: 'pe', data: { ...pe, _currency: curLabel } })}><Eye size={14} /></button>
-                        {can('manage_payroll_employees') && (<>
-                        <button className="action-btn text-[var(--warning)]" onClick={() => openPeEdit(pe)}><Edit size={14} /></button>
-                        <button className="action-btn text-[var(--danger)]" onClick={() => deletePe(pe.id)} disabled={peDeleting === pe.id}>
-                          {peDeleting === pe.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
-                        </button>
-                        </>)}
+                      <div className="flex justify-end">
+                        <RowActions actions={[
+                          { label: 'View', icon: Eye, onClick: () => setViewRow({ type: 'pe', data: { ...pe, _currency: curLabel } }) },
+                          { label: 'Edit', icon: Edit, onClick: () => openPeEdit(pe), hidden: !can('manage_payroll_employees') },
+                          { label: 'Delete', icon: Trash2, danger: true, onClick: () => deletePe(pe.id), disabled: peDeleting === pe.id, hidden: !can('manage_payroll_employees') },
+                        ]} />
                       </div>
                     </td>
                   </motion.tr>
@@ -2605,15 +2613,13 @@ export function Payroll() {
                     </div>
                   </td>
                   <td className="td text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      <button className="action-btn text-[var(--accent)]" title="View" onClick={() => setViewRow({ type: 'pc', data: pc })}><Eye size={14} /></button>
-                      {can('manage_payroll_columns') && (<>
-                      <button className="action-btn text-[var(--text-muted)]" title="Duplicate column" onClick={() => openPcDuplicate(pc)}><Copy size={14} /></button>
-                      <button className="action-btn text-[var(--warning)]" onClick={() => openPcEdit(pc)}><Edit size={14} /></button>
-                      <button className="action-btn text-[var(--danger)]" onClick={() => deletePc(pc.id)} disabled={pcDeleting === pc.id}>
-                        {pcDeleting === pc.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
-                      </button>
-                      </>)}
+                    <div className="flex justify-end">
+                      <RowActions actions={[
+                        { label: 'View', icon: Eye, onClick: () => setViewRow({ type: 'pc', data: pc }) },
+                        { label: 'Duplicate Column', icon: Copy, onClick: () => openPcDuplicate(pc), hidden: !can('manage_payroll_columns') },
+                        { label: 'Edit', icon: Edit, onClick: () => openPcEdit(pc), hidden: !can('manage_payroll_columns') },
+                        { label: 'Delete', icon: Trash2, danger: true, onClick: () => deletePc(pc.id), disabled: pcDeleting === pc.id, hidden: !can('manage_payroll_columns') },
+                      ]} />
                     </div>
                   </td>
                 </motion.tr>
@@ -2663,15 +2669,13 @@ export function Payroll() {
                   <td className="td text-[var(--text-muted)]">{sc.target_name || '—'}</td>
                   <td className="td text-[var(--text-muted)]">{sc.group_name || <span className="opacity-50">None</span>}</td>
                   <td className="td text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      <button className="action-btn text-[var(--accent)]" title="View" onClick={() => openScView(sc)}><Eye size={14} /></button>
-                      {can('manage_calculation_groups') && (<>
-                      <button className="action-btn text-[var(--text-muted)]" title="Duplicate rule" onClick={() => openScDuplicate(sc)}><Copy size={14} /></button>
-                      <button className="action-btn text-[var(--warning)]" onClick={() => openScEdit(sc)}><Edit size={14} /></button>
-                      <button className="action-btn text-[var(--danger)]" onClick={() => deleteSc(sc.id)} disabled={scDeleting === sc.id}>
-                        {scDeleting === sc.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
-                      </button>
-                      </>)}
+                    <div className="flex justify-end">
+                      <RowActions actions={[
+                        { label: 'View', icon: Eye, onClick: () => openScView(sc) },
+                        { label: 'Duplicate Rule', icon: Copy, onClick: () => openScDuplicate(sc), hidden: !can('manage_calculation_groups') },
+                        { label: 'Edit', icon: Edit, onClick: () => openScEdit(sc), hidden: !can('manage_calculation_groups') },
+                        { label: 'Delete', icon: Trash2, danger: true, onClick: () => deleteSc(sc.id), disabled: scDeleting === sc.id, hidden: !can('manage_calculation_groups') },
+                      ]} />
                     </div>
                   </td>
                 </motion.tr>
@@ -2752,14 +2756,12 @@ export function Payroll() {
                             : <span className="pill pill-success text-[11px]">{netCount} net column{netCount !== 1 ? 's' : ''}</span>}
                         </td>
                         <td className="td text-right">
-                          <div className="flex items-center justify-end gap-1">
-                            <button className="action-btn text-[var(--accent)]" title="View" onClick={() => openPsView(t)}><Eye size={14} /></button>
-                            {can('manage_report_templates') && (<>
-                            <button className="action-btn text-[var(--warning)]" onClick={() => openPsEdit(t)}><Edit size={14} /></button>
-                            <button className="action-btn text-[var(--danger)]" onClick={() => deletePsTemplate(t.id)} disabled={psDeleting === t.id}>
-                              {psDeleting === t.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
-                            </button>
-                            </>)}
+                          <div className="flex justify-end">
+                            <RowActions actions={[
+                              { label: 'View', icon: Eye, onClick: () => openPsView(t) },
+                              { label: 'Edit', icon: Edit, onClick: () => openPsEdit(t), hidden: !can('manage_report_templates') },
+                              { label: 'Delete', icon: Trash2, danger: true, onClick: () => deletePsTemplate(t.id), disabled: psDeleting === t.id, hidden: !can('manage_report_templates') },
+                            ]} />
                           </div>
                         </td>
                       </motion.tr>
@@ -3138,31 +3140,27 @@ export function Payroll() {
                       </td>
                       <td className="td"><span className={runStatusCls}>{run.status}</span></td>
                       <td className="td text-right" onClick={e => e.stopPropagation()}>
-                        <div className="flex items-center justify-end gap-1">
-                          <button className="action-btn text-[var(--accent)]" onClick={() => openRun(run)}><Eye size={14} /></button>
-                          {can('process_payroll') && (
-                          <button className="action-btn text-[var(--text-muted)]" title="Duplicate run" onClick={() => openRunDuplicate(run)}>
-                            <Copy size={14} />
-                          </button>
-                          )}
-                          {can('process_payroll') && run.status !== 'Completed' && run.status !== 'GL Failed' && (
-                            <button className="action-btn text-[var(--warning)]" onClick={() => {
-                              setRunForm({
-                                name: run.name, pay_frequency: run.pay_frequency ?? '',
-                                date_start: run.date_start?.slice(0, 10) ?? '',
-                                date_end:   run.date_end?.slice(0, 10) ?? '',
-                                deduction_group: run.deduction_group ?? '',
-                                payment_type: run.payment_type_id ?? '',
-                              });
-                              setEditingRun(run);
-                              setRunModalOpen(true);
-                            }}><Edit size={14} /></button>
-                          )}
-                          {can('process_payroll') && run.status !== 'Completed' && run.status !== 'GL Failed' && (
-                            <button className="action-btn text-[var(--danger)]" onClick={() => deleteRun(run.id)} disabled={runDeleting === run.id}>
-                              {runDeleting === run.id ? <span className="text-[11px]">…</span> : <Trash2 size={14} />}
-                            </button>
-                          )}
+                        <div className="flex justify-end">
+                          <RowActions actions={[
+                            { label: 'View', icon: Eye, onClick: () => openRun(run) },
+                            { label: 'Duplicate Run', icon: Copy, onClick: () => openRunDuplicate(run), hidden: !can('process_payroll') },
+                            {
+                              label: 'Edit', icon: Edit,
+                              hidden: !(can('process_payroll') && run.status !== 'Completed' && run.status !== 'GL Failed'),
+                              onClick: () => {
+                                setRunForm({
+                                  name: run.name, pay_frequency: run.pay_frequency ?? '',
+                                  date_start: run.date_start?.slice(0, 10) ?? '',
+                                  date_end:   run.date_end?.slice(0, 10) ?? '',
+                                  deduction_group: run.deduction_group ?? '',
+                                  payment_type: run.payment_type_id ?? '',
+                                });
+                                setEditingRun(run);
+                                setRunModalOpen(true);
+                              },
+                            },
+                            { label: 'Delete', icon: Trash2, danger: true, onClick: () => deleteRun(run.id), disabled: runDeleting === run.id, hidden: !(can('process_payroll') && run.status !== 'Completed' && run.status !== 'GL Failed') },
+                          ]} />
                         </div>
                       </td>
                     </motion.tr>
@@ -3278,7 +3276,7 @@ export function Payroll() {
                     compareDataA.find((c: GridCell) => c.employee === eid)?.emp_name ??
                     compareDataB.find((c: GridCell) => c.employee === eid)?.emp_name ?? eid;
                   return (
-                    <div className="border border-[var(--border)] rounded-xl overflow-hidden">
+                    <div className="border border-[var(--border)] rounded-xl overflow-x-auto">
                       <table className="w-full border-collapse text-[12px]">
                         <thead>
                           <tr>
@@ -3455,8 +3453,8 @@ export function Payroll() {
       <div className="max-w-[1400px] mx-auto px-6 py-8">
         {!activeRunId && (
           <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mb-7">
-            <h1 className="syne text-[26px] font-extrabold text-[var(--text-primary)] m-0">Payroll Processing</h1>
-            <p className="text-[13px] text-[var(--text-muted)] mt-1.5">Manage employees, runs, and calculation rules from one place.</p>
+            <PageHeader title="Payroll Processing" subtitle="Manage employees, runs, and calculation rules from one place." />
+                      
           </motion.div>
         )}
 
@@ -3615,8 +3613,9 @@ export function Payroll() {
                     </select>
                   </FormField>
                   <FormField label="Lower Limit">
-                    <input className={inputClass} type="number" value={processForm.lower_limit}
+                    <input className={inputClass} type="text" inputMode="decimal" value={processForm.lower_limit}
                       onChange={e => setProcessForm(f => ({ ...f, lower_limit: e.target.value }))}
+                      onBlur={() => setProcessForm(f => ({ ...f, lower_limit: limit2dp(f.lower_limit) }))}
                       disabled={processForm.lower_limit_condition === 'NO_LOWER_LIMIT'}
                       placeholder={processForm.lower_limit_condition === 'NO_LOWER_LIMIT' ? 'N/A' : '0.00'} />
                   </FormField>
@@ -3632,8 +3631,9 @@ export function Payroll() {
                     </select>
                   </FormField>
                   <FormField label="Upper Limit">
-                    <input className={inputClass} type="number" value={processForm.upper_limit}
+                    <input className={inputClass} type="text" inputMode="decimal" value={processForm.upper_limit}
                       onChange={e => setProcessForm(f => ({ ...f, upper_limit: e.target.value }))}
+                      onBlur={() => setProcessForm(f => ({ ...f, upper_limit: limit2dp(f.upper_limit) }))}
                       disabled={processForm.upper_limit_condition === 'NO_UPPER_LIMIT'}
                       placeholder={processForm.upper_limit_condition === 'NO_UPPER_LIMIT' ? 'N/A' : '0.00'} />
                   </FormField>
@@ -3685,7 +3685,7 @@ export function Payroll() {
                     <p className="text-[11px] text-[var(--text-muted)] mt-1">Shown on payslips instead of the column name. Leave blank to use the column name.</p>
                   </FormField>
                 </div>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <FormField label="Payment / Deduction">
                     <select className={inputClass} value={pcForm.payment_deduction}
                       onChange={e => setPcForm(f => ({ ...f, payment_deduction: e.target.value }))}>
@@ -3748,7 +3748,7 @@ export function Payroll() {
                     </FormField>
                   </div>
                 </div>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <FormField label="Enabled">
                     <select className={inputClass} value={pcForm.enabled}
                       onChange={e => setPcForm(f => ({ ...f, enabled: e.target.value }))}>
@@ -3861,24 +3861,14 @@ export function Payroll() {
                     />
                   </FormField>
                 )}
-                <div className="grid grid-cols-2 gap-4">
-                  <FormField label="Pay Frequency" required>
-                    <Combobox
-                      options={pfRows.map(pf => ({ id: String(pf.id), label: pf.name }))}
-                      value={peForm.pay_frequency}
-                      onChange={id => setPeForm(f => ({ ...f, pay_frequency: id }))}
-                      placeholder="Select frequency…"
-                    />
-                  </FormField>
-                  <FormField label="Currency" required>
-                    <Combobox
-                      options={currencies.map(c => ({ id: c.id, label: c.name }))}
-                      value={peForm.currency}
-                      onChange={id => setPeForm(f => ({ ...f, currency: id }))}
-                      placeholder="Select currency…"
-                    />
-                  </FormField>
-                </div>
+                <FormField label="Pay Frequency" required>
+                  <Combobox
+                    options={pfRows.map(pf => ({ id: String(pf.id), label: pf.name }))}
+                    value={peForm.pay_frequency}
+                    onChange={id => setPeForm(f => ({ ...f, pay_frequency: id }))}
+                    placeholder="Select frequency…"
+                  />
+                </FormField>
                 <FormField label="Calculation Group">
                   <Combobox
                     options={[{ id: '', label: 'None' }, ...cgRows.map(cg => ({ id: cg.id, label: cg.name }))]}
@@ -3971,13 +3961,11 @@ export function Payroll() {
                               <td className="td py-2 px-3 text-[var(--text-muted)] text-[12px]">{pf.description || '—'}</td>
                               <td className="td py-2 px-3 text-center text-[var(--text-muted)] text-[12px]">{pf.sort_order}</td>
                               <td className="td py-2 px-3 text-right">
-                                <div className="flex items-center justify-end gap-1">
-                                  {can('manage_payroll_employees') && (<>
-                                  <button className="action-btn text-[var(--warning)]" onClick={() => openPfEdit(pf)}><Edit size={13} /></button>
-                                  <button className="action-btn text-[var(--danger)]" onClick={() => deletePf(String(pf.id))} disabled={pfDeleting === String(pf.id)}>
-                                    {pfDeleting === String(pf.id) ? <span className="text-[11px]">…</span> : <Trash2 size={13} />}
-                                  </button>
-                                  </>)}
+                                <div className="flex justify-end">
+                                  <RowActions actions={[
+                                    { label: 'Edit', icon: Edit, onClick: () => openPfEdit(pf), hidden: !can('manage_payroll_employees') },
+                                    { label: 'Delete', icon: Trash2, danger: true, onClick: () => deletePf(String(pf.id)), disabled: pfDeleting === String(pf.id), hidden: !can('manage_payroll_employees') },
+                                  ]} />
                                 </div>
                               </td>
                             </tr>

@@ -1,15 +1,17 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, Eye, FileEdit, Filter, Plus, X, Users, Award, FileBadge, Globe, Baby, HeartPulse, RefreshCw, WifiOff, ShieldAlert } from 'lucide-react';
+import { ChevronDown, Eye, FileEdit, Filter, Plus, Upload, X, Users, Award, FileBadge, Globe, Baby, HeartPulse, RefreshCw, WifiOff, ShieldAlert } from 'lucide-react';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
 import { ConfirmAlert } from './ConfirmAlert';
 import { EmployeeFormFull } from './EmployeeFormFull';
+import { EmployeeImport } from './EmployeeImport';
 import { EmployeeDetailsSlideOver } from './EmployeeDetailsSlideOver';
 import { RelationalTab } from './EmployeeTabs';
 import { DisciplinaryTab } from './DisciplinaryTab';
 import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
+import { RowActions } from './ui/RowActions';
 import api from '../../lib/api';
 import { useCan } from '@/hooks/useCan';
 
@@ -71,6 +73,7 @@ export function Employees() {
   const [employees, setEmployees]         = useState<any[]>([]);
   const [loading, setLoading]             = useState(true);
   const [isFormOpen, setIsFormOpen]       = useState(false);
+  const [importOpen, setImportOpen]       = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [isAlertOpen, setIsAlertOpen]     = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<any | null>(null);
@@ -314,11 +317,17 @@ export function Employees() {
             actions={
               <>
                 {activeTab === 'Employees' && can('create_employees') && (
-                  <button onClick={handleAddClick} className="primary-btn shrink-0">
-                    <span className="hidden sm:inline">Add New</span>
-                    <span className="sm:hidden">Add</span>
-                    <Plus className="w-[14px] h-[14px]" />
-                  </button>
+                  <>
+                    <button onClick={() => setImportOpen(true)} className="secondary-btn shrink-0">
+                      <span className="hidden sm:inline">Import</span>
+                      <Upload className="w-[14px] h-[14px]" />
+                    </button>
+                    <button onClick={handleAddClick} className="primary-btn shrink-0">
+                      <span className="hidden sm:inline">Add New</span>
+                      <span className="sm:hidden">Add</span>
+                      <Plus className="w-[14px] h-[14px]" />
+                    </button>
+                  </>
                 )}
                 <button
                   onClick={() => setShowFilters(!showFilters)}
@@ -335,7 +344,7 @@ export function Employees() {
             }
           />
 
-          <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
+          <div className="overflow-auto flex-1 min-h-0">
             <table className="w-full border-collapse">
               <thead>
                 <tr>
@@ -393,30 +402,21 @@ export function Employees() {
                         </div>
                       </td>
                       <td className="td">
-                        <div className="flex items-center justify-end gap-1">
-                          <button onClick={() => handleViewClick(row)} className="action-btn text-[var(--accent)]" title="View Details">
-                            <Eye size={14} />
-                          </button>
-                          {can('edit_employees') && (
-                            <button
-                              onClick={() => handleEditClick(row)}
-                              disabled={['TERMINATED', 'RESIGNED'].includes(row.lifecycleStatus)}
-                              className="action-btn text-[var(--warning)] disabled:opacity-30 disabled:cursor-not-allowed"
-                              title={['TERMINATED', 'RESIGNED'].includes(row.lifecycleStatus) ? 'Cannot edit a terminated or resigned employee' : 'Edit'}
-                            >
-                              <FileEdit size={14} />
-                            </button>
-                          )}
-                          {row.sync_status === 'failed' && (
-                            <button
-                              onClick={() => handleSync(row)}
-                              disabled={syncingId === row.id}
-                              className="action-btn text-red-500 disabled:opacity-40"
-                              title="Retry external sync"
-                            >
-                              <RefreshCw size={14} className={syncingId === row.id ? 'animate-spin' : ''} />
-                            </button>
-                          )}
+                        <div className="flex justify-end">
+                          <RowActions actions={[
+                            { label: 'View Details', icon: Eye, onClick: () => handleViewClick(row) },
+                            {
+                              label: 'Edit', icon: FileEdit, onClick: () => handleEditClick(row),
+                              hidden: !can('edit_employees'),
+                              disabled: ['TERMINATED', 'RESIGNED'].includes(row.lifecycleStatus),
+                              title: ['TERMINATED', 'RESIGNED'].includes(row.lifecycleStatus) ? 'Cannot edit a terminated or resigned employee' : undefined,
+                            },
+                            {
+                              label: 'Retry External Sync', icon: RefreshCw, onClick: () => handleSync(row),
+                              hidden: row.sync_status !== 'failed',
+                              disabled: syncingId === row.id, spin: syncingId === row.id, danger: true,
+                            },
+                          ]} />
                         </div>
                       </td>
                     </motion.tr>
@@ -450,6 +450,13 @@ export function Employees() {
           onClose={() => setIsFormOpen(false)}
           initialData={selectedEmployee}
           onSave={handleSave}
+        />
+      )}
+
+      {importOpen && (
+        <EmployeeImport
+          onClose={() => setImportOpen(false)}
+          onImported={fetchEmployees}
         />
       )}
 

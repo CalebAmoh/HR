@@ -2,6 +2,8 @@ import { useState, useMemo, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import { codeLists, CodeList, CodeListValue } from '../../lib/codeLists';
 import { TablePagination } from './ui/TablePagination';
+import { SearchSelect } from './ui/SearchSelect';
+import { RowActions } from './ui/RowActions';
 import { Search, FileEdit, Trash2, Filter, Plus, Download, X, Building2, Tag, List, ChevronDown, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ConfirmAlert } from './ConfirmAlert';
@@ -565,18 +567,14 @@ export function System() {
                 <label className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wide syne">
                   Code:
                 </label>
-                <select
-                  value={codeFilter}
-                  onChange={(e) => setCodeFilter(e.target.value)}
-                  className="w-[180px] py-1 text-xs px-2 border rounded"
-                >
-                  <option value="">All Codes</option>
-                  {codes.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.code} — {c.name}
-                    </option>
-                  ))}
-                </select>
+                <div className="w-[220px]">
+                  <SearchSelect
+                    value={codeFilter}
+                    onChange={setCodeFilter}
+                    options={codes.map((c) => ({ id: String(c.id), label: `${c.code} — ${c.name}` }))}
+                    placeholder="All Codes"
+                  />
+                </div>
               </div>
               {hasActiveFilter && (
                 <button
@@ -591,7 +589,7 @@ export function System() {
         </div>
 
         {/* ── Table area ───────────────────────────────────────────────────── */}
-        <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
+        <div className="overflow-auto flex-1 min-h-0">
           {loading ? (
             <div className="flex items-center justify-center py-16 text-[var(--text-muted)] text-sm">
               Loading...
@@ -736,15 +734,13 @@ export function System() {
                         </td>
                         <td className="td text-[var(--text-secondary)]">{row.description ?? '—'}</td>
                         <td className="td">
-                          <div className="flex items-center justify-end gap-1">
-                            {canManage ? (<>
-                            <button onClick={() => handleEditValue(row)} className="action-btn text-[var(--warning)]" title="Edit">
-                              <FileEdit size={14} />
-                            </button>
-                            <button onClick={() => handleDeleteValueClick(row)} className="action-btn text-[var(--danger)]" title="Deactivate">
-                              <Trash2 size={14} />
-                            </button>
-                            </>) : <span className="text-[var(--text-muted)]">—</span>}
+                          <div className="flex justify-end">
+                            {canManage
+                              ? <RowActions actions={[
+                                  { label: 'Edit', icon: FileEdit, onClick: () => handleEditValue(row) },
+                                  { label: 'Deactivate', icon: Trash2, danger: true, onClick: () => handleDeleteValueClick(row) },
+                                ]} />
+                              : <span className="text-[var(--text-muted)]">—</span>}
                           </div>
                         </td>
                       </motion.tr>

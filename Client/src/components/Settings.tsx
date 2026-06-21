@@ -15,6 +15,7 @@ import { CountedTextarea } from './ui/CountedTextarea';
 import { MultiSearchSelect } from './ui/SearchSelect';
 import api from '../../lib/api';
 import { toast } from 'sonner';
+import { PageHeader } from './ui/PageHeader';
 
 // ─── Shared UI ────────────────────────────────────────────────────────────────
 
@@ -254,7 +255,7 @@ function ApprovalsSection({
   trainingApprovalFlow, setTrainingApprovalFlow, saveTrainingFlowSettings,
 }: any) {
   return (
-    <div className="grid grid-cols-3 gap-4 auto-rows-min">
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 auto-rows-min">
       <SectionCard icon={<ShieldCheck size={13} />} title="Employee Approval">
         <ControlRow
           label="Employee Approval Workflow"
@@ -685,7 +686,7 @@ function MedicalGlSection({
             GL accounts used when medical records are approved or finalised. Leave a field blank to skip that leg of the posting.
           </p>
         </div>
-        <div className="px-5 py-4 grid grid-cols-3 gap-4">
+        <div className="px-5 py-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
           {([
             { label: 'Medical Expense GL', desc: 'Debit — medical expense',        val: glExpense, set: setGlExpense, mono: true  },
             { label: 'WHT Payable GL',     desc: 'Credit — withheld tax',           val: glWht,     set: setGlWht,     mono: true  },
@@ -1388,13 +1389,62 @@ function EmailSetupTab() {
   );
 }
 
-// ─── Placeholder tabs ──────────────────────────────────────────────────────────
+// ─── Notification settings ──────────────────────────────────────────────────────
+
+const NOTIFY_MODULES: { key: string; label: string; description: string }[] = [
+  { key: 'users',       label: 'Account & User Access', description: 'Welcome email with login link and credentials when a user account is created.' },
+  { key: 'employees',   label: 'Employees',             description: 'Lifecycle notices (suspension, resignation, termination, reinstatement) and disciplinary records.' },
+  { key: 'leave',       label: 'Leave',                 description: 'Leave application, approval, rejection, and cancellation updates.' },
+  { key: 'recruitment', label: 'Recruitment',           description: 'Candidate stage updates, interview invitations, and self-scheduling links.' },
+  { key: 'performance', label: 'Performance',           description: 'Review cycle start, stage hand-offs, and completion notifications.' },
+  { key: 'documents',   label: 'Documents',             description: 'Document expiry alerts sent to employees.' },
+  { key: 'attendance',  label: 'Attendance',            description: 'Daily attendance summary digest email.' },
+];
 
 function NotificationSettingsTab() {
+  const [state, setState] = useState<Record<string, boolean>>({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.get('/settings/notifications')
+      .then(r => setState(r.data?.data ?? {}))
+      .catch(() => {/* keep defaults (all on) */})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const toggle = (key: string, value: boolean) => {
+    setState(p => ({ ...p, [key]: value }));
+    api.put('/settings/notifications', { [key]: value })
+      .then(() => toast.success('Notification settings saved'))
+      .catch(() => { setState(p => ({ ...p, [key]: !value })); toast.error('Failed to save'); });
+  };
+
   return (
-    <div className="p-6">
-      <h3 className="text-lg font-bold mb-4 syne">Notification Templates</h3>
-      <p className="text-sm text-[var(--text-muted)]">Configure email and SMS templates here.</p>
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="flex-1 overflow-y-auto p-5 space-y-4">
+        <p className="text-[13px] text-[var(--text-muted)] leading-relaxed">
+          Turn a module off to stop all of its automated emails. The module keeps working normally — only its email
+          notifications are suppressed. Email must also be enabled under <span className="font-semibold text-[var(--text-secondary)]">Email Setup</span> for any of these to send.
+        </p>
+
+        {loading ? (
+          <div className="py-16 text-center text-[var(--text-muted)]">
+            <Loader2 className="animate-spin inline" size={18} />
+          </div>
+        ) : (
+          <SectionCard icon={<Bell size={13} />} title="Email Notifications by Module">
+            {NOTIFY_MODULES.map(m => (
+              <ControlRow
+                key={m.key}
+                label={m.label}
+                description={m.description}
+                checked={state[m.key] !== false}
+                onChange={v => toggle(m.key, v)}
+              />
+            ))}
+          </SectionCard>
+        )}
+      </div>
     </div>
   );
 }
@@ -1415,12 +1465,8 @@ export function Settings() {
         initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
         className="mb-6"
       >
-        <h2 className="text-[22px] font-extrabold syne text-[var(--text-primary)] tracking-tight">
-          System Settings
-        </h2>
-        <p className="text-[13px] text-[var(--text-muted)] mt-1 font-medium">
-          Manage system-wide configuration, modules, and notifications.
-        </p>
+        <PageHeader title="System Settings" subtitle="Manage system-wide configuration, modules, and notifications." />
+            
       </motion.div>
 
       {!canManage && (

@@ -185,6 +185,47 @@ const saveControlSettings = asyncHandler(async (req, res) => {
   respond.ok(res, 'Control settings saved');
 });
 
+// ── Notification settings (Settings → Notification Settings) ──────────────────
+// Per-module switches for the emails each module sends. Stored in the `settings`
+// table (category='notifications') as notify_<module> = '1' | '0'. emailHelper's
+// notifyEnabled(<module>) reads the same keys and skips sending when '0'.
+
+const NOTIFY_MODULES = ['users', 'employees', 'leave', 'recruitment', 'performance', 'documents', 'attendance'];
+const notifyKey = (m) => `notify_${m}`;
+
+// GET /settings/notifications — map of module → enabled (default true)
+const getNotificationSettings = asyncHandler(async (req, res) => {
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT name, value FROM settings WHERE category='notifications'`
+  ).catch(() => []);
+  const saved = {};
+  for (const r of rows) saved[r.name] = r.value;
+  const map = {};
+  for (const m of NOTIFY_MODULES) map[m] = saved[notifyKey(m)] !== '0'; // default ON
+  respond.ok(res, 'Notification settings', map);
+});
+
+// PUT /settings/notifications — upsert any known module flags present in the body
+const saveNotificationSettings = asyncHandler(async (req, res) => {
+  for (const m of NOTIFY_MODULES) {
+    if (req.body[m] === undefined) continue;
+    const key = notifyKey(m);
+    const val = req.body[m] ? '1' : '0';
+    const existing = await prisma.$queryRawUnsafe(
+      `SELECT id FROM settings WHERE name=? AND category='notifications'`, key
+    ).catch(() => []);
+    if (existing.length) {
+      await prisma.$executeRawUnsafe(`UPDATE settings SET value=? WHERE name=? AND category='notifications'`, val, key);
+    } else {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO settings (id, name, value, category) VALUES (?,?,?,'notifications')`,
+        BigInt(Date.now() + Math.floor(Math.random() * 9999)), key, val
+      );
+    }
+  }
+  respond.ok(res, 'Notification settings saved');
+});
+
 // ── Module visibility settings ────────────────────────────────────────────────
 
 const ALL_MODULE_IDS = [
@@ -261,4 +302,4 @@ const saveAppSetup = asyncHandler(async (req, res) => {
   return respond.ok(res, 'App setup saved');
 });
 
-module.exports = { getEmailSettings, updateEmailSettings, sendTestEmail, getModuleSettings, saveModuleSettings, getControlSettings, saveControlSettings, getAppSetup, saveAppSetup };
+module.exports = { getEmailSettings, updateEmailSettings, sendTestEmail, getModuleSettings, saveModuleSettings, getControlSettings, saveControlSettings, getAppSetup, saveAppSetup, getNotificationSettings, saveNotificationSettings };

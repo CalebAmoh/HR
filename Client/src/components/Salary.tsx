@@ -3,9 +3,11 @@ import { Plus, Edit, Trash2, Tag, DollarSign, Users, BarChart2, GitBranch, Credi
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
+import { currencyCode } from '../../lib/currency';
 import { Combobox } from './EmployeeTabs';
 import { ConfirmAlert } from './ConfirmAlert';
 import { FormModal } from './ui/FormModal';
+import { RowActions } from './ui/RowActions';
 import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
@@ -50,11 +52,12 @@ const blankForm = (tab: string) => {
   }
 };
 
-function fmtMoney(value: any, currency?: string) {
+function fmtMoney(value: any, currency?: string | null) {
   if (value === null || value === undefined || value === '') return '-';
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value);
-  return `${currency ? `${currency} ` : ''}${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const cur = currency || currencyCode();   // fall back to the Controls → General currency
+  return `${cur ? `${cur} ` : ''}${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function optionId(value: any) {
@@ -694,9 +697,11 @@ export function Salary() {
                           {(pg.min_salary || pg.max_salary) && <span> · {fmtMoney(pg.min_salary)} – {fmtMoney(pg.max_salary)}</span>}
                         </p>
                       </div>
-                      <div className="flex gap-0.5 shrink-0 ml-2" onClick={(e) => e.stopPropagation()}>
-                        {canManageTab() && <button onClick={() => openEditPg(pg)} className="action-btn text-[var(--warning)]" title="Edit"><Edit size={13} /></button>}
-                        {canManageTab() && <button onClick={() => setPgDeleting(pg)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>}
+                      <div className="flex shrink-0 ml-2" onClick={(e) => e.stopPropagation()}>
+                        <RowActions actions={[
+                          { label: 'Edit', icon: Edit, onClick: () => openEditPg(pg), hidden: !canManageTab() },
+                          { label: 'Delete', icon: Trash2, danger: true, onClick: () => setPgDeleting(pg), hidden: !canManageTab() },
+                        ]} />
                       </div>
                     </div>
                   );
@@ -762,9 +767,11 @@ export function Salary() {
                             <td className="td">{n.currency ?? '-'}</td>
                             <td className="td">{fmtMoney(n.amount, n.currency)}</td>
                             <td className="td">
-                              <div className="flex items-center justify-end gap-1">
-                                {canManageTab() && <button onClick={() => openEditNotch(n)} className="action-btn text-[var(--warning)]" title="Edit"><Edit size={13} /></button>}
-                                {canManageTab() && <button onClick={() => setNotchDeleting(n)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>}
+                              <div className="flex justify-end">
+                                <RowActions actions={[
+                                  { label: 'Edit', icon: Edit, onClick: () => openEditNotch(n), hidden: !canManageTab() },
+                                  { label: 'Delete', icon: Trash2, danger: true, onClick: () => setNotchDeleting(n), hidden: !canManageTab() },
+                                ]} />
                               </div>
                             </td>
                           </motion.tr>
@@ -873,12 +880,12 @@ export function Salary() {
                     {renderCells(row).map((cell, idx) => <td key={idx} className={`td ${idx === 0 ? 'font-medium text-[var(--text-primary)]' : ''}`}>{cell}</td>)}
                     {canEditDelete && (
                       <td className="td">
-                        <div className="flex items-center justify-end gap-1">
-                          {activeTab === 'Employee Components' && (
-                            <button onClick={() => openHistory(row)} className="action-btn text-[var(--accent)]" title="View salary history"><Clock size={14} /></button>
-                          )}
-                          {canManageTab() && <button onClick={() => openEdit(row)} className="action-btn text-[var(--warning)]" title="Edit"><Edit size={14} /></button>}
-                          {canManageTab() && <button onClick={() => handleDelete(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={14} /></button>}
+                        <div className="flex justify-end">
+                          <RowActions actions={[
+                            { label: 'Salary History', icon: Clock, onClick: () => openHistory(row), hidden: activeTab !== 'Employee Components' },
+                            { label: 'Edit', icon: Edit, onClick: () => openEdit(row), hidden: !canManageTab() },
+                            { label: 'Delete', icon: Trash2, danger: true, onClick: () => handleDelete(row), hidden: !canManageTab() },
+                          ]} />
                         </div>
                       </td>
                     )}

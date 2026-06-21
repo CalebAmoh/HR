@@ -3,6 +3,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 const { sendPerformanceEmail } = require('../helpers/emailHelper');
 const { logActivity, fromReq } = require('./auditController');
+const { notifyEmployee, notifyUsersWithPermission } = require('../helpers/notificationHelper');
 
 const CYCLE_TYPES     = ['Annual', 'Semi-Annual', 'Quarterly', 'Probation'];
 const CYCLE_STATUSES  = ['Draft', 'Active', 'Closed'];
@@ -262,6 +263,10 @@ const activateCycle = asyncHandler(async (req, res) => {
      WHERE pr.cycle_id = ?`, id
   );
   for (const r of reviews) {
+    notifyEmployee(r.employee, {
+      message: `Your performance review for "${cycle.name}" is open — complete your self-assessment`,
+      action: 'PersonalPerformance', type: 'performance', fromUser: req.user?.id,
+    });
     const to = r.work_email || r.email;
     if (!to) continue;
     sendPerformanceEmail({
@@ -476,6 +481,12 @@ const submitSelfAssessment = asyncHandler(async (req, res) => {
   });
 
   // Notify supervisor
+  if (review.supervisor) {
+    notifyEmployee(review.supervisor, {
+      message: `${`${review.firstName} ${review.lastName}`.trim()} submitted a self-assessment for your review`,
+      action: 'PersonalPerformance', type: 'performance', fromUser: req.user?.id,
+    });
+  }
   if (review.sup_email) {
     sendPerformanceEmail({
       to: review.sup_email,
@@ -522,6 +533,11 @@ const submitSupervisorReview = asyncHandler(async (req, res) => {
     module: 'Performance', action: 'supervisor_review',
     entityId: String(id), ...fromReq(req),
   });
+
+  notifyUsersWithPermission('review_performance', {
+    message: 'A performance review is ready for HR sign-off',
+    action: 'ManagePerformance', type: 'performance', fromUser: req.user?.id,
+  }, req.user?.id);
 
   // Notify HR: fetch HR emails from users with admin/hr role
   const hrUsers = await query(
@@ -602,6 +618,11 @@ const submitHRReview = asyncHandler(async (req, res) => {
     module: 'Performance', action: 'hr_review',
     entityId: String(id), entityName: `${review.firstName} ${review.lastName}`.trim(),
     ...fromReq(req),
+  });
+
+  notifyEmployee(review.employee, {
+    message: `Your performance review for "${review.cycle_name}" is complete`,
+    action: 'PersonalPerformance', type: 'performance', fromUser: req.user?.id,
   });
 
   const to = review.work_email || review.email;

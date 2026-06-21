@@ -3,6 +3,24 @@ const asyncHandler  = require('../middleware/asyncHandler');
 const respond       = require('../helpers/respondHelper');
 const { postToGL } = require('../helpers/glHelper');
 const { toBigInt, s } = require('../helpers/controllerHelpers');
+const { notifyEmployee, notifyUser, notifyUsersWithPermission } = require('../helpers/notificationHelper');
+const { logActivity, fromReq } = require('./auditController');
+
+// In-app bell for a medical claim status change.
+// 'Pending Approval' → approvers; 'Approved'/'Rejected' → the claim's employee.
+function notifyMedicalStatus(req, employeeId, status, reason, label) {
+  if (status === 'Pending Approval') {
+    notifyUsersWithPermission('approve_medical', {
+      message: `A ${label} awaits your approval`,
+      action: 'AdminMedical', type: 'medical', fromUser: req.user?.id, employee: employeeId,
+    }, req.user?.id);
+  } else if ((status === 'Approved' || status === 'Rejected') && employeeId) {
+    notifyEmployee(employeeId, {
+      message: `Your ${label} was ${status.toLowerCase()}${status === 'Rejected' && reason ? ': ' + reason : ''}`,
+      action: 'PersonalMedical', type: 'medical', fromUser: req.user?.id,
+    });
+  }
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -80,6 +98,31 @@ async function getWhtRate(hospitalType) {
     `SELECT value FROM settings WHERE name = ? AND category = ?`, key, SETTINGS_CAT
   ).catch(() => []);
   return parseFloat(row?.value ?? 0);
+}
+
+// ── Year-end utilization reset point ────────────────────────────────────────────
+// Utilization is recomputed (never stored). When HR starts a new medical year we record a
+// reset timestamp here; the enquiries below then only count Approved records on/after it, so
+// everyone shows 0 for the fresh year while all historical records remain intact.
+const RESET_AT_KEY = 'utilization_reset_at';
+
+// Returns the cutoff date as 'YYYY-MM-DD' (date-only, safe to inline) or null when never reset.
+async function getUtilizationCutoff() {
+  const [row] = await prisma.$queryRawUnsafe(
+    `SELECT value FROM settings WHERE name = ? AND category = ?`, RESET_AT_KEY, SETTINGS_CAT
+  ).catch(() => []);
+  if (!row?.value) return null;
+  const d = new Date(row.value);
+  return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
+
+// SQL fragments that restrict each source table's Approved rows to the current medical year.
+function cutoffFragments(cut) {
+  return {
+    staff: cut ? ` AND COALESCE(approved_date, updatedAt, createdAt) >= '${cut}'` : '',
+    dep:   cut ? ` AND COALESCE(approved_date, from_date) >= '${cut}'`            : '',
+    claim: cut ? ` AND COALESCE(approved_date, posted_date) >= '${cut}'`          : '',
+  };
 }
 
 // GET /medical/settings — retrieve WHT (withholding tax) rates for hospitals and pharmacies.
@@ -315,6 +358,10 @@ exports.updateStaffMedical = asyncHandler(async (req, res) => {
       `UPDATE staffmedical SET status = ?, approved_by = ?, rejection_reason = ?, updatedAt = NOW() WHERE id = ?`,
       status, approverId, reason, id
     );
+    try {
+      const rec = (await prisma.$queryRawUnsafe(`SELECT employee FROM staffmedical WHERE id=?`, id))[0];
+      notifyMedicalStatus(req, rec?.employee, status, reason, 'staff medical claim');
+    } catch { /* non-blocking */ }
   }
 
   const hasOtherFields = employee || admission_date || discharged_date !== undefined ||
@@ -493,6 +540,10 @@ exports.updateDependentMedical = asyncHandler(async (req, res) => {
       `UPDATE dependentmedical SET status = ?, approved_by = ?, rejection_reason = ? WHERE id = ?`,
       status, approverId, reason, id
     );
+    try {
+      const rec = (await prisma.$queryRawUnsafe(`SELECT employee FROM dependentmedical WHERE id=?`, id))[0];
+      notifyMedicalStatus(req, rec?.employee, status, reason, 'dependent medical claim');
+    } catch { /* non-blocking */ }
   }
 
   const hasOtherFieldsDep = employee || date_attended || date_discharged !== undefined ||
@@ -635,12 +686,14 @@ exports.getMedicalEnquiry = asyncHandler(async (req, res) => {
     if (lim.paygrade_id) limitByGrade[String(lim.paygrade_id)] = lim;
   }
 
-  // Only Approved records count toward utilization
+  // Only Approved records on/after the current medical-year reset point count toward utilization
+  const cut = await getUtilizationCutoff();
+  const frag = cutoffFragments(cut);
   const staffCosts = await prisma.$queryRawUnsafe(
-    `SELECT employee, SUM(cost) as total FROM staffmedical WHERE status = 'Approved' GROUP BY employee`
+    `SELECT employee, SUM(cost) as total FROM staffmedical WHERE status = 'Approved'${frag.staff} GROUP BY employee`
   );
   const depCosts   = await prisma.$queryRawUnsafe(
-    `SELECT employee, SUM(cost) as total FROM dependentmedical WHERE status = 'Approved' GROUP BY employee`
+    `SELECT employee, SUM(cost) as total FROM dependentmedical WHERE status = 'Approved'${frag.dep} GROUP BY employee`
   );
 
   const staffMap = Object.fromEntries((staffCosts ?? []).map(r => [String(r.employee), parseFloat(r.total ?? 0)]));
@@ -648,7 +701,7 @@ exports.getMedicalEnquiry = asyncHandler(async (req, res) => {
 
   // Include approved hospital claim items in utilisation
   const approvedClaims = await prisma.$queryRawUnsafe(
-    `SELECT items FROM hospitalclaims WHERE status = 'Approved'`
+    `SELECT items FROM hospitalclaims WHERE status = 'Approved'${frag.claim}`
   ).catch(() => []);
   for (const claim of approvedClaims) {
     let claimItems = [];
@@ -715,11 +768,14 @@ exports.getMedicalEnquiryByEmployee = asyncHandler(async (req, res) => {
   const limit    = lim ? parseFloat(lim.amount ?? 0) : null;
   const currency = lim?.currency ?? '';
 
+  // Restrict utilization to the current medical year (records on/after the reset point)
+  const cut  = await getUtilizationCutoff();
+  const frag = cutoffFragments(cut);
   const [staffTotals] = await prisma.$queryRawUnsafe(
-    `SELECT SUM(cost) AS total FROM staffmedical WHERE employee = ? AND status = 'Approved'`, empIdStr
+    `SELECT SUM(cost) AS total FROM staffmedical WHERE employee = ? AND status = 'Approved'${frag.staff}`, empIdStr
   ).catch(() => [{ total: 0 }]);
   const [depTotals] = await prisma.$queryRawUnsafe(
-    `SELECT SUM(cost) AS total FROM dependentmedical WHERE employee = ? AND status = 'Approved'`, empIdStr
+    `SELECT SUM(cost) AS total FROM dependentmedical WHERE employee = ? AND status = 'Approved'${frag.dep}`, empIdStr
   ).catch(() => [{ total: 0 }]);
 
   let staffUsed = parseFloat(staffTotals?.total ?? 0);
@@ -727,7 +783,7 @@ exports.getMedicalEnquiryByEmployee = asyncHandler(async (req, res) => {
 
   // Include approved hospital claim items
   const approvedClaims = await prisma.$queryRawUnsafe(
-    `SELECT items FROM hospitalclaims WHERE status = 'Approved'`
+    `SELECT items FROM hospitalclaims WHERE status = 'Approved'${frag.claim}`
   ).catch(() => []);
   for (const claim of approvedClaims) {
     let claimItems = [];
@@ -746,10 +802,10 @@ exports.getMedicalEnquiryByEmployee = asyncHandler(async (req, res) => {
   const toDateStr = v => v instanceof Date ? v.toISOString().slice(0, 10) : (v ? String(v).slice(0, 10) : null);
 
   const staffRows = await prisma.$queryRawUnsafe(
-    `SELECT * FROM staffmedical WHERE employee = ? AND status = 'Approved' ORDER BY id DESC`, empIdStr
+    `SELECT * FROM staffmedical WHERE employee = ? AND status = 'Approved'${frag.staff} ORDER BY id DESC`, empIdStr
   ).catch(() => []);
   const depRows = await prisma.$queryRawUnsafe(
-    `SELECT * FROM dependentmedical WHERE employee = ? AND status = 'Approved' ORDER BY id DESC`, empIdStr
+    `SELECT * FROM dependentmedical WHERE employee = ? AND status = 'Approved'${frag.dep} ORDER BY id DESC`, empIdStr
   ).catch(() => []);
 
   respond.ok(res, 'Employee medical enquiry', s({
@@ -814,12 +870,17 @@ exports.getMyMedicalEnquiry = asyncHandler(async (req, res) => {
   const limit  = lim ? parseFloat(lim.amount ?? 0) : null;
   const currency = lim?.currency ?? '';
 
+  // Count Approved records only from the current medical year; in-progress Draft/Pending always show.
+  const cut  = await getUtilizationCutoff();
+  const frag = cutoffFragments(cut);
   const [staffTotals] = await prisma.$queryRawUnsafe(
-    `SELECT SUM(cost) AS total FROM staffmedical WHERE employee = ? AND status IN ('Approved','Pending Approval','Draft')`,
+    `SELECT SUM(cost) AS total FROM staffmedical WHERE employee = ?
+       AND (status IN ('Pending Approval','Draft') OR (status = 'Approved'${frag.staff}))`,
     empId
   ).catch(() => [{ total: 0 }]);
   const [depTotals] = await prisma.$queryRawUnsafe(
-    `SELECT SUM(cost) AS total FROM dependentmedical WHERE employee = ? AND status IN ('Approved','Pending Approval','Draft')`,
+    `SELECT SUM(cost) AS total FROM dependentmedical WHERE employee = ?
+       AND (status IN ('Pending Approval','Draft') OR (status = 'Approved'${frag.dep}))`,
     empId
   ).catch(() => [{ total: 0 }]);
 
@@ -1020,6 +1081,10 @@ exports.submitHospitalClaim = asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
   await prisma.hospitalclaims.update({ where: { id }, data: { status: 'Pending Approval' } });
+  notifyUsersWithPermission('approve_medical', {
+    message: 'A hospital medical claim awaits your approval',
+    action: 'AdminMedical', type: 'medical', fromUser: req.user?.id,
+  }, req.user?.id);
   respond.ok(res, 'Claim submitted for approval');
 });
 
@@ -1047,6 +1112,9 @@ exports.approveHospitalClaim = asyncHandler(async (req, res) => {
     where: { id },
     data: { status: 'Approved', approved_by: BigInt(req.user?.id ?? 0), approved_date: new Date() },
   });
+  if (claim?.posted_by && String(claim.posted_by) !== String(req.user?.id ?? '')) {
+    notifyUser(claim.posted_by, { message: 'Your hospital medical claim was approved', action: 'AdminMedical', type: 'medical', fromUser: req.user?.id });
+  }
 
   // GL posting (non-blocking — approval already committed above)
   if (claim && glCfg.url()) {
@@ -1580,4 +1648,113 @@ exports.retryHospitalClaimGL = asyncHandler(async (req, res) => {
   }
   const [updated] = await prisma.$queryRawUnsafe(`SELECT * FROM hospitalclaims WHERE id = ?`, id);
   respond.ok(res, 'GL retry complete', s(updated));
+});
+
+// ── YEAR-END UTILIZATION RESET ──────────────────────────────────────────────────
+
+// GET /medical/utilization/history — closing snapshots from past medical years.
+// Optional ?period= filters to a single closed year.
+exports.getUtilizationHistory = asyncHandler(async (req, res) => {
+  const { period } = req.query;
+  const rows = period
+    ? await prisma.$queryRawUnsafe(
+        `SELECT * FROM medicalutilizationhistory WHERE period_label = ? ORDER BY employee_name ASC`, String(period)
+      ).catch(() => [])
+    : await prisma.$queryRawUnsafe(
+        `SELECT * FROM medicalutilizationhistory ORDER BY closed_at DESC, employee_name ASC`
+      ).catch(() => []);
+  respond.ok(res, 'Medical utilization history', rows.map(r => s(r)));
+});
+
+// POST /medical/utilization/reset — start a new medical year. Snapshots every active employee's
+// current utilization into medicalutilizationhistory, then advances the reset point so the
+// enquiries recompute from 0. Non-destructive: no medical records or GL postings are touched.
+exports.resetMedicalUtilization = asyncHandler(async (req, res) => {
+  const periodLabel = String(req.body?.period_label ?? '').trim() || String(new Date().getFullYear());
+
+  // Block an accidental second close of the same year.
+  const dup = await prisma.$queryRawUnsafe(
+    `SELECT COUNT(*) AS n FROM medicalutilizationhistory WHERE period_label = ?`, periodLabel
+  ).catch(() => [{ n: 0 }]);
+  if (Number(dup?.[0]?.n ?? 0) > 0) {
+    return respond.badReq(res, `Medical year "${periodLabel}" has already been closed`);
+  }
+
+  // Compute current utilization for every active employee (same logic as getMedicalEnquiry).
+  const employees = await prisma.$queryRawUnsafe(`
+    SELECT e.id, e.firstName, e.lastName, e.employee_id,
+           pg.id AS pg_id, pg.name AS pg_name
+    FROM employee e
+    LEFT JOIN paygrades pg ON pg.id = e.paygradeId
+    WHERE e.lifecycleStatus != 'TERMINATED'
+    ORDER BY e.firstName ASC
+  `);
+
+  const limits = await prisma.$queryRawUnsafe(`SELECT * FROM medicallimit WHERE paygrade_id IS NOT NULL`);
+  const limitByGrade = {};
+  for (const lim of limits) { if (lim.paygrade_id) limitByGrade[String(lim.paygrade_id)] = lim; }
+
+  const cut  = await getUtilizationCutoff();
+  const frag = cutoffFragments(cut);
+  const staffCosts = await prisma.$queryRawUnsafe(
+    `SELECT employee, SUM(cost) as total FROM staffmedical WHERE status = 'Approved'${frag.staff} GROUP BY employee`
+  );
+  const depCosts = await prisma.$queryRawUnsafe(
+    `SELECT employee, SUM(cost) as total FROM dependentmedical WHERE status = 'Approved'${frag.dep} GROUP BY employee`
+  );
+  const staffMap = Object.fromEntries((staffCosts ?? []).map(r => [String(r.employee), parseFloat(r.total ?? 0)]));
+  const depMap   = Object.fromEntries((depCosts   ?? []).map(r => [String(r.employee), parseFloat(r.total ?? 0)]));
+
+  const approvedClaims = await prisma.$queryRawUnsafe(
+    `SELECT items FROM hospitalclaims WHERE status = 'Approved'${frag.claim}`
+  ).catch(() => []);
+  for (const claim of approvedClaims) {
+    let claimItems = [];
+    try { claimItems = JSON.parse(claim.items ?? '[]'); } catch {}
+    for (const item of claimItems) {
+      const empKey = String(item.employee_id);
+      const amt    = parseFloat(item.amount ?? 0);
+      if (item.type === 'dependent') depMap[empKey]   = (depMap[empKey]   ?? 0) + amt;
+      else                           staffMap[empKey] = (staffMap[empKey] ?? 0) + amt;
+    }
+  }
+
+  const now      = new Date();
+  const closedBy = req.user?.id ? BigInt(req.user.id) : null;
+  const { userName } = fromReq(req);
+
+  let count = 0;
+  for (const emp of employees) {
+    const pgId      = emp.pg_id ? String(emp.pg_id) : null;
+    const lim       = pgId ? limitByGrade[pgId] : null;
+    const limit     = lim ? parseFloat(lim.amount ?? 0) : null;
+    const currency  = lim?.currency ?? '';
+    const staffUsed = staffMap[String(emp.id)] ?? 0;
+    const depUsed   = depMap[String(emp.id)]   ?? 0;
+    const utilized  = staffUsed + depUsed;
+    const balance   = limit !== null ? limit - utilized : null;
+    const name      = `${emp.firstName ?? ''} ${emp.lastName ?? ''}`.trim();
+
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO medicalutilizationhistory
+         (period_label, employee_id, employee_name, grade, currency, medical_limit,
+          staff_utilized, dep_utilized, total_utilized, limit_balance, closed_at, closed_by, closed_by_name)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      periodLabel, BigInt(emp.id), name, emp.pg_name ?? null, currency,
+      limit, staffUsed, depUsed, utilized, balance, now, closedBy, userName ?? null
+    );
+    count++;
+  }
+
+  // Advance the reset point — from now on utilization recomputes from 0.
+  await upsertSetting(RESET_AT_KEY, now.toISOString(), SETTINGS_CAT);
+
+  logActivity({
+    module: 'Medical', action: 'reset_utilization', entityName: periodLabel,
+    details: { period_label: periodLabel, employees: count }, ...fromReq(req),
+  });
+
+  respond.ok(res, `New medical year started — utilization reset for ${count} employee(s)`, {
+    period_label: periodLabel, employees: count,
+  });
 });

@@ -2386,6 +2386,28 @@ model medicallimit {
   currency      String?   @default("SLE") @db.VarChar(10)
 }
 
+// Year-end closing snapshot of each employee's medical utilization, captured when HR
+// starts a new medical year. Non-destructive: original records are untouched; this is the
+// historical record of what utilization was at the moment of reset.
+model medicalutilizationhistory {
+  id             BigInt   @id @default(autoincrement())
+  period_label   String   @db.VarChar(40)
+  employee_id    BigInt
+  employee_name  String?  @db.VarChar(200)
+  grade          String?  @db.VarChar(60)
+  currency       String?  @db.VarChar(10)
+  medical_limit  Decimal? @db.Decimal(30, 2)
+  staff_utilized Decimal? @db.Decimal(30, 2)
+  dep_utilized   Decimal? @db.Decimal(30, 2)
+  total_utilized Decimal? @db.Decimal(30, 2)
+  limit_balance  Decimal? @db.Decimal(30, 2)
+  closed_at      DateTime @default(now()) @db.DateTime(0)
+  closed_by      BigInt?
+  closed_by_name String?  @db.VarChar(200)
+
+  @@index([period_label], map: "idx_muh_period")
+}
+
 /// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
 model medicalsymptom {
   id   BigInt

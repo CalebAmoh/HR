@@ -8,6 +8,7 @@ import { Organogram } from './Organogram';
 import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
+import { RowActions } from './ui/RowActions';
 import api from '../../lib/api';
 import { useCan } from '@/hooks/useCan';
 
@@ -184,7 +185,7 @@ export function Company() {
             }
           />
 
-          <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
+          <div className="overflow-auto flex-1 min-h-0">
             <table className="w-full border-collapse">
               <thead>
                 <tr>
@@ -218,17 +219,11 @@ export function Company() {
                       <td className="td">{row.heads || '—'}</td>
                       <td className="td">{row.address || '—'}</td>
                       <td className="td">
-                        <div className="flex items-center justify-end gap-1">
-                          {can('edit_company_structure') && (
-                            <button onClick={() => handleEditClick(row)} className="action-btn text-[var(--warning)]" title="Edit">
-                              <FileEdit size={14} />
-                            </button>
-                          )}
-                          {can('delete_company_structure') && (
-                            <button onClick={() => handleDeleteClick(row)} className="action-btn text-[var(--danger)]" title="Delete">
-                              <Trash2 size={14} />
-                            </button>
-                          )}
+                        <div className="flex justify-end">
+                          <RowActions actions={[
+                            { label: 'Edit', icon: FileEdit, onClick: () => handleEditClick(row), hidden: !can('edit_company_structure') },
+                            { label: 'Delete', icon: Trash2, danger: true, onClick: () => handleDeleteClick(row), hidden: !can('delete_company_structure') },
+                          ]} />
                         </div>
                       </td>
                     </motion.tr>

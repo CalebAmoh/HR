@@ -8,6 +8,7 @@ import { FormField, inputClass } from './ui/FormField';
 import { CountedTextarea } from './ui/CountedTextarea';
 import api from '../../lib/api';
 import { getCurrentUser } from '../../lib/auth';
+import { PageHeader } from './ui/PageHeader';
 
 type ApprovalModule = 'Employee' | 'Payroll' | 'Medical' | 'Leave';
 
@@ -799,13 +800,8 @@ export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) =>
     <div className="flex-1 w-full relative h-full flex flex-col">
       <div className="max-w-[1300px] w-full mx-auto px-6 py-8 flex-1 flex flex-col">
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mb-7">
-          <h1 className="syne text-[26px] font-extrabold text-[var(--text-primary)] m-0 flex items-center gap-2">
-            <CheckCircle className="text-[var(--accent)]" size={28} />
-            Central Approval
-          </h1>
-          <p className="text-[13px] text-[var(--text-muted)] mt-1.5">
-            Review and action all pending approvals across employees and payroll.
-          </p>
+          <PageHeader title="Central Approval" subtitle="Review and action all pending approvals across employees and payroll." />
+          
         </motion.div>
 
         <motion.div

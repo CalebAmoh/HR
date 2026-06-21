@@ -7,32 +7,13 @@ import { PageHeader } from './ui/PageHeader';
 import { TabBar } from './ui/TabBar';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
+import { RowActions } from './ui/RowActions';
 import api from '../../lib/api';
 import { toast } from 'sonner';
 import { useCan } from '@/hooks/useCan';
+import { PERMISSION_GROUPS, formatPermission as fmtPerm } from '@/lib/permissionGroups';
 
 const TABS = ['Users', 'Roles', 'Permissions'];
-
-const PERMISSION_GROUPS = [
-  { label: 'Dashboard',           color: '#0d9488', perms: ['view_dashboard'] },
-  { label: 'Users & Access',      color: '#2563eb', perms: ['view_users','create_users','edit_users','deactivate_users','activate_users','change_user_password','manage_roles'] },
-  { label: 'Employees',           color: '#059669', perms: ['view_employees','create_employees','edit_employees','approve_employees','change_employee_status','manage_onboarding'] },
-  { label: 'Employee Relations',  color: '#0891b2', perms: ['manage_skills','manage_certifications','manage_education','manage_languages','manage_dependents','manage_emergency_contacts'] },
-  { label: 'Company',             color: '#64748b', perms: ['view_company_structure','create_company_structure','edit_company_structure','delete_company_structure'] },
-  { label: 'Documents',           color: '#c2410c', perms: ['view_documents','create_documents','edit_documents','delete_documents'] },
-  { label: 'Leave Setup',         color: '#0f766e', perms: ['view_leave_setup','manage_leave_types','manage_leave_periods','manage_holidays','manage_work_week','manage_leave_groups','manage_leave_rules','manage_leave_approvals'] },
-  { label: 'Salary',              color: '#b45309', perms: ['view_salary_setup','manage_salary_component_types','manage_salary_components','manage_employee_salary_components','manage_notch_setup','manage_payment_types','manage_notch_movements'] },
-  { label: 'Payroll',             color: '#d97706', perms: ['view_payroll','manage_payroll_employees','process_payroll','approve_payroll','export_payroll_reports','manage_payroll_columns','manage_calculation_groups','manage_report_templates'] },
-  { label: 'Reports',             color: '#0284c7', perms: ['generate_reports','export_reports'] },
-  { label: 'System',              color: '#475569', perms: ['view_app_settings','manage_app_settings','view_settings','manage_settings','view_audit_logs'] },
-  { label: 'Recruitment',         color: '#7c3aed', perms: ['view_recruitment','manage_jobs','manage_candidates','manage_applications','manage_interviews'] },
-  { label: 'Performance',         color: '#0891b2', perms: ['view_performance','create_performance','delete_performance','review_performance'] },
-  { label: 'Medical',             color: '#dc2626', perms: ['view_medical','create_medical','edit_medical','delete_medical','approve_medical','manage_medical_limits','manage_hospitals'] },
-  { label: 'Attendance',          color: '#0d9488', perms: ['view_attendance','manage_attendance'] },
-  { label: 'Training',            color: '#d97706', perms: ['view_training','create_training','delete_training','approve_training'] },
-];
-
-const fmtPerm = (p: string) => p.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
 function serialize(data: any): any {
   if (Array.isArray(data)) return data.map(serialize);
@@ -277,12 +258,13 @@ export function Users() {
                 ? group.perms.filter(p => p.toLowerCase().includes(searchQuery.toLowerCase()) || fmtPerm(p).toLowerCase().includes(searchQuery.toLowerCase()))
                 : group.perms;
               if (visiblePerms.length === 0) return null;
+              const color = group.color.active;
               return (
                 <div key={group.label} className="border border-[var(--border)] rounded-xl overflow-hidden">
                   {/* Group header */}
-                  <div className="flex items-center gap-2 px-4 py-2.5" style={{ backgroundColor: group.color + '18' }}>
-                    <ShieldCheck size={13} style={{ color: group.color }} />
-                    <span className="text-[13px] font-bold" style={{ color: group.color }}>{group.label}</span>
+                  <div className="flex items-center gap-2 px-4 py-2.5" style={{ backgroundColor: color + '18' }}>
+                    <ShieldCheck size={13} style={{ color }} />
+                    <span className="text-[13px] font-bold" style={{ color }}>{group.label}</span>
                     <span className="text-[11px] font-semibold text-[var(--text-muted)] ml-1">{visiblePerms.length} permission{visiblePerms.length !== 1 ? 's' : ''}</span>
                   </div>
                   {/* Permission rows */}
@@ -302,7 +284,7 @@ export function Users() {
                             ) : (
                               assignedRoles.map(role => (
                                 <span key={role} className="pill text-[10px] font-semibold px-2 py-0.5 rounded-full border"
-                                  style={{ backgroundColor: group.color + '15', borderColor: group.color + '40', color: group.color }}>
+                                  style={{ backgroundColor: color + '15', borderColor: color + '40', color }}>
                                   {role}
                                 </span>
                               ))
@@ -386,32 +368,20 @@ export function Users() {
                       </>
                     )}
                     <td className="td">
-                      <div className="flex items-center justify-end gap-1">
-                        {isUsers && can('change_user_password') && (
-                          <button onClick={() => handleResetPassword(row)} className="action-btn text-[var(--text-secondary)]" title="Trigger Password Change">
-                            <KeyRound size={14} />
-                          </button>
-                        )}
-                        {!isUsers && (
-                          <button onClick={() => setViewRole(row)} className="action-btn text-[var(--text-secondary)]" title="View Permissions">
-                            <Eye size={14} />
-                          </button>
-                        )}
-                        {(isUsers ? can(row.status === '1' ? 'deactivate_users' : 'activate_users') : can('manage_roles')) && (
-                          <button
-                            onClick={() => handleToggleStatus(row)}
-                            className={`action-btn ${row.status === '1' ? 'text-[var(--danger)]' : 'text-[var(--success)]'}`}
-                            title={row.status === '1' ? 'Deactivate' : 'Activate'}
-                          >
-                            {row.status === '1' ? <ShieldOff size={14} /> : <CheckCircle2 size={14} />}
-                          </button>
-                        )}
-                        {(isUsers ? can('edit_users') : can('manage_roles')) && (
-                          <button onClick={() => handleEditClick(row)} className="action-btn text-[var(--warning)]" title="Edit"><FileEdit size={14} /></button>
-                        )}
-                        {isUsers && can('deactivate_users') && (
-                          <button onClick={() => handleDeleteClick(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={14} /></button>
-                        )}
+                      <div className="flex justify-end">
+                        <RowActions actions={[
+                          { label: 'Reset Password', icon: KeyRound, onClick: () => handleResetPassword(row), hidden: !(isUsers && can('change_user_password')) },
+                          { label: 'View Permissions', icon: Eye, onClick: () => setViewRole(row), hidden: isUsers },
+                          {
+                            label: row.status === '1' ? 'Deactivate' : 'Activate',
+                            icon: row.status === '1' ? ShieldOff : CheckCircle2,
+                            onClick: () => handleToggleStatus(row),
+                            danger: row.status === '1',
+                            hidden: !(isUsers ? can(row.status === '1' ? 'deactivate_users' : 'activate_users') : can('manage_roles')),
+                          },
+                          { label: 'Edit', icon: FileEdit, onClick: () => handleEditClick(row), hidden: !(isUsers ? can('edit_users') : can('manage_roles')) },
+                          { label: 'Delete', icon: Trash2, onClick: () => handleDeleteClick(row), danger: true, hidden: !(isUsers && can('deactivate_users')) },
+                        ]} />
                       </div>
                     </td>
                   </motion.tr>
@@ -498,17 +468,18 @@ export function Users() {
                   PERMISSION_GROUPS.map(group => {
                     const granted = group.perms.filter(p => rolePerms.has(p));
                     if (granted.length === 0) return null;
+                    const color = group.color.active;
                     return (
                       <div key={group.label} className="border border-[var(--border)] rounded-xl overflow-hidden">
-                        <div className="flex items-center gap-2 px-4 py-2.5" style={{ backgroundColor: group.color + '18' }}>
-                          <ShieldCheck size={13} style={{ color: group.color }} />
-                          <span className="text-[13px] font-bold" style={{ color: group.color }}>{group.label}</span>
+                        <div className="flex items-center gap-2 px-4 py-2.5" style={{ backgroundColor: color + '18' }}>
+                          <ShieldCheck size={13} style={{ color }} />
+                          <span className="text-[13px] font-bold" style={{ color }}>{group.label}</span>
                           <span className="text-[11px] font-semibold text-[var(--text-muted)] ml-1">{granted.length}</span>
                         </div>
                         <div className="p-3 flex flex-wrap gap-2 bg-[var(--surface)]">
                           {granted.map(p => (
                             <span key={p} className="text-[11px] font-medium px-2.5 py-1 rounded-full border"
-                              style={{ backgroundColor: group.color + '12', borderColor: group.color + '35', color: group.color }}>
+                              style={{ backgroundColor: color + '12', borderColor: color + '35', color }}>
                               {fmtPerm(p)}
                             </span>
                           ))}

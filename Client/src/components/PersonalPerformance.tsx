@@ -5,6 +5,7 @@ import {
   Plus, Pencil, Trash2, Loader2, CheckCircle2, Eye, Filter, Paperclip, X, AlertTriangle,
 } from 'lucide-react';
 import { DocPreviewModal } from './ui/DocPreviewModal';
+import { RowActions } from './ui/RowActions';
 import { CountedTextarea } from './ui/CountedTextarea';
 import api from '../../lib/api';
 import { toast } from 'sonner';
@@ -655,17 +656,13 @@ function MyGoalsTab({ employeeId }: { employeeId: string }) {
                         : <span className="text-[var(--text-muted)]">—</span>}
                     </td>
                     <td className="td text-right">
-                      <div className="inline-flex items-center gap-1">
-                        {isHR ? (
-                          <button onClick={() => openProgress(g)} className="action-btn" title="Report progress">
-                            <Pencil size={13} />
-                          </button>
-                        ) : (
-                          <>
-                            <button onClick={() => openEdit(g)} className="action-btn" title="Edit"><Pencil size={13} /></button>
-                            <button onClick={() => setDeletePending(g)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>
-                          </>
-                        )}
+                      <div className="inline-flex justify-end">
+                        <RowActions actions={isHR
+                          ? [{ label: 'Report Progress', icon: Pencil, onClick: () => openProgress(g) }]
+                          : [
+                              { label: 'Edit', icon: Pencil, onClick: () => openEdit(g) },
+                              { label: 'Delete', icon: Trash2, danger: true, onClick: () => setDeletePending(g) },
+                            ]} />
                       </div>
                     </td>
                   </tr>

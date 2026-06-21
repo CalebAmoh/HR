@@ -6,6 +6,7 @@ import {
   Copy, RefreshCw, Printer, Download, Loader2, Eye, UserPlus, Trash2, Link as LinkIcon,
 } from 'lucide-react';
 import api from '@/lib/api';
+import { RowActions } from './ui/RowActions';
 import { useCan } from '@/hooks/useCan';
 import { PageHeader } from './ui/PageHeader';
 import { TabBar } from './ui/TabBar';
@@ -410,12 +411,12 @@ export function SelfOnboarding() {
                     <td className="td text-[var(--text-muted)]">{new Date(sub.created).toLocaleDateString()}</td>
                     <td className="td">{statusPill(sub.status)}</td>
                     <td className="td">
-                      <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => setDetail(sub)} className="action-btn text-[var(--accent)]" title="View"><Eye size={14} /></button>
-                        {can('manage_onboarding') && sub.status !== 'Converted' && (<>
-                          <button onClick={() => setConvertTarget(sub)} className="action-btn text-[var(--warning)]" title="Convert to employee"><UserPlus size={14} /></button>
-                          <button onClick={() => discard(sub)} className="action-btn text-[var(--danger)]" title="Discard"><Trash2 size={14} /></button>
-                        </>)}
+                      <div className="flex justify-end">
+                        <RowActions actions={[
+                          { label: 'View', icon: Eye, onClick: () => setDetail(sub) },
+                          { label: 'Convert to Employee', icon: UserPlus, onClick: () => setConvertTarget(sub), hidden: !(can('manage_onboarding') && sub.status !== 'Converted') },
+                          { label: 'Discard', icon: Trash2, danger: true, onClick: () => discard(sub), hidden: !(can('manage_onboarding') && sub.status !== 'Converted') },
+                        ]} />
                       </div>
                     </td>
                   </motion.tr>

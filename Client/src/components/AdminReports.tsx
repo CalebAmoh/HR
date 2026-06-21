@@ -12,6 +12,7 @@ import { FormField, inputClass } from './ui/FormField';
 import { SearchSelect } from './ui/SearchSelect';
 import api from '../../lib/api';
 import { useCan } from '@/hooks/useCan';
+import { PageHeader } from './ui/PageHeader';
 
 interface Report {
   id: number;
@@ -576,11 +577,7 @@ export function AdminReports() {
     <div className="flex-1 w-full relative h-full flex flex-col">
       <div className="max-w-[1300px] w-full mx-auto px-6 py-8 flex-1 flex flex-col">
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mb-7">
-          <h1 className="syne text-[26px] font-extrabold text-[var(--text-primary)] m-0 flex items-center gap-2">
-            <FileText className="text-[var(--accent)]" size={28} />
-            Admin Reports
-          </h1>
-          <p className="text-[13px] text-[var(--text-muted)] mt-1.5">Generate and view company-wide reports for all employees.</p>
+          <PageHeader title="Admin Reports" subtitle="Generate and view company-wide reports for all employees." />
         </motion.div>
 
         <motion.div

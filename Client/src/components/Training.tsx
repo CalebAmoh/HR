@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { PageHeader }      from './ui/PageHeader';
 import { TabBar }          from './ui/TabBar';
 import { TableToolbar }    from './ui/TableToolbar';
+import { RowActions }      from './ui/RowActions';
 import { TablePagination } from './ui/TablePagination';
 import { FormModal }       from './ui/FormModal';
 import { FormField, inputClass } from './ui/FormField';
@@ -1149,14 +1150,12 @@ function MyTrainingTab({ preFill, onClearPreFill }: { preFill?: any; onClearPreF
                 <td className="td">{fmtDate(row.end_date)}</td>
                 <td className="td"><StatusPill status={row.status} /></td>
                 <td className="td">
-                  <div className="flex items-center justify-end gap-1">
-                    <button className="action-btn text-[var(--success)]" onClick={() => setViewRec(row)}><Eye size={14} /></button>
-                    {row.status === 'Draft' && (
-                      <>
-                        <button className="action-btn" onClick={() => openEdit(row)}><Edit2 size={14} /></button>
-                        <button className="action-btn text-[var(--danger)]" onClick={() => setPending(row)}><Trash2 size={14} /></button>
-                      </>
-                    )}
+                  <div className="flex justify-end">
+                    <RowActions actions={[
+                      { label: 'View', icon: Eye, onClick: () => setViewRec(row) },
+                      { label: 'Edit', icon: Edit2, onClick: () => openEdit(row), hidden: row.status !== 'Draft' },
+                      { label: 'Delete', icon: Trash2, danger: true, onClick: () => setPending(row), hidden: row.status !== 'Draft' },
+                    ]} />
                   </div>
                 </td>
               </tr>

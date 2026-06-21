@@ -10,6 +10,7 @@ import { DocumentViewer } from './DocumentViewer';
 import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
+import { RowActions } from './ui/RowActions';
 import api from '../../lib/api';
 import { toast } from 'sonner';
 import { useCan } from '@/hooks/useCan';
@@ -293,33 +294,12 @@ export function Documents() {
                         </>
                       )}
                       <td className="td">
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            onClick={() => setDocumentToView({
-                              ...row,
-                              attachmentName: row.attachment,
-                              sourceUrl: row.attachment ? `/documents/${row.attachment}` : null,
-                            })}
-                            className="action-btn text-[var(--accent)]" title="View"
-                          >
-                            <Eye size={14} />
-                          </button>
-                          {can('edit_documents') && (
-                            <button
-                              onClick={() => { setSelectedDoc(isEmployee ? toEditData(row) : row); setIsFormOpen(true); }}
-                              className="action-btn text-[var(--warning)]" title="Edit"
-                            >
-                              <FileEdit size={14} />
-                            </button>
-                          )}
-                          {can('delete_documents') && (
-                            <button
-                              onClick={() => { setSelectedDoc(row); setIsAlertOpen(true); }}
-                              className="action-btn text-[var(--danger)]" title="Delete"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          )}
+                        <div className="flex justify-end">
+                          <RowActions actions={[
+                            { label: 'View', icon: Eye, onClick: () => setDocumentToView({ ...row, attachmentName: row.attachment, sourceUrl: row.attachment ? `/documents/${row.attachment}` : null }) },
+                            { label: 'Edit', icon: FileEdit, onClick: () => { setSelectedDoc(isEmployee ? toEditData(row) : row); setIsFormOpen(true); }, hidden: !can('edit_documents') },
+                            { label: 'Delete', icon: Trash2, danger: true, onClick: () => { setSelectedDoc(row); setIsAlertOpen(true); }, hidden: !can('delete_documents') },
+                          ]} />
                         </div>
                       </td>
                     </motion.tr>

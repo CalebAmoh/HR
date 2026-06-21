@@ -1,8 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import axios from 'axios';
 import { Clock, Delete, LogIn, CheckCircle2, XCircle, Loader2, Camera } from 'lucide-react';
-
-const publicApi = axios.create({ baseURL: '/v1/api/hr' });
+import { publicApi } from '@/lib/publicApi';
 
 function getToken(): string | null {
   const match = window.location.pathname.match(/^\/kiosk\/(.+)$/);

@@ -185,6 +185,7 @@ export default function App() {
         onMenuToggle={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
         onLogout={handleLogout}
         currentUser={currentUser}
+        onNavigate={navigate}
       />
       <div className="flex flex-1 overflow-hidden relative">
         {isMobileMenuOpen && (

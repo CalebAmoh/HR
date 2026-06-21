@@ -7,6 +7,9 @@ const pad = n => String(n).padStart(2, '0');
 const dstr = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const ACTIVE = `lifecycleStatus = 'ACTIVE' AND approvalStatus = 'APPROVED'`;
 
+// "1 file" / "2 files" — pluralize a counted noun for module-card labels.
+const plural = (n, word) => `${n.toLocaleString('en-US')} ${word}${n === 1 ? '' : 's'}`;
+
 const timeHM = v => {
   if (v == null) return null;
   const x = v instanceof Date ? v.toISOString().slice(11, 16) : String(v).slice(11, 16);
@@ -124,4 +127,130 @@ exports.getDashboardSummary = asyncHandler(async (req, res) => {
     service: Object.entries(buckets).map(([label, value]) => ({ label, value })),
     recent_employees: recentEmployees.map(r => ({ ...s(r) })),
   });
+});
+
+// GET /dashboard/module-stats — the live stat shown on each module launcher card.
+// For each module, returns an org-wide figure when the user can manage that module,
+// otherwise a figure scoped to the user's own data (personal view). Modules the user
+// cannot access at all are omitted. Mirrors the client's resolveTarget access rules.
+exports.getModuleStats = asyncHandler(async (req, res) => {
+  const perms = new Set(req.user?.permissions ?? []);
+  const has   = (...keys) => keys.some(k => perms.has(k));
+  const empId = req.user?.employeeId != null ? BigInt(req.user.employeeId) : null; // employee.id
+  const empIdStr = empId != null ? String(empId) : null;
+
+  const now   = new Date();
+  const today = dstr(now);
+  const monthStart = `${today.slice(0, 7)}-01`;
+
+  const count = (sql, ...params) =>
+    prisma.$queryRawUnsafe(sql, ...params).then(r => Number(r?.[0]?.cnt ?? 0)).catch(() => 0);
+
+  const tasks = [];
+  const push  = (p) => tasks.push(p);
+
+  // ── Employees (management only) ──
+  if (has('view_employees')) {
+    push((async () => ['Employees',
+      plural(await count(`SELECT COUNT(*) cnt FROM employee WHERE ${ACTIVE}`), 'employee')])());
+  }
+
+  // ── Leave ──
+  if (has('view_leave_setup', 'manage_leave_types', 'manage_leave_periods', 'manage_holidays')) {
+    push((async () => ['LeaveManagement',
+      `${await count(`SELECT COUNT(*) cnt FROM employeeleaves WHERE status LIKE 'Pending%'`)} pending`])());
+  } else if (empId != null) {
+    push((async () => ['LeaveManagement',
+      `${await count(`SELECT COUNT(*) cnt FROM employeeleaves WHERE employee = ? AND status LIKE 'Pending%'`, empId)} pending`])());
+  }
+
+  // ── Payroll (management only) — last run period ──
+  if (has('view_payroll', 'process_payroll', 'approve_payroll', 'manage_payroll_employees',
+          'view_salary_setup', 'manage_salary_component_types', 'manage_salary_components', 'manage_notch_setup')) {
+    push((async () => {
+      const rows = await prisma.$queryRawUnsafe(
+        `SELECT date_end, created_at FROM payrollruns ORDER BY COALESCE(date_end, created_at) DESC LIMIT 1`
+      ).catch(() => []);
+      const d = rows?.[0]?.date_end || rows?.[0]?.created_at;
+      return ['Payroll', d ? `Last run: ${new Date(d).toLocaleString('en-US', { month: 'short', year: 'numeric' })}` : 'No runs yet'];
+    })());
+  }
+
+  // ── Insights / Reports ──
+  if (has('generate_reports')) {
+    push((async () => ['Insights', plural(await count(`SELECT COUNT(*) cnt FROM reports`), 'report')])());
+  } else {
+    push((async () => ['Insights', plural(await count(`SELECT COUNT(*) cnt FROM userreports`), 'report')])());
+  }
+
+  // ── Company / Organisation Structure (management only) — count org nodes ──
+  if (has('view_company_structure')) {
+    push((async () => ['Company', plural(await count(`SELECT COUNT(*) cnt FROM companystructures`), 'structure')])());
+  }
+
+  // ── Recruitment (management only) ──
+  if (has('view_recruitment')) {
+    push((async () => ['Recruitment', plural(await count(`SELECT COUNT(*) cnt FROM applications`), 'applicant')])());
+  }
+
+  // ── Training ──
+  if (has('view_training')) {
+    push((async () => ['Training', plural(await count(`SELECT COUNT(*) cnt FROM trainingcatalog WHERE is_active = 1`), 'active course')])());
+  } else if (empId != null) {
+    push((async () => ['Training', plural(await count(`SELECT COUNT(*) cnt FROM trainingnomination WHERE employee = ?`, empId), 'training')])());
+  }
+
+  // ── Documents — actual files (company + employee documents), not definitions ──
+  if (has('view_documents')) {
+    push((async () => {
+      const a = await count(`SELECT COUNT(*) cnt FROM companydocuments WHERE status = 'Active'`);
+      const b = await count(`SELECT COUNT(*) cnt FROM employeedocuments`);
+      return ['Documents', plural(a + b, 'file')];
+    })());
+  } else if (empId != null) {
+    push((async () => ['Documents', plural(await count(`SELECT COUNT(*) cnt FROM employeedocuments WHERE employee = ?`, empId), 'file')])());
+  }
+
+  // ── System Administration (management only) ──
+  if (has('manage_app_settings', 'view_app_settings')) {
+    push((async () => ['Admin', plural(await count(`SELECT COUNT(*) cnt FROM users`), 'user')])());
+  }
+
+  // ── Medical ──
+  if (has('view_medical')) {
+    push((async () => {
+      const a = await count(`SELECT COUNT(*) cnt FROM staffmedical WHERE status = 'Pending Approval'`);
+      const b = await count(`SELECT COUNT(*) cnt FROM dependentmedical WHERE status = 'Pending Approval'`);
+      return ['Medical', `${a + b} pending`];
+    })());
+  } else if (empIdStr != null) {
+    push((async () => ['Medical',
+      `${await count(`SELECT COUNT(*) cnt FROM staffmedical WHERE employee = ? AND status IN ('Pending Approval','Pending','Processing')`, empIdStr)} pending`])());
+  }
+
+  // ── Performance ──
+  if (has('view_performance')) {
+    push((async () => ['Performance',
+      plural(await count(`SELECT COUNT(*) cnt FROM performance_review WHERE status NOT IN ('Completed','Closed')`), 'review')])());
+  } else if (empId != null) {
+    push((async () => ['Performance',
+      plural(await count(`SELECT COUNT(*) cnt FROM performance_review WHERE employee = ? AND status NOT IN ('Completed','Closed')`, empId), 'review')])());
+  }
+
+  // ── Attendance ──
+  if (has('view_attendance')) {
+    push((async () => ['Attendance',
+      `${await count(`SELECT COUNT(*) cnt FROM attendance WHERE date = ? AND day_status IN ('Present','Late','Half_Day','Incomplete')`, today)} present today`])());
+  } else if (empId != null) {
+    push((async () => {
+      const n = await count(`SELECT COUNT(*) cnt FROM attendance WHERE employee = ? AND date >= ? AND day_status IN ('Present','Late','Half_Day','Incomplete')`, empId, monthStart);
+      return ['Attendance', `${plural(n, 'day')} this month`];
+    })());
+  }
+
+  const results = await Promise.all(tasks);
+  const out = {};
+  for (const [id, label] of results) if (id) out[id] = label;
+
+  respond.ok(res, 'Module stats', out);
 });

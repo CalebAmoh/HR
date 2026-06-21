@@ -5,6 +5,8 @@ import api from '../../lib/api';
 
 type ViewMode = 'month' | 'week' | 'day';
 
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
 function formatDateStr(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -25,6 +27,9 @@ export function LeaveCalendar() {
   const [viewMode, setViewMode]       = useState<ViewMode>('month');
   const [leaves, setLeaves]           = useState<any[]>([]);
   const [holidays, setHolidays]       = useState<any[]>([]);
+  const [workWeek, setWorkWeek]       = useState<Record<string, string>>(
+    () => Object.fromEntries(WEEKDAY_NAMES.map(d => [d, d === 'Saturday' || d === 'Sunday' ? 'Non_working_Day' : 'Full_Day'])),
+  );
   const [selectedLeave, setSelectedLeave] = useState<any | null>(null);
 
   const today = new Date();
@@ -60,6 +65,17 @@ export function LeaveCalendar() {
     });
   }, [currentDate, viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Work-week config is global (not date-dependent) — fetch once.
+  useEffect(() => {
+    api.get('/leave/workweek')
+      .then(r => {
+        const map: Record<string, string> = {};
+        for (const row of (r.data.data ?? [])) map[row.name] = row.status;
+        if (Object.keys(map).length) setWorkWeek(prev => ({ ...prev, ...map }));
+      })
+      .catch(() => {});
+  }, []);
+
   const handlePrev = () => {
     const d = new Date(currentDate);
     if (viewMode === 'month') d.setMonth(d.getMonth() - 1);
@@ -81,11 +97,20 @@ export function LeaveCalendar() {
   const monthName = currentDate.toLocaleString('default', { month: 'long' });
   const year      = currentDate.getFullYear();
 
-  const getLeavesForDate = (dateStr: string) =>
-    leaves.filter(l => dateStr >= String(l.date_start).substring(0, 10) && dateStr <= String(l.date_end).substring(0, 10));
-
   const getHolidayForDate = (dateStr: string) =>
     holidays.find(h => String(h.dateh ?? h.date ?? '').substring(0, 10) === dateStr);
+
+  // A day is non-working when the Work Week (Manage Leave → Work Week) marks it
+  // Non-working, or it's a public holiday — leaves are never counted on these days.
+  const isNonWorkingDay = (dateStr: string) => {
+    const weekday = WEEKDAY_NAMES[new Date(`${dateStr}T00:00:00`).getDay()];
+    return workWeek[weekday] === 'Non_working_Day' || !!getHolidayForDate(dateStr);
+  };
+
+  const getLeavesForDate = (dateStr: string) => {
+    if (isNonWorkingDay(dateStr)) return [];
+    return leaves.filter(l => dateStr >= String(l.date_start).substring(0, 10) && dateStr <= String(l.date_end).substring(0, 10));
+  };
 
   const daysInMonth     = new Date(year, currentDate.getMonth() + 1, 0).getDate();
   const firstDayOfMonth = new Date(year, currentDate.getMonth(), 1).getDay();
@@ -175,13 +200,14 @@ export function LeaveCalendar() {
 
         {/* Month view */}
         {viewMode === 'month' && (
-          <>
-            <div className="grid grid-cols-7 border-b border-[var(--border)] bg-slate-100">
+          <div className="flex-1 overflow-auto">
+           <div className="min-w-[720px] sm:min-w-0 flex flex-col h-full">
+            <div className="grid grid-cols-7 border-b border-[var(--border)] bg-slate-100 sticky top-0 z-10">
               {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
                 <div key={day} className="py-2 text-center text-xs font-bold text-slate-500 uppercase tracking-widest border-r border-[var(--border)] last:border-0">{day}</div>
               ))}
             </div>
-            <div className="flex-1 grid grid-cols-7 auto-rows-fr bg-[var(--border)] gap-px overflow-y-auto">
+            <div className="flex-1 grid grid-cols-7 auto-rows-fr bg-[var(--border)] gap-px">
               {monthDays.map((day, index) => {
                 if (day === null) return <div key={`empty-${index}`} className="bg-slate-50 min-h-[100px]" />;
                 const dateStr    = formatDateStr(new Date(year, currentDate.getMonth(), day));
@@ -221,13 +247,14 @@ export function LeaveCalendar() {
                 );
               })}
             </div>
-          </>
+           </div>
+          </div>
         )}
 
         {/* Week view */}
         {viewMode === 'week' && (
-          <div className="flex-1 flex flex-col overflow-y-auto bg-slate-50">
-            <div className="grid grid-cols-7 border-b border-slate-200 bg-white sticky top-0 z-10 shadow-sm">
+          <div className="flex-1 flex flex-col overflow-auto bg-slate-50">
+            <div className="grid grid-cols-7 min-w-[720px] sm:min-w-0 border-b border-slate-200 bg-white sticky top-0 z-10 shadow-sm">
               {weekDays.map((date, i) => {
                 const isToday = formatDateStr(date) === formatDateStr(today);
                 return (
@@ -240,7 +267,7 @@ export function LeaveCalendar() {
                 );
               })}
             </div>
-            <div className="flex-1 grid grid-cols-7 bg-[var(--border)] gap-px p-4">
+            <div className="flex-1 grid grid-cols-7 min-w-[720px] sm:min-w-0 bg-[var(--border)] gap-px p-4">
               {weekDays.map((date, i) => {
                 const dateStr    = formatDateStr(date);
                 const dateLeaves = getLeavesForDate(dateStr);

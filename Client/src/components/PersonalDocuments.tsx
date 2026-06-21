@@ -5,6 +5,7 @@ import { DocumentViewer } from './DocumentViewer';
 import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
+import { RowActions } from './ui/RowActions';
 import api from '../../lib/api';
 import { toast } from 'sonner';
 
@@ -134,17 +135,11 @@ export function PersonalDocuments() {
                     <td className="td truncate max-w-[260px] text-[var(--text-secondary)]">{doc.details || '—'}</td>
                     <td className="td">{fmtDate(doc.valid_until)}</td>
                     <td className="td">
-                      <div className="flex items-center justify-end gap-1">
-                        {doc.attachment && (
-                          <button onClick={() => setDocumentToView({ ...doc, attachmentName: doc.attachment, sourceUrl: doc.attachment ? `/documents/${doc.attachment}` : null })} className="action-btn text-[var(--accent)]" title="View">
-                            <Eye size={14} />
-                          </button>
-                        )}
-                        {allowDownload && doc.attachment && (
-                          <button onClick={() => handleDownload(doc.attachment, doc.name)} className="action-btn text-[var(--success)]" title="Download">
-                            <Download size={14} />
-                          </button>
-                        )}
+                      <div className="flex justify-end">
+                        <RowActions actions={[
+                          { label: 'View', icon: Eye, onClick: () => setDocumentToView({ ...doc, attachmentName: doc.attachment, sourceUrl: doc.attachment ? `/documents/${doc.attachment}` : null }), hidden: !doc.attachment },
+                          { label: 'Download', icon: Download, onClick: () => handleDownload(doc.attachment, doc.name), hidden: !(allowDownload && doc.attachment) },
+                        ]} />
                       </div>
                     </td>
                   </motion.tr>
@@ -186,17 +181,11 @@ export function PersonalDocuments() {
                       </span>
                     </td>
                     <td className="td">
-                      <div className="flex items-center justify-end gap-1">
-                        {doc.attachment && (
-                          <button onClick={() => setDocumentToView({ ...doc, attachmentName: doc.attachment, sourceUrl: doc.attachment ? `/documents/${doc.attachment}` : null })} className="action-btn text-[var(--accent)]" title="View">
-                            <Eye size={14} />
-                          </button>
-                        )}
-                        {allowDownload && doc.attachment && (
-                          <button onClick={() => handleDownload(doc.attachment, doc.document_type_name || 'document')} className="action-btn text-[var(--success)]" title="Download">
-                            <Download size={14} />
-                          </button>
-                        )}
+                      <div className="flex justify-end">
+                        <RowActions actions={[
+                          { label: 'View', icon: Eye, onClick: () => setDocumentToView({ ...doc, attachmentName: doc.attachment, sourceUrl: doc.attachment ? `/documents/${doc.attachment}` : null }), hidden: !doc.attachment },
+                          { label: 'Download', icon: Download, onClick: () => handleDownload(doc.attachment, doc.document_type_name || 'document'), hidden: !(allowDownload && doc.attachment) },
+                        ]} />
                       </div>
                     </td>
                   </motion.tr>

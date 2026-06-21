@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Eye, FileEdit, Trash2, ArrowUpDown, Check, X, SendHorizonal, XCircle, RefreshCw, Loader2, CalendarDays, Clock4, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ConfirmModal } from './ui/ConfirmModal';
+import { RowActions } from './ui/RowActions';
 import { SearchSelect } from './ui/SearchSelect';
 import { PageHeader } from './ui/PageHeader';
 import { TabBar } from './ui/TabBar';
@@ -13,6 +14,7 @@ import { DetailSlideOver } from './ui/DetailSlideOver';
 import { FormField, inputClass } from './ui/FormField';
 import { CountedTextarea } from './ui/CountedTextarea';
 import api from '../../lib/api';
+import { money } from '../../lib/currency';
 import { toast } from 'sonner';
 import { getCurrentUser } from '../../lib/auth';
 
@@ -536,7 +538,7 @@ const fetchSubordinateEmployees = useCallback(() => {
                     </div>
 
                     {/* 4. Stats row */}
-                    <div className="w-full grid grid-cols-4 overflow-hidden rounded-[10px] border border-[var(--border)]">
+                    <div className="w-full grid grid-cols-2 sm:grid-cols-4 overflow-hidden rounded-[10px] border border-[var(--border)]">
                       {[
                         { label: 'Left',      value: dayLabel(remaining), tint: isNeg ? 'var(--danger)' : color },
                         { label: 'Allocated', value: dayLabel(allocated),  tint: 'var(--text-primary)' },
@@ -744,7 +746,7 @@ const fetchSubordinateEmployees = useCallback(() => {
                       ) : row.leave_type_allowance_enabled === 'Yes' && Number(row.amount) > 0 ? (
                         <>
                           <p className="font-semibold tabular-nums text-[var(--success)] text-[13px] leading-snug">
-                            {Number(row.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            {money(row.amount)}
                           </p>
                           {Number(row.allowance_tax) > 0 && (
                             <p className="text-[11px] tabular-nums text-[var(--text-muted)] leading-snug mt-0.5">
@@ -758,25 +760,15 @@ const fetchSubordinateEmployees = useCallback(() => {
                     </td>
                     <td className="td"><StatusPill status={row.status} /></td>
                     <td className="td text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <button className="action-btn text-[var(--success)]" title="View" onClick={() => setViewRow(row)}><Eye size={14} /></button>
-                        {isAdmin && row.allowance_status === 'Failed GL Posting' && (
-                          <button className="action-btn text-red-600" title="Retry GL Posting" onClick={() => retryLeaveGL(row.id)}><RefreshCw size={14} /></button>
-                        )}
-                        {['Draft', 'Pending'].includes(row.status) && (
-                          <button className="action-btn text-[var(--accent)]" title="Submit for Approval" onClick={() => submitLeave(row.id)}>
-                            <SendHorizonal size={14} />
-                          </button>
-                        )}
-                        {['Pending', 'Draft'].includes(row.status) && (
-                          <button className="action-btn text-[var(--warning)]" title="Edit" onClick={() => openEdit(row)}><FileEdit size={14} /></button>
-                        )}
-                        {['Pending', 'Draft'].includes(row.status) && (
-                          <button className="action-btn text-[var(--danger)]" title="Delete" onClick={() => deleteLeave(row.id)}><Trash2 size={14} /></button>
-                        )}
-                        {row.status === 'Approved' && (
-                          <button className="action-btn text-[var(--warning)]" title="Cancel Leave" onClick={() => cancelLeave(row.id)}><XCircle size={14} /></button>
-                        )}
+                      <div className="flex justify-end">
+                        <RowActions actions={[
+                          { label: 'View', icon: Eye, onClick: () => setViewRow(row) },
+                          { label: 'Retry GL Posting', icon: RefreshCw, danger: true, onClick: () => retryLeaveGL(row.id), hidden: !(isAdmin && row.allowance_status === 'Failed GL Posting') },
+                          { label: 'Submit for Approval', icon: SendHorizonal, onClick: () => submitLeave(row.id), hidden: !['Draft', 'Pending'].includes(row.status) },
+                          { label: 'Edit', icon: FileEdit, onClick: () => openEdit(row), hidden: !['Pending', 'Draft'].includes(row.status) },
+                          { label: 'Delete', icon: Trash2, danger: true, onClick: () => deleteLeave(row.id), hidden: !['Pending', 'Draft'].includes(row.status) },
+                          { label: 'Cancel Leave', icon: XCircle, danger: true, onClick: () => cancelLeave(row.id), hidden: row.status !== 'Approved' },
+                        ]} />
                       </div>
                     </td>
                   </tr>
@@ -960,7 +952,7 @@ const fetchSubordinateEmployees = useCallback(() => {
                   {selBalance && (
                     <div>
                       <p className="text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)] mb-2.5">Leave Summary</p>
-                      <div className="grid grid-cols-3 gap-2.5">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                         {[
                           { label: 'Approved', value: selBalance.used ?? 0,    icon: CheckCircle2, clr: '#64748b', bg: 'var(--surface-hover)', bdr: 'var(--border)' },
                           { label: 'Pending',  value: selBalance.pending ?? 0, icon: Clock4,       clr: '#d97706', bg: '#fffbeb',              bdr: '#fde68a'       },

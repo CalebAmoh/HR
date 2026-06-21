@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
 import { CalendarClock, CheckCircle2, Loader2, Clock } from 'lucide-react';
-
-const publicApi = axios.create({ baseURL: '/v1/api/hr' });
+import { publicApi } from '@/lib/publicApi';
 
 function getToken(): string | null {
   const match = window.location.pathname.match(/^\/schedule\/(.+)$/);

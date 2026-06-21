@@ -3,6 +3,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 const { Parser } = require('expr-eval');
 const { logActivity, fromReq } = require('./auditController');
+const { notifyUser, notifyUsersWithPermission } = require('../helpers/notificationHelper');
 const { postToGL }    = require('../helpers/glHelper');
 const { getApiConfig } = require('./apiIntegrationController');
 const _parser = new Parser({ operators: { logical: false, comparison: false, conditional: false } });
@@ -645,6 +646,9 @@ const submitPayroll = asyncHandler(async (req, res) => {
   await exec(`UPDATE payrollruns SET status='Pending Approval', submitted_by=?, updated_at=NOW() WHERE id=?`, userId, BigInt(id));
   await logAudit(id, 'submit', req);
   logActivity({ module: 'Payroll', action: 'submit', entityId: String(id), entityName: run.name, ...fromReq(req) });
+  notifyUsersWithPermission('approve_payroll', {
+    message: 'A payroll run awaits your approval', action: 'Payroll', type: 'payroll', fromUser: req.user?.id,
+  }, req.user?.id);
   const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
   respond.ok(res, 'Submitted for approval', rows[0] || null);
 });
@@ -671,6 +675,9 @@ const approvePayroll = asyncHandler(async (req, res) => {
   );
   await logAudit(id, 'approve', req);
   logActivity({ module: 'Payroll', action: 'approve', entityId: String(id), entityName: run.name, ...fromReq(req) });
+  if (run.submitted_by && String(run.submitted_by) !== String(req.user?.id ?? '')) {
+    notifyUser(run.submitted_by, { message: 'Your payroll run was approved', action: 'Payroll', type: 'payroll', fromUser: req.user?.id });
+  }
   const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
   respond.ok(res, 'Payroll approved', rows[0] || null);
 });
@@ -679,7 +686,7 @@ const approvePayroll = asyncHandler(async (req, res) => {
 const rejectPayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { reason } = req.body;
-  const [run] = await query(`SELECT status FROM payrollruns WHERE id = ?`, BigInt(id));
+  const [run] = await query(`SELECT status, submitted_by FROM payrollruns WHERE id = ?`, BigInt(id));
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status !== 'Pending Approval') return respond.badReq(res, 'Run is not pending approval');
   await exec(
@@ -687,6 +694,9 @@ const rejectPayroll = asyncHandler(async (req, res) => {
     reason?.trim() || null, BigInt(id)
   );
   await logAudit(id, 'reject', req, { reason: reason?.trim() || null });
+  if (run.submitted_by && String(run.submitted_by) !== String(req.user?.id ?? '')) {
+    notifyUser(run.submitted_by, { message: `Your payroll run was rejected${reason?.trim() ? ': ' + reason.trim() : ''}`, action: 'Payroll', type: 'payroll', fromUser: req.user?.id });
+  }
   logActivity({ module: 'Payroll', action: 'reject', entityId: String(id), entityName: run.name, details: { reason: reason?.trim() || null }, ...fromReq(req) });
   const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
   respond.ok(res, 'Payroll rejected', rows[0] || null);

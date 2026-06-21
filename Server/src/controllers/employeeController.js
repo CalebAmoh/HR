@@ -5,6 +5,7 @@ const respond = require('../helpers/respondHelper');
 const { logActivity, fromReq } = require('./auditController');
 const { getApiConfig } = require('./apiIntegrationController');
 const { sendEmployeeLifecycleEmail } = require('../helpers/emailHelper');
+const { notifyEmployee, notifyUsersWithPermission } = require('../helpers/notificationHelper');
 
 // ─── Lifecycle constants ───────────────────────────────────────────────────────
 const LIFECYCLE = {
@@ -496,6 +497,13 @@ const createEmployee = asyncHandler(async (req, res) => {
   const [enriched] = await enrichEmployees([refreshed]);
   logActivity({ module: 'Employees', action: 'create', entityId: String(employee.id), entityName: `${d.firstName} ${d.lastName}`, ...fromReq(req) });
 
+  if (approvalRequired) {
+    notifyUsersWithPermission('approve_employees', {
+      message: `New employee ${d.firstName} ${d.lastName} awaits approval`,
+      action: 'Employees', type: 'employees', fromUser: req.user?.id, employee: employee.id,
+    }, req.user?.id);
+  }
+
   // Approval workflow off → push to the external system immediately.
   if (!approvalRequired) {
     const syncResult = await pushEmployeeToExternalSystem(enriched);
@@ -669,6 +677,7 @@ const approveEmployee = asyncHandler(async (req, res) => {
     const refreshed = await prisma.employee.findUnique({ where: { id } });
     const [enriched] = await enrichEmployees([refreshed]);
     logActivity({ module: 'Employees', action: action.toLowerCase(), entityId: String(id), entityName: `${emp.firstName} ${emp.lastName}`, ...fromReq(req) });
+    notifyEmployee(id, { message: `Your employment status has been updated to ${action.charAt(0) + action.slice(1).toLowerCase()}`, action: 'PersonalInfo', type: 'employees', fromUser: req.user?.id });
     const empEmail = emp.work_email || emp.email;
     sendEmployeeLifecycleEmail({
       to: empEmail,
@@ -711,6 +720,7 @@ const approveEmployee = asyncHandler(async (req, res) => {
   const refreshed = await prisma.employee.findUnique({ where: { id } });
   const [enriched] = await enrichEmployees([refreshed]);
   logActivity({ module: 'Employees', action: 'approve', entityId: String(id), entityName: `${emp.firstName} ${emp.lastName}`, ...fromReq(req) });
+  notifyEmployee(id, { message: 'Your employee profile has been approved', action: 'PersonalInfo', type: 'employees', fromUser: req.user?.id });
   const syncResult = await pushEmployeeToExternalSystem(enriched);
   res.status(200).json({ status: '200', message: 'Employee approved and is now active', data: enriched, syncResult });
 });
@@ -747,6 +757,7 @@ const changeEmployeeStatus = asyncHandler(async (req, res) => {
     const refreshed = await prisma.employee.findUnique({ where: { id } });
     const [enriched] = await enrichEmployees([refreshed]);
     logActivity({ module: 'Employees', action: 'reinstate', entityId: String(id), entityName: `${emp.firstName} ${emp.lastName}`, ...fromReq(req) });
+    notifyEmployee(id, { message: 'You have been reinstated to active status', action: 'PersonalInfo', type: 'employees', fromUser: req.user?.id });
     sendEmployeeLifecycleEmail({
       to: emp.work_email || emp.email,
       name: `${emp.firstName} ${emp.lastName}`.trim(),
@@ -769,6 +780,10 @@ const changeEmployeeStatus = asyncHandler(async (req, res) => {
   const refreshed = await prisma.employee.findUnique({ where: { id } });
   const [enriched] = await enrichEmployees([refreshed]);
   logActivity({ module: 'Employees', action: `${status.toLowerCase()}_pending`, entityId: String(id), entityName: `${emp.firstName} ${emp.lastName}`, details: { reason }, ...fromReq(req) });
+  notifyUsersWithPermission('approve_employees', {
+    message: `${emp.firstName} ${emp.lastName}: ${status.toLowerCase()} request awaits approval`,
+    action: 'CentralApproval', type: 'employees', fromUser: req.user?.id, employee: id,
+  }, req.user?.id);
   respond.ok(res, `${status.charAt(0) + status.slice(1).toLowerCase()} request submitted for approval`, enriched);
 });
 
@@ -801,6 +816,10 @@ const initiateResignation = asyncHandler(async (req, res) => {
   const refreshed = await prisma.employee.findUnique({ where: { id } });
   const [enriched] = await enrichEmployees([refreshed]);
   logActivity({ module: 'Employees', action: 'resign_pending', entityId: String(id), entityName: `${emp.firstName} ${emp.lastName}`, details: { reason, effectiveDate }, ...fromReq(req) });
+  notifyUsersWithPermission('approve_employees', {
+    message: `${emp.firstName} ${emp.lastName} submitted a resignation awaiting approval`,
+    action: 'CentralApproval', type: 'employees', fromUser: req.user?.id, employee: id,
+  }, req.user?.id);
   respond.ok(res, 'Resignation submitted for approval', enriched);
 });
 
@@ -863,6 +882,7 @@ const rejectEmployee = asyncHandler(async (req, res) => {
   });
 
   logActivity({ module: 'Employees', action: 'reject', entityId: String(id), entityName: `${emp.firstName} ${emp.lastName}`, details: { reason: reason || null }, ...fromReq(req) });
+  notifyEmployee(id, { message: `Your employee profile was rejected${reason ? ': ' + reason : ''}`, action: 'PersonalInfo', type: 'employees', fromUser: req.user?.id });
   respond.ok(res, 'Employee application rejected');
 });
 

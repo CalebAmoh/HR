@@ -6,6 +6,8 @@ import { LeavePeriodForm } from './LeavePeriodForm';
 import { HolidayForm } from './HolidayForm';
 import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
+import { RowActions } from './ui/RowActions';
+import { money } from '../../lib/currency';
 import { TablePagination } from './ui/TablePagination';
 import { FormModal } from './ui/FormModal';
 import { DetailSlideOver, DetailGrid, DetailField, DetailSection } from './ui/DetailSlideOver';
@@ -535,10 +537,12 @@ export function LeaveSetup() {
                         )}
                       </td>
                       <td className="td">
-                        <div className="flex items-center justify-end gap-1">
-                          <button className="action-btn text-[var(--text-secondary)]" title="View" onClick={() => setViewType(type)}><Eye size={14} /></button>
-                          {can(PERMISSIONS.MANAGE_LEAVE_TYPES) && <button className="action-btn text-[var(--accent)]" onClick={() => { setEditType(type); setShowTypeForm(true); }}><Edit size={14} /></button>}
-                          {can(PERMISSIONS.MANAGE_LEAVE_TYPES) && <button className="action-btn text-[var(--danger)]" onClick={() => deleteLeaveType(type.id)}><Trash2 size={14} /></button>}
+                        <div className="flex justify-end">
+                          <RowActions actions={[
+                            { label: 'View', icon: Eye, onClick: () => setViewType(type) },
+                            { label: 'Edit', icon: Edit, onClick: () => { setEditType(type); setShowTypeForm(true); }, hidden: !can(PERMISSIONS.MANAGE_LEAVE_TYPES) },
+                            { label: 'Delete', icon: Trash2, danger: true, onClick: () => deleteLeaveType(type.id), hidden: !can(PERMISSIONS.MANAGE_LEAVE_TYPES) },
+                          ]} />
                         </div>
                       </td>
                     </motion.tr>
@@ -598,15 +602,13 @@ export function LeaveSetup() {
                         </span>
                       </td>
                       <td className="td">
-                        <div className="flex items-center justify-end gap-1">
-                          {can(PERMISSIONS.MANAGE_LEAVE_PERIODS) && period.status !== 'Active' && (
-                            <button className="action-btn text-[var(--success)]" title="Set Active" onClick={() => activatePeriod(period.id)}>
-                              <Check size={14} />
-                            </button>
-                          )}
-                          <button className="action-btn text-[var(--text-secondary)]" title="View" onClick={() => setViewPeriod(period)}><Eye size={14} /></button>
-                          {can(PERMISSIONS.MANAGE_LEAVE_PERIODS) && <button className="action-btn text-[var(--accent)]" onClick={() => { setEditPeriod(period); setShowPeriodForm(true); }}><Edit size={14} /></button>}
-                          {can(PERMISSIONS.MANAGE_LEAVE_PERIODS) && <button className="action-btn text-[var(--danger)]" onClick={() => deletePeriod(period.id)}><Trash2 size={14} /></button>}
+                        <div className="flex justify-end">
+                          <RowActions actions={[
+                            { label: 'Set Active', icon: Check, onClick: () => activatePeriod(period.id), hidden: !(can(PERMISSIONS.MANAGE_LEAVE_PERIODS) && period.status !== 'Active') },
+                            { label: 'View', icon: Eye, onClick: () => setViewPeriod(period) },
+                            { label: 'Edit', icon: Edit, onClick: () => { setEditPeriod(period); setShowPeriodForm(true); }, hidden: !can(PERMISSIONS.MANAGE_LEAVE_PERIODS) },
+                            { label: 'Delete', icon: Trash2, danger: true, onClick: () => deletePeriod(period.id), hidden: !can(PERMISSIONS.MANAGE_LEAVE_PERIODS) },
+                          ]} />
                         </div>
                       </td>
                     </motion.tr>
@@ -700,10 +702,12 @@ export function LeaveSetup() {
                         </span>
                       </td>
                       <td className="td">
-                        <div className="flex items-center justify-end gap-1">
-                          <button className="action-btn text-[var(--text-secondary)]" title="View" onClick={() => setViewHoliday(holiday)}><Eye size={14} /></button>
-                          {can(PERMISSIONS.MANAGE_HOLIDAYS) && <button className="action-btn text-[var(--accent)]" onClick={() => { setEditHoliday(holiday); setShowHolidayForm(true); }}><Edit size={14} /></button>}
-                          {can(PERMISSIONS.MANAGE_HOLIDAYS) && <button className="action-btn text-[var(--danger)]" onClick={() => deleteHoliday(holiday.id)}><Trash2 size={14} /></button>}
+                        <div className="flex justify-end">
+                          <RowActions actions={[
+                            { label: 'View', icon: Eye, onClick: () => setViewHoliday(holiday) },
+                            { label: 'Edit', icon: Edit, onClick: () => { setEditHoliday(holiday); setShowHolidayForm(true); }, hidden: !can(PERMISSIONS.MANAGE_HOLIDAYS) },
+                            { label: 'Delete', icon: Trash2, danger: true, onClick: () => deleteHoliday(holiday.id), hidden: !can(PERMISSIONS.MANAGE_HOLIDAYS) },
+                          ]} />
                         </div>
                       </td>
                     </motion.tr>
@@ -775,10 +779,10 @@ export function LeaveSetup() {
                         </span>
                       </td>
                       <td className="td">
-                        <div className="flex items-center justify-end gap-1">
-                          <button className="action-btn text-[var(--text-secondary)]" title="View" onClick={() => setViewRule(rule)}><Eye size={14} /></button>
-                          {can(PERMISSIONS.MANAGE_LEAVE_RULES) && (
-                            <button className="action-btn text-[var(--accent)]" onClick={() => {
+                        <div className="flex justify-end">
+                          <RowActions actions={[
+                            { label: 'View', icon: Eye, onClick: () => setViewRule(rule) },
+                            { label: 'Edit', icon: Edit, hidden: !can(PERMISSIONS.MANAGE_LEAVE_RULES), onClick: () => {
                               setEditRule(rule);
                               setRuleForm({
                                 leave_type:                  String(rule.leave_type ?? ''),
@@ -800,9 +804,9 @@ export function LeaveSetup() {
                                 accrual_rate:                rule.accrual_rate != null ? String(rule.accrual_rate) : '',
                               });
                               setShowRuleForm(true);
-                            }}><Edit size={14} /></button>
-                          )}
-                          {can(PERMISSIONS.MANAGE_LEAVE_RULES) && <button className="action-btn text-[var(--danger)]" onClick={() => deleteRule(rule.id)}><Trash2 size={14} /></button>}
+                            } },
+                            { label: 'Delete', icon: Trash2, danger: true, onClick: () => deleteRule(rule.id), hidden: !can(PERMISSIONS.MANAGE_LEAVE_RULES) },
+                          ]} />
                         </div>
                       </td>
                     </motion.tr>
@@ -1025,7 +1029,7 @@ export function LeaveSetup() {
                             if (!amt && !statusPill) return <span className="text-[11px] text-[var(--text-muted)]">—</span>;
                             return (
                               <div className="flex flex-col items-center gap-0.5">
-                                {amt > 0 && <span className="text-[11px] font-semibold text-[var(--text-primary)]">{amt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>}
+                                {amt > 0 && <span className="text-[11px] font-semibold text-[var(--text-primary)]">{money(amt)}</span>}
                                 {statusPill}
                               </div>
                             );
@@ -1164,7 +1168,7 @@ export function LeaveSetup() {
               <DetailField label="Period"           value={ellViewRow.period_name} />
               <DetailField label="Approval Level"   value={`Level ${ellViewRow.approval_level ?? 0}`} />
               <DetailField label="Allowance Status" value={ellViewRow.allowance_status} />
-              <DetailField label="Allowance Amount" value={ellViewRow.amount ? `${ellViewRow.amount}` : '—'} full />
+              <DetailField label="Allowance Amount" value={ellViewRow.amount ? money(ellViewRow.amount) : '—'} full />
               <DetailField label="Details"          value={ellViewRow.details} full />
               {ellViewRow.rejection_reason && (
                 <DetailField label="Rejection Reason" value={ellViewRow.rejection_reason} full />

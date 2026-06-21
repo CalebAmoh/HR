@@ -7,6 +7,7 @@ import {
 import { toast } from 'sonner';
 import { SearchSelect } from './ui/SearchSelect';
 import api from '../../lib/api';
+import { PageHeader } from './ui/PageHeader';
 
 interface StaffNode {
   id: string;
@@ -425,13 +426,7 @@ export function StaffOrganogram() {
     <div className="flex-1 w-full relative h-full flex flex-col">
       <div className="w-full px-3 sm:px-6 md:px-8 py-6 sm:py-8 flex-1 flex flex-col max-w-full">
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mb-4 sm:mb-7">
-          <h1 className="syne text-[20px] sm:text-[26px] font-extrabold text-[var(--text-primary)] m-0 flex items-center gap-2">
-            <Network className="text-[var(--accent)] w-6 h-6 sm:w-7 sm:h-7" size={28} />
-            Staff Organogram
-          </h1>
-          <p className="text-[12px] sm:text-[13px] text-[var(--text-muted)] mt-1.5">
-            Who reports to whom — built from each employee's supervisor and department.
-          </p>
+          <PageHeader title="Staff Organogram" subtitle="Who reports to whom — built from each employee's supervisor and department." />
         </motion.div>
 
         <motion.div

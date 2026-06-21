@@ -317,6 +317,16 @@ router.get ('/settings/app-setup',         appCfg.getAppSetup);
 router.put ('/settings/app-setup',         permissionGuard('manage_app_settings'), appCfg.saveAppSetup);
 router.get ('/settings/controls',          appCfg.getControlSettings);
 router.put ('/settings/controls',          permissionGuard('manage_settings'), appCfg.saveControlSettings);
+router.get ('/settings/notifications',     appCfg.getNotificationSettings);
+router.put ('/settings/notifications',     permissionGuard('manage_settings'), appCfg.saveNotificationSettings);
+
+// In-app notifications (bell) — each user sees only their own; no permission guard
+const notif = require('../controllers/notificationController');
+router.get   ('/notifications',          notif.list);
+router.put   ('/notifications/read-all', notif.markAllRead);
+router.put   ('/notifications/:id/read', notif.markRead);
+router.delete('/notifications/clear',    notif.clearAll);
+router.delete('/notifications/:id',      notif.remove);
 router.get ('/settings/email',             appCfg.getEmailSettings);
 router.put ('/settings/email',             permissionGuard('manage_settings'), appCfg.updateEmailSettings);
 router.post('/settings/email/test',        permissionGuard('manage_settings'), appCfg.sendTestEmail);
@@ -388,6 +398,8 @@ router.post  ('/medical/limits',                   permissionGuard('manage_medic
 router.put   ('/medical/limits/:id',               permissionGuard('manage_medical_limits'), med.updateMedicalLimit);
 router.delete('/medical/limits/:id',               permissionGuard('manage_medical_limits'), med.deleteMedicalLimit);
 
+router.get   ('/medical/utilization/history',       med.getUtilizationHistory);
+router.post  ('/medical/utilization/reset',         permissionGuard('reset_medical_utilization'), med.resetMedicalUtilization);
 router.get   ('/medical/enquiry/:id',               med.getMedicalEnquiryByEmployee);
 router.get   ('/medical/enquiry',                  med.getMedicalEnquiry);
 router.get   ('/medical/my-enquiry',               med.getMyMedicalEnquiry);
@@ -587,6 +599,7 @@ router.post  ('/training/nominations/:id/supervisor-reject',   training.supervis
 // ─────────────────────────────────────────────
 const dashboard = require('../controllers/dashboardController');
 router.get('/dashboard/summary', dashboard.getDashboardSummary);
+router.get('/dashboard/module-stats', dashboard.getModuleStats);
 
 const report = require('../controllers/reportController');
 router.post('/reports/table.pdf', report.tablePdf);

@@ -1,12 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
-import axios from 'axios';
 import { Loader2, CheckCircle2, UploadCloud, Building2 } from 'lucide-react';
 import {
   ONBOARDING_FIELDS, ONBOARDING_GROUPS, type OnboardingField,
 } from '@/lib/onboardingFields';
-
-const publicApi = axios.create({ baseURL: '/v1/api/hr' });
-const BLUE = '#1d4ed8';
+import { publicApi, BRAND_BLUE as BLUE, resolveLogoUrl } from '@/lib/publicApi';
 
 interface Branding { company_name?: string; company_logo_url?: string; accent_color?: string }
 interface FormConfig {
@@ -15,11 +12,6 @@ interface FormConfig {
   enabledFields?: string[];
   requiredFields?: string[];
   codeLists?: Record<string, { value: string; label: string }[]>;
-}
-
-function resolveLogoUrl(raw?: string): string | null {
-  if (!raw) return null;
-  return raw.startsWith('http') ? raw : `/v1/api/hr/documents/${raw}`;
 }
 
 export function OnboardingPortal() {

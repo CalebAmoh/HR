@@ -11,6 +11,7 @@ import { useCan } from '@/hooks/useCan';
 import { toast } from 'sonner';
 import { getCurrentUser } from '../../lib/auth';
 import { PageHeader } from './ui/PageHeader';
+import { RowActions } from './ui/RowActions';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { FormModal } from './ui/FormModal';
@@ -634,15 +635,11 @@ function CycleDetailView({ cycleId, onBack }: { cycleId: string; onBack: () => v
                   <td className="td"><ScoreBar score={r.hr_score} /></td>
                   <td className="td"><ScoreBar score={r.overall_score} /></td>
                   <td className="td text-right">
-                    <div className="inline-flex items-center gap-1">
-                      <button onClick={() => setReviewId(String(r.id))} className="action-btn" title="View">
-                        <Eye size={13} />
-                      </button>
-                      {can('create_performance') && cycle.status === 'Draft' && (
-                        <button onClick={() => setRemoveTarget(r)} className="action-btn text-[var(--danger)]" title="Remove">
-                          <Trash2 size={13} />
-                        </button>
-                      )}
+                    <div className="inline-flex justify-end">
+                      <RowActions actions={[
+                        { label: 'View', icon: Eye, onClick: () => setReviewId(String(r.id)) },
+                        { label: 'Remove', icon: Trash2, danger: true, onClick: () => setRemoveTarget(r), hidden: !(can('create_performance') && cycle.status === 'Draft') },
+                      ]} />
                     </div>
                   </td>
                 </tr>
@@ -1115,9 +1112,11 @@ function GoalsTab() {
                       : <span className="text-[var(--text-muted)]">—</span>}
                   </td>
                   <td className="td text-right">
-                    <div className="inline-flex items-center gap-1">
-                      {can('create_performance') && <button onClick={() => { setEditGoal(g); setShowForm(true); }} className="action-btn" title="Edit"><Pencil size={13} /></button>}
-                      {can('delete_performance') && <button onClick={() => setDeletePending(g)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>}
+                    <div className="inline-flex justify-end">
+                      <RowActions actions={[
+                        { label: 'Edit', icon: Pencil, onClick: () => { setEditGoal(g); setShowForm(true); }, hidden: !can('create_performance') },
+                        { label: 'Delete', icon: Trash2, danger: true, onClick: () => setDeletePending(g), hidden: !can('delete_performance') },
+                      ]} />
                     </div>
                   </td>
                 </tr>

@@ -149,16 +149,10 @@ const ROLE_PERMISSIONS = {
   'super-admin': ALL_PERMISSIONS,
 
   'admin': [
-    // User management
+    // User & role management (manage_roles lives in Users & Access)
     ...PERMISSIONS['Users & Access'],
-    // Role & permission management
-    ...PERMISSIONS['Roles'],
-    ...PERMISSIONS['Permissions'],
-    // System & settings
+    // System, settings & audit
     ...PERMISSIONS['System'],
-    ...PERMISSIONS['Settings'],
-    // Audit
-    ...PERMISSIONS['Audit'],
     // Read access to HR
     'view_employees',
   ],

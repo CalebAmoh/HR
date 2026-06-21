@@ -58,6 +58,22 @@ async function makeTransporter() {
   return { transport, from: cfg.from };
 }
 
+// Per-module notification switch (Settings → Notification Settings). Reads the
+// `settings` table (category 'notifications'). Default ON — only an explicit
+// '0' disables a module's emails. Never blocks on a lookup failure.
+async function notifyEnabled(moduleKey) {
+  try {
+    const { prisma } = require('./dbQueryHelper');
+    const rows = await prisma.$queryRawUnsafe(
+      "SELECT value FROM settings WHERE name=? AND category='notifications' LIMIT 1",
+      `notify_${moduleKey}`
+    );
+    return !rows.length || rows[0].value !== '0';
+  } catch {
+    return true;
+  }
+}
+
 // Shared email shell
 
 function escapeHtml(value = '') {
@@ -195,9 +211,14 @@ function muted(text) {
 
 // Email functions
 
-async function sendWelcomeEmail({ to, name, username, password }) {
+async function sendWelcomeEmail({ to, name, username, password, loginUrl }) {
+  if (!(await notifyEnabled('users'))) return;
   const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
   if (!t) return;
+
+  // Where the user signs in. Falls back to the dev client URL when FRONTEND_URL
+  // is not configured (set FRONTEND_URL to the public app URL in production).
+  const signInUrl = loginUrl || process.env.FRONTEND_URL || 'http://localhost:3002';
 
   const body = `
     ${greeting(name)}
@@ -208,6 +229,13 @@ async function sendWelcomeEmail({ to, name, username, password }) {
       ['Username', `<span style="font-family:monospace;font-size:13px">${username}</span>`],
       ['Password', `<span style="font-family:monospace;font-size:13px">${password}</span>`],
     ])}
+    <div style="margin:24px 0 0">
+      ${primaryButton('Sign In', signInUrl, branding.accent)}
+    </div>
+    <p style="margin:14px 0 0;font-size:12px;color:#94a3b8;line-height:1.5">
+      Or paste this link into your browser:<br />
+      <a href="${escapeHtml(signInUrl)}" style="color:${branding.accent};word-break:break-all">${escapeHtml(signInUrl)}</a>
+    </p>
     <p style="margin:20px 0 0;font-size:13px;color:#ef4444;font-weight:600">
       Important: Please change your password immediately after your first login.
     </p>
@@ -222,6 +250,7 @@ async function sendWelcomeEmail({ to, name, username, password }) {
 }
 
 async function sendLeaveEmail({ to, employeeName, action, leaveType, dateStart, dateEnd, reason }) {
+  if (!(await notifyEnabled('leave'))) return;
   const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
   if (!t) return;
 
@@ -250,6 +279,7 @@ async function sendLeaveEmail({ to, employeeName, action, leaveType, dateStart, 
 }
 
 async function sendSchedulingInvite({ to, candidateName, jobTitle, slots, link, expiresAt }) {
+  if (!(await notifyEnabled('recruitment'))) return;
   const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
   if (!t) return;
 
@@ -287,6 +317,7 @@ async function sendSchedulingInvite({ to, candidateName, jobTitle, slots, link, 
 }
 
 async function sendInterviewConfirmation({ to, name, jobTitle, level, datetime, location, interviewers, icsContent }) {
+  if (!(await notifyEnabled('recruitment'))) return;
   const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
   if (!t) return;
 
@@ -314,6 +345,7 @@ async function sendInterviewConfirmation({ to, name, jobTitle, level, datetime, 
 }
 
 async function sendCandidateStageEmail({ to, candidateName, stageName, jobTitle }) {
+  if (!(await notifyEnabled('recruitment'))) return;
   const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
   if (!t) return;
 
@@ -357,6 +389,7 @@ function buildIcs({ uid, summary, dtstart, dtend, location, organizerEmail, atte
 
 async function sendDisciplinaryEmail({ to, name, incidentType, incidentDate, description, severity, actionTaken }) {
   if (!to) return;
+  if (!(await notifyEnabled('employees'))) return;
   const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
   if (!t) return;
 
@@ -391,6 +424,7 @@ async function sendDisciplinaryEmail({ to, name, incidentType, incidentDate, des
 
 async function sendEmployeeLifecycleEmail({ to, name, action, reason, effectiveDate }) {
   if (!to) return;
+  if (!(await notifyEnabled('employees'))) return;
   const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
   if (!t) return;
 
@@ -424,6 +458,7 @@ async function sendEmployeeLifecycleEmail({ to, name, action, reason, effectiveD
 
 async function sendPerformanceEmail({ to, name, action, cycleName, dueDate, employeeName }) {
   if (!to) return;
+  if (!(await notifyEnabled('performance'))) return;
   const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
   if (!t) return;
 
@@ -454,6 +489,7 @@ async function sendPerformanceEmail({ to, name, action, cycleName, dueDate, empl
 }
 
 async function sendDocumentExpiryEmail({ to, employeeName, docType, expiryDate }) {
+  if (!(await notifyEnabled('documents'))) return;
   const [t, branding] = await Promise.all([makeTransporter(), resolveBranding()]);
   if (!t) return;
 
@@ -481,4 +517,4 @@ async function sendDocumentExpiryEmail({ to, employeeName, docType, expiryDate }
   });
 }
 
-module.exports = { sendWelcomeEmail, sendLeaveEmail, sendSchedulingInvite, sendInterviewConfirmation, buildIcs, sendCandidateStageEmail, sendEmployeeLifecycleEmail, sendDisciplinaryEmail, sendPerformanceEmail, sendDocumentExpiryEmail };
+module.exports = { sendWelcomeEmail, sendLeaveEmail, sendSchedulingInvite, sendInterviewConfirmation, buildIcs, sendCandidateStageEmail, sendEmployeeLifecycleEmail, sendDisciplinaryEmail, sendPerformanceEmail, sendDocumentExpiryEmail, notifyEnabled };

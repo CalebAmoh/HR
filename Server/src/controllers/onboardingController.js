@@ -2,6 +2,7 @@ const { prisma }   = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond      = require('../helpers/respondHelper');
 const { s }        = require('../helpers/controllerHelpers');
+const { notifyUsersWithPermission } = require('../helpers/notificationHelper');
 const crypto       = require('crypto');
 const os           = require('os');
 
@@ -48,9 +49,13 @@ async function writeSetting(name, value) {
   }
 }
 
+// Minimum fields needed to identify a submission — always shown and required.
+// Mirrors ALWAYS_ON_KEYS in Client/lib/onboardingFields.ts.
+const ALWAYS_ON_KEYS = ['firstName', 'lastName', 'work_email'];
+
 const DEFAULT_CONFIG = {
-  enabledFields:  ['firstName', 'lastName', 'work_email'],
-  requiredFields: ['firstName', 'lastName', 'work_email'],
+  enabledFields:  [...ALWAYS_ON_KEYS],
+  requiredFields: [...ALWAYS_ON_KEYS],
 };
 
 async function readConfig() {
@@ -213,7 +218,7 @@ const publicSubmit = asyncHandler(async (req, res) => {
   }
 
   // Always-on identity fields must be present
-  for (const key of ['firstName', 'lastName', 'work_email']) {
+  for (const key of ALWAYS_ON_KEYS) {
     if (!data[key]) return respond.badReq(res, 'First name, last name and email are required.');
   }
 
@@ -222,6 +227,12 @@ const publicSubmit = asyncHandler(async (req, res) => {
      VALUES (?, ?, 'New', NOW(), NOW())`,
     JSON.stringify(data), JSON.stringify(files)
   );
+
+  const who = [data.firstName, data.lastName].filter(Boolean).join(' ') || 'Someone';
+  notifyUsersWithPermission('manage_onboarding', {
+    message: `${who} submitted a self-onboarding form`,
+    action: 'SelfOnboarding', type: 'onboarding',
+  });
 
   return respond.created(res, 'Submission received', { ok: true });
 });

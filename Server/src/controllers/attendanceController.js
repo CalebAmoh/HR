@@ -1149,6 +1149,9 @@ exports.runDailyDigest = async () => {
   const cfg = await getAttSettings();
   if (cfg.attendance_digest_enabled !== '1' || !cfg.attendance_digest_recipients.trim()) return { skipped: 'disabled' };
 
+  const { notifyEnabled } = require('../helpers/emailHelper');
+  if (!(await notifyEnabled('attendance'))) return { skipped: 'notifications off' };
+
   const y = new Date(); y.setDate(y.getDate() - 1);
   const d = `${y.getFullYear()}-${pad(y.getMonth() + 1)}-${pad(y.getDate())}`;
 

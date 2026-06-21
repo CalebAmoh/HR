@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { inputClass } from './ui/FormField';
+import { HairlineDecor } from './ui/HairlineDecor';
 
 // ─── Data types ──────────────────────────────────────────────────────────────
 
@@ -71,13 +72,14 @@ const MODULES: HelpModule[] = [
           },
           {
             type: 'table',
-            headers: ['Who uses it', 'What they do'],
+            headers: ['Who can do it', 'What they do (and what unlocks it)'],
             rows: [
-              ['HR admins',   'Create and approve records, manage the full employee lifecycle, access all tabs and reports'],
-              ['Supervisors', 'View their direct reports\' profiles; approve leave and disciplinary records for their team'],
-              ['All users',   'View their own profile, leave history, pay information, and documents under Personal Info in the sidebar'],
+              ['With employee permissions', 'Create, approve, and run the full lifecycle. Which tabs and buttons appear depends on the exact permissions assigned — e.g. view_employees to see the page, create_employees to add, edit_employees to edit, approve_employees to approve, change_employee_status for suspend/resign/terminate.'],
+              ['An employee\'s supervisor',  'Sees their direct reports and approves their leave. This comes from the supervisor field on the employee record, not from a job title or role.'],
+              ['Any signed-in user',        'Views their own profile, leave history, pay information, and documents under Personal Info — open to everyone with a login.'],
             ],
           },
+          { type: 'warning', body: 'Access is permission-based, not role-based. The system shows each page and action according to the permissions assigned to the user (bundled into roles on the Users page). Labels like "HR admin" or "supervisor" describe a typical permission set, not a fixed access level — a user only sees what their permissions grant.' },
           { type: 'tip', body: 'An employee record must be APPROVED before the employee can be processed for payroll, have a leave balance, or be included in a performance cycle.' },
           { type: 'warning', body: 'Bank account and pay grade are required on the employee record before payroll can be run. Missing either will block payslip generation.' },
         ],
@@ -454,7 +456,7 @@ const MODULES: HelpModule[] = [
             type: 'table',
             headers: ['Page', 'Who uses it', 'Purpose'],
             rows: [
-              ['Manage Leave',   'HR admins', 'Configure leave types, leave periods, work week, public holidays, leave groups, and leave rules (overrides per group)'],
+              ['Manage Leave',   'With leave-setup permissions', 'Configure leave types, leave periods, work week, public holidays, leave groups, and leave rules (overrides per group)'],
               ['Leave Calendar', 'All staff', 'Visualise approved and pending leave across the organisation on a monthly grid'],
               ['Personal Leave', 'All staff', 'Apply for leave, view entitlements, and (for supervisors) approve team leave from the Subordinate Leave tab'],
             ],
@@ -474,7 +476,7 @@ const MODULES: HelpModule[] = [
             headers: ['Approval step', 'Status shown', 'Who acts'],
             rows: [
               ['1. Employee submits',          'Pending Approval',    'Supervisor — in Personal Leave → Subordinate Leave, or Central Approval'],
-              ['2. Supervisor approves',        'Pending HR Approval', 'HR admin — in Central Approval'],
+              ['2. Supervisor approves',        'Pending HR Approval', 'With the leave-approval permission — in Central Approval'],
               ['3. HR approves',               'Approved',            'Balance deducted; leave is confirmed'],
             ],
           },
@@ -775,8 +777,8 @@ const MODULES: HelpModule[] = [
             type: 'table',
             headers: ['Who uses it', 'What they do'],
             rows: [
-              ['HR / Payroll admin',   'Configure components, run payroll, generate payslips'],
-              ['Payroll approver',     'Review and authorise submitted runs (requires "Approve Payroll" permission)'],
+              ['With payroll permissions',  'Configure components, run payroll, generate payslips — gated by the salary/payroll permissions assigned (e.g. process_payroll, manage_payroll_columns).'],
+              ['With Approve Payroll',      'Review and authorise submitted runs — only users granted the approve_payroll permission see the approve/reject actions.'],
               ['All employees',        'Download their own payslips under User Reports → My Payslips'],
             ],
           },
@@ -910,7 +912,7 @@ const MODULES: HelpModule[] = [
             headers: ['Area', 'Who uses it', 'Purpose'],
             rows: [
               ['Personal Medical', 'All employees', 'Submit and track your own and dependent medical claims (My Medicals, Dependent Medical Request) and check your balance (My Medical Enquiry)'],
-              ['Manage Medical',   'HR admins',     'Review/approve claims (Staff Medical, Dependent Medical), set per-grade limits (Medical Limits Setup), and manage Registered Hospitals'],
+              ['Manage Medical',   'With medical permissions', 'Review/approve claims (Staff Medical, Dependent Medical), set per-grade limits (Medical Limits Setup), manage Registered Hospitals, and start a new medical year to reset utilization (Staff Medical Enquiry)'],
             ],
           },
           {
@@ -995,6 +997,37 @@ const MODULES: HelpModule[] = [
           { type: 'tip', body: 'Use the "Dependent Medical" tab to view and action claims submitted for employee family members, and "Staff Medical Enquiry" to look up any employee\'s balance.' },
         ],
       },
+      {
+        id: 'medical-year-reset',
+        title: 'Starting a New Medical Year',
+        summary: 'Reset every employee\'s medical utilization back to zero at year-end while keeping a snapshot of the closing year.',
+        icon: Clock,
+        content: [
+          { type: 'text', body: 'Medical utilization is the total of an employee\'s approved claims counted against their annual limit. At the end of the medical year, HR can reset everyone\'s utilization back to zero so the new year starts fresh — without deleting any records.' },
+          { type: 'text', body: 'This is non-destructive: all past claims, costs, and accounting (GL) postings stay exactly as they are. The reset simply sets a cut-off point so that, going forward, only claims approved on or after that point count toward the new year\'s balance. Per-grade medical limits are not changed.' },
+          {
+            type: 'steps', heading: 'How to start a new medical year',
+            steps: [
+              { label: 'Go to Medical → Manage Medical → Staff Medical Enquiry.' },
+              { label: 'Click "Start New Medical Year" (top-right of the table).' },
+              { label: 'Confirm the closing year label (e.g. 2025) — this names the snapshot that is saved.' },
+              { label: 'Click Reset Utilization. Every active employee\'s balance returns to zero for the new year.' },
+            ],
+          },
+          {
+            type: 'table',
+            headers: ['What happens', 'Detail'],
+            rows: [
+              ['Closing snapshot saved', 'Each employee\'s final staff/dependent/total utilization and balance for the year is stored and can be reviewed later via the History button'],
+              ['Utilization reset',      'Everyone\'s used amount returns to 0; the new year accumulates from the next approved claim'],
+              ['Records preserved',      'No claims, costs, or GL postings are deleted — only the counting start point moves'],
+              ['Limits unchanged',       'Per-grade annual medical limits stay the same'],
+            ],
+          },
+          { type: 'tip', body: 'Use the "History" button on the Staff Medical Enquiry tab to view past closing snapshots, filtered by year.' },
+          { type: 'warning', body: 'This action affects all employees and requires the "Reset Medical Utilization" permission. A medical year that has already been closed cannot be closed again with the same label.' },
+        ],
+      },
     ],
   },
 
@@ -1056,14 +1089,15 @@ const MODULES: HelpModule[] = [
         content: [
           { type: 'text', body: 'Every user is assigned a role. The role determines which sidebar items are visible and which actions the user can perform. Roles are created and edited on the Users page under the "Roles" tab — managing roles requires the "manage_roles" permission.' },
           { type: 'text', body: 'Permissions work in two tiers. A "view" permission (e.g. view_employees, view_payroll) lets a user open a page and see its data, but with no action buttons. Separate action permissions (create, edit, delete, approve, or a manage_ permission) each unlock a specific button and the matching API action. So a user with only view_payroll sees payroll read-only; add approve_payroll and the Approve button appears.' },
+          { type: 'text', body: 'Roles are fully customisable — there are no fixed access levels. Each role is just a bundle of permissions you choose. The examples below are common setups, but you can create any role with any combination of permissions.' },
           {
             type: 'table',
-            headers: ['Permission level', 'Typical use'],
+            headers: ['Example role', 'A typical permission bundle'],
             rows: [
-              ['Full access',    'System administrators — can see and do everything'],
-              ['HR Manager',     'Can manage employees, approve leave, run payroll, view all reports'],
-              ['Supervisor',     'Can approve leave for their team, view subordinate profiles'],
-              ['Employee',       'Can view their own Personal Info, apply for leave, submit medical claims'],
+              ['Super admin',  'Every permission — sees and does everything.'],
+              ['HR manager',   'Employee, leave, payroll, and report permissions; typically not user/role administration.'],
+              ['Supervisor',   'Mostly self-service. Approving their team\'s leave needs no special permission — it comes from being set as an employee\'s supervisor.'],
+              ['Employee',     'No management permissions — only Personal Info, applying for leave, and submitting medical claims, which are open to every signed-in user.'],
             ],
           },
           {
@@ -1375,12 +1409,12 @@ const MODULES: HelpModule[] = [
           { type: 'text', body: 'The Performance module runs structured review cycles that capture goal achievement and competency ratings across three stages: employee self-assessment, supervisor review, and HR sign-off. Each stage builds on the previous one so the final score reflects all perspectives.' },
           {
             type: 'table',
-            headers: ['Role', 'Where they work', 'What they do'],
+            headers: ['Who', 'Where they work', 'What they do'],
             rows: [
-              ['HR / Admin',  'Performance → Manage Performance', 'Create cycles, assign employees, create and link goals, manage competencies, view all reviews'],
-              ['Employee',    'Performance → Personal Performance',     'Complete self-assessment — score each goal and record actual results'],
-              ['Supervisor',  'Performance → Personal Performance → My Team', 'Score each goal for their direct reports and submit a supervisor review'],
-              ['HR / Admin',  'Performance → Personal Performance → My Team or Manage Performance', 'Score each goal for final HR sign-off and complete the review'],
+              ['With performance permissions', 'Performance → Manage Performance', 'Create cycles, assign employees, create and link goals, manage competencies, view all reviews'],
+              ['Any employee', 'Performance → Personal Performance',     'Complete self-assessment — score each goal and record actual results'],
+              ['A supervisor',  'Performance → Personal Performance → My Team', 'Score each goal for their direct reports (My Team appears when you supervise someone) and submit a supervisor review'],
+              ['With review_performance', 'Performance → Personal Performance → My Team or Manage Performance', 'Score each goal for final sign-off and complete the review'],
             ],
           },
           {
@@ -1631,13 +1665,13 @@ const MODULES: HelpModule[] = [
         summary: 'Understand the difference between Admin Reports and User Reports, and who can access each.',
         icon: BookOpen,
         content: [
-          { type: 'text', body: 'The system has two reporting areas designed for different audiences. Admin Reports give HR and management a company-wide view, while User Reports let each employee access their own personal records.' },
+          { type: 'text', body: 'The system has two reporting areas. Admin Reports give a company-wide view to anyone granted the generate_reports permission, while User Reports let every signed-in user access their own personal records.' },
           {
             type: 'table',
             headers: ['Report area', 'Who it is for', 'Where to find it'],
             rows: [
-              ['Admin Reports', 'HR admins and managers', 'Sidebar → Admin Reports'],
-              ['User Reports (My Reports)', 'All employees', 'Sidebar → User Reports'],
+              ['Admin Reports', 'Users with the generate_reports permission (export needs export_reports)', 'Sidebar → Admin Reports'],
+              ['User Reports (My Reports)', 'Every signed-in user — their own records', 'Sidebar → User Reports'],
             ],
           },
           { type: 'tip', body: 'Access to Admin Reports is controlled by the "Generate Reports" permission; "Export Reports" additionally unlocks the Excel/PDF export buttons. If you cannot see the page, ask your administrator.' },
@@ -1910,8 +1944,8 @@ const MODULES: HelpModule[] = [
             type: 'table',
             headers: ['Tab', 'What it stores', 'Who manages it'],
             rows: [
-              ['Company Documents', 'Organisation-wide files shared with all staff, specific departments, or named employees', 'HR admins'],
-              ['Employee Documents', 'Personal identity and compliance documents for individual employees, with expiry tracking', 'HR admins'],
+              ['Company Documents', 'Organisation-wide files shared with all staff, specific departments, or named employees', 'With document permissions'],
+              ['Employee Documents', 'Personal identity and compliance documents for individual employees, with expiry tracking', 'With document permissions'],
             ],
           },
           {
@@ -1981,7 +2015,7 @@ const MODULES: HelpModule[] = [
               ['Share with all employees (toggle on)', 'Every active employee in the system, regardless of department'],
               ['Share with Departments',               'Only employees whose department matches one of the selected departments'],
               ['Share with Employees',                 'Only the specific employees you pick from the searchable list'],
-              ['None selected',                        'Only HR admins who manage the Documents page — not visible to employees'],
+              ['None selected',                        'Only users with document permissions who manage the Documents page — not visible to employees'],
             ],
           },
           { type: 'tip', body: 'You can combine department and employee sharing — for example, share with the Finance department AND a named employee from another department.' },
@@ -2098,7 +2132,7 @@ const MODULES: HelpModule[] = [
               { label: 'The setting saves immediately — no page reload is needed.' },
             ],
           },
-          { type: 'tip', body: 'This setting only affects the employee-facing Personal Documents page. HR admins can always download from the admin Documents page regardless of this setting.' },
+          { type: 'tip', body: 'This setting only affects the employee-facing Personal Documents page. Anyone with access to the admin Documents page can always download regardless of this setting.' },
           { type: 'warning', body: 'This is a global setting — it applies to every employee at once. There is no per-document or per-employee download control.' },
         ],
       },
@@ -2125,7 +2159,7 @@ const MODULES: HelpModule[] = [
             type: 'table',
             headers: ['Screen', 'Who uses it', 'Purpose'],
             rows: [
-              ['Manage Training',   'HR admins',   'Approve nominations, manage the course catalog, and configure the approval flow'],
+              ['Manage Training',   'With training permissions', 'Approve nominations, manage the course catalog, and configure the approval flow'],
               ['Personal Training', 'All staff',   'Browse the catalog, nominate yourself, track your trainings, and manage subordinate nominations'],
             ],
           },
@@ -2252,7 +2286,7 @@ const MODULES: HelpModule[] = [
             headers: ['Screen', 'Who uses it'],
             rows: [
               ['My Attendance',     'All employees — clock in/out and view their own monthly timesheet; supervisors also monitor their team under Subordinate Attendance'],
-              ['Manage Attendance', 'HR — daily logs, corrections, imports, reports, and attendance policy settings'],
+              ['Manage Attendance', 'With attendance permissions — daily logs, corrections, imports, reports, and attendance policy settings'],
               ['Kiosk page',        'Shared device at a fixed location — no login required, secured by an unguessable link'],
             ],
           },
@@ -2475,7 +2509,7 @@ function searchArticles(query: string): { module: HelpModule; article: Article }
 
 // ─── Render article content ───────────────────────────────────────────────────
 
-function ArticleContent({ content }: { content: ContentBlock[] }) {
+function ArticleContent({ content, accent }: { content: ContentBlock[]; accent: string }) {
   return (
     <div className="space-y-6">
       {content.map((block, i) => {
@@ -2518,7 +2552,9 @@ function ArticleContent({ content }: { content: ContentBlock[] }) {
         );
 
         if (block.type === 'table') return (
-          <div key={i} className="overflow-x-auto rounded-xl border border-[var(--border)]">
+          <div key={i} className="relative overflow-hidden rounded-xl border border-[var(--border)]">
+            <HairlineDecor color={accent} corner="br" />
+            <div className="relative overflow-x-auto">
             <table className="w-full border-collapse">
               <thead>
                 <tr>
@@ -2537,6 +2573,7 @@ function ArticleContent({ content }: { content: ContentBlock[] }) {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         );
 
@@ -2676,9 +2713,10 @@ export function Help() {
                     <button
                       key={article.id}
                       onClick={() => { goArticle(mod.id, article.id); setQuery(''); }}
-                      className="w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 hover:border-[var(--accent)] hover:shadow-md transition-all group"
+                      className="relative overflow-hidden w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 hover:border-[var(--accent)] hover:shadow-md transition-all group"
                     >
-                      <div className="flex items-start gap-3">
+                      <HairlineDecor color={mod.color} />
+                      <div className="relative flex items-start gap-3">
                         <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style={{ background: tint(mod.color) }}>
                           <mod.icon size={13} style={{ color: mod.color }} />
                         </div>
@@ -2778,16 +2816,17 @@ export function Help() {
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: i * 0.05 }}
                       onClick={() => goArticle(activeModule.id, art.id)}
-                      className="w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 hover:border-[var(--accent)] hover:shadow-sm transition-all group flex items-center gap-4"
+                      className="relative overflow-hidden w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 hover:border-[var(--accent)] hover:shadow-sm transition-all group flex items-center gap-4"
                     >
-                      <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: tint(activeModule.color) }}>
+                      <HairlineDecor color={activeModule.color} />
+                      <div className="relative w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: tint(activeModule.color) }}>
                         <BookOpen size={14} style={{ color: activeModule.color }} />
                       </div>
-                      <div className="flex-1 min-w-0">
+                      <div className="relative flex-1 min-w-0">
                         <p className="text-[13px] font-semibold text-[var(--text-primary)] group-hover:text-[var(--accent)] transition-colors">{art.title}</p>
                         <p className="text-[12px] text-[var(--text-muted)] mt-0.5 truncate">{art.summary}</p>
                       </div>
-                      <ChevronRight size={14} className="text-[var(--text-muted)] shrink-0 group-hover:text-[var(--accent)] transition-colors" />
+                      <ChevronRight size={14} className="relative text-[var(--text-muted)] shrink-0 group-hover:text-[var(--accent)] transition-colors" />
                     </motion.button>
                   ))}
                 </div>
@@ -2819,7 +2858,7 @@ export function Help() {
                 </div>
 
                 <div className="border-t border-[var(--border)] pt-6">
-                  <ArticleContent content={activeArticle.content} />
+                  <ArticleContent content={activeArticle.content} accent={activeModule.color} />
                 </div>
 
                 {/* Next / prev article navigation */}
@@ -2834,19 +2873,21 @@ export function Help() {
                       {prev && (
                         <button
                           onClick={() => goArticle(activeModule.id, prev.id)}
-                          className="flex-1 text-left bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 hover:border-[var(--accent)] transition-all group"
+                          className="relative overflow-hidden flex-1 text-left bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 hover:border-[var(--accent)] transition-all group"
                         >
-                          <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">← Previous</p>
-                          <p className="text-[13px] font-semibold text-[var(--text-primary)] group-hover:text-[var(--accent)] transition-colors">{prev.title}</p>
+                          <HairlineDecor color={activeModule.color} />
+                          <p className="relative text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">← Previous</p>
+                          <p className="relative text-[13px] font-semibold text-[var(--text-primary)] group-hover:text-[var(--accent)] transition-colors">{prev.title}</p>
                         </button>
                       )}
                       {next && (
                         <button
                           onClick={() => goArticle(activeModule.id, next.id)}
-                          className="flex-1 text-right bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 hover:border-[var(--accent)] transition-all group"
+                          className="relative overflow-hidden flex-1 text-right bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 hover:border-[var(--accent)] transition-all group"
                         >
-                          <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">Next →</p>
-                          <p className="text-[13px] font-semibold text-[var(--text-primary)] group-hover:text-[var(--accent)] transition-colors">{next.title}</p>
+                          <HairlineDecor color={activeModule.color} />
+                          <p className="relative text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">Next →</p>
+                          <p className="relative text-[13px] font-semibold text-[var(--text-primary)] group-hover:text-[var(--accent)] transition-colors">{next.title}</p>
                         </button>
                       )}
                     </div>

@@ -1,18 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Search, MapPin, Clock, ChevronRight, X, Briefcase, Loader2, Building2 } from 'lucide-react';
-import axios from 'axios';
-
-const publicApi = axios.create({ baseURL: '/v1/api/hr' });
+import { publicApi, BRAND_BLUE as BLUE, resolveLogoUrl } from '@/lib/publicApi';
 
 interface OrgSettings { company_name?: string; company_logo_url?: string; accent_color?: string }
 interface Props { onSelectJob: (code: string) => void }
-
-const BLUE = '#1d4ed8';
-
-function resolveLogoUrl(raw?: string): string | null {
-  if (!raw) return null;
-  return raw.startsWith('http') ? raw : `/v1/api/hr/documents/${raw}`;
-}
 
 export function CareersHome({ onSelectJob }: Props) {
   const [jobs, setJobs]       = useState<any[]>([]);

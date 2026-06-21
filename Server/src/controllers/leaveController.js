@@ -4,6 +4,36 @@ const respond           = require('../helpers/respondHelper');
 const { sendLeaveEmail } = require('../helpers/emailHelper');
 const { logActivity, fromReq } = require('./auditController');
 const { toBigInt, s } = require('../helpers/controllerHelpers');
+const { notifyEmployee } = require('../helpers/notificationHelper');
+
+// In-app bell notification for a leave action (independent of the email toggle).
+// 'submitted' → the employee's supervisor; approved/rejected/cancelled → the employee.
+async function notifyLeaveInApp(leaveId, kind, reason) {
+  try {
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT el.employee, e.supervisorId, lt.name AS leave_type_name,
+              TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS employee_name
+         FROM employeeleaves el
+         LEFT JOIN employee e   ON e.id  = el.employee
+         LEFT JOIN leavetypes lt ON lt.id = el.leave_type
+        WHERE el.id = ?`, toBigInt(leaveId));
+    if (!rows.length) return;
+    const r  = rows[0];
+    const lt = r.leave_type_name ?? 'Leave';
+    if (kind === 'submitted') {
+      if (r.supervisorId) notifyEmployee(r.supervisorId, {
+        message: `${r.employee_name || 'An employee'} submitted a ${lt} request for your approval`,
+        action: 'LeaveManagement', type: 'leave', fromEmployee: r.employee,
+      });
+    } else if (r.employee) {
+      const msg = kind === 'approved'  ? `Your ${lt} request was approved`
+                : kind === 'rejected'  ? `Your ${lt} request was rejected${reason ? ': ' + reason : ''}`
+                : kind === 'cancelled' ? `Your ${lt} request was cancelled`
+                : `Your ${lt} request was updated`;
+      notifyEmployee(r.employee, { message: msg, action: 'LeaveManagement', type: 'leave' });
+    }
+  } catch { /* never block the request */ }
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1898,6 +1928,7 @@ exports.submitLeave = asyncHandler(async (req, res) => {
   );
   await writeLog(id, req.user.id, logMsg, current.status, newStatus);
   notifyLeaveAction(id, 'submitted');
+  notifyLeaveInApp(id, 'submitted');
   respond.ok(res, supOn ? 'Leave submitted for approval' : 'Leave submitted — sent directly to HR approval');
 });
 
@@ -1932,6 +1963,7 @@ exports.approveLeave = asyncHandler(async (req, res) => {
     : `Supervisor approved (level ${newLevel}) — awaiting HR`;
   await writeLog(id, req.user.id, logNote, prevStatus, newStatus);
   notifyLeaveAction(id, isFinalTier ? 'approved' : 'submitted');
+  if (isFinalTier) notifyLeaveInApp(id, 'approved');
 
   // GL always posts automatically on final approval (HR is always the final approver)
   if (isFinalTier) processLeaveAllowance(id);
@@ -1991,6 +2023,7 @@ exports.rejectLeave = asyncHandler(async (req, res) => {
 
   await writeLog(id, req.user.id, reason ? `Rejected: ${reason}` : 'Rejected', prevStatus, 'Rejected');
   notifyLeaveAction(id, 'rejected', reason);
+  notifyLeaveInApp(id, 'rejected', reason);
   logActivity({ module: 'Leave', action: 'reject', entityId: req.params.id, details: reason ? { reason } : null, ...fromReq(req) });
   respond.ok(res, 'Leave rejected');
 });
@@ -2024,6 +2057,7 @@ exports.cancelLeave = asyncHandler(async (req, res) => {
 
   await writeLog(id, req.user.id, 'Cancelled', 'Approved', 'Cancelled');
   notifyLeaveAction(id, 'cancelled');
+  notifyLeaveInApp(id, 'cancelled');
   logActivity({ module: 'Leave', action: 'cancel', entityId: req.params.id, ...fromReq(req) });
   respond.ok(res, 'Leave cancelled');
 });

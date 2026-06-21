@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Users, CalendarCheck, Banknote, Building2,
@@ -11,6 +11,8 @@ import { getCurrentUser } from '../../lib/auth';
 import { useEnabledModules, moduleStore, ALL_MODULE_IDS } from '../../lib/moduleState';
 import api from '../../lib/api';
 import { toast } from 'sonner';
+import { PageHeader } from './ui/PageHeader';
+import { HairlineDecor } from './ui/HairlineDecor';
 
 /* ─────────────────────────────────────────────────────────────────────────────
    DESIGN TOKENS
@@ -108,6 +110,11 @@ function ModuleCard({ key,mod, index, onClick, isSettings, isEnabled, onToggle }
         ...(isSettings && !isEnabled ? { filter: 'grayscale(0.6)' } : {})
       }}
     >
+      {/* Tinted wash + hairline corner arcs (matches Attendance/Help cards) */}
+      <HairlineDecor color={r.icon} />
+
+      {/* Content sits above the decoration */}
+      <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1 }}>
       {/* Top row — icon + category badge + toggle */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '16px' }}>
         <div style={{ display: 'flex', gap: '12px' }}>
@@ -233,6 +240,7 @@ function ModuleCard({ key,mod, index, onClick, isSettings, isEnabled, onToggle }
         >
           <ArrowUpRight size={15} strokeWidth={2} />
         </span>
+      </div>
       </div>
     </motion.div>
   );
@@ -385,7 +393,21 @@ export function Modules({ onNavigate, isSettings = false }: any) {
   const [activeTag, setActiveTag] = useState('All');
   const [query, setQuery]         = useState('');
   const [viewMode, setViewMode]   = useState<'grid' | 'list'>('grid');
+  const [liveStats, setLiveStats] = useState<Record<string, string> | null>(null);
   const { enabled: enabledModules } = useEnabledModules();
+
+  // Live per-module stat for each card — org-wide when the user can manage the module,
+  // otherwise scoped to their own data (the backend decides based on permissions).
+  useEffect(() => {
+    let active = true;
+    api.get('/dashboard/module-stats')
+      .then(r => { if (active) setLiveStats(r.data?.data ?? r.data ?? {}); })
+      .catch(() => { if (active) setLiveStats({}); });
+    return () => { active = false; };
+  }, []);
+
+  const statFor = (modId: string, fallback: string): string =>
+    liveStats === null ? '…' : (liveStats[modId] ?? fallback);
 
   async function saveDisabled(disabled: string[]) {
     await api.put('/settings/modules', { disabled }).catch(() => toast.error('Failed to save module settings'));
@@ -403,51 +425,68 @@ export function Modules({ onNavigate, isSettings = false }: any) {
 
   const { canNav } = usePermission(getCurrentUser());
 
-  function resolveTarget(modId: string): string {
+  // Resolve where a module card should navigate for THIS user.
+  // Priority: an admin/management view the user can access → otherwise the module's
+  // personal page (open to all). Returns null when the user can access neither — such
+  // modules are management-only with no personal page and are hidden for normal users.
+  function resolveTarget(modId: string): string | null {
     switch (modId) {
       case 'LeaveManagement':
         if (canNav('LeaveSetup'))    return 'LeaveSetup';
-        if (canNav('LeaveCalendar')) return 'LeaveCalendar';
-        return 'LeaveManagement';
+        return 'LeaveManagement';        // personal leave — open to all
       case 'Documents':
         if (canNav('Documents'))     return 'Documents';
-        return 'PersonalDocuments';
+        return 'PersonalDocuments';      // personal — open to all
       case 'Medical':
       case 'AdminMedical':
       case 'PersonalMedical':
         if (canNav('AdminMedical'))  return 'AdminMedical';
-        return 'PersonalMedical';
+        return 'PersonalMedical';        // personal — open to all
+      case 'Insights':
+        if (canNav('AdminReports'))  return 'AdminReports';
+        return 'UserReports';            // personal — open to all
+      case 'Training':
+        if (canNav('AdminTraining')) return 'AdminTraining';
+        return 'PersonalTraining';       // personal — open to all
+      case 'Attendance':
+        if (canNav('AdminAttendance')) return 'AdminAttendance';
+        return 'MyAttendance';           // personal — open to all
+      case 'Performance':
+        if (canNav('ManagePerformance')) return 'ManagePerformance';
+        return 'PersonalPerformance';    // personal — open to all
+      // ── Management-only modules: no personal page → null when no access ──
       case 'Payroll':
         if (canNav('Salary'))        return 'Salary';
         if (canNav('Payroll'))       return 'Payroll';
-        return 'Dashboard';
-      case 'Insights':
-        if (canNav('AdminReports'))  return 'AdminReports';
-        return 'UserReports';
+        return null;
       case 'Admin':
         if (canNav('JobTitleSetups')) return 'JobTitleSetups';
         if (canNav('System'))         return 'System';
-        return 'Dashboard';
+        return null;
       case 'Employees':
-        return canNav('Employees')   ? 'Employees'   : 'Dashboard';
+        return canNav('Employees')   ? 'Employees'   : null;
       case 'Company':
-        return canNav('Company')     ? 'Company'     : 'Dashboard';
+        return canNav('Company')     ? 'Company'     : null;
       case 'Recruitment':
-        return 'Recruitment';
-      case 'Training':
-        if (canNav('AdminTraining')) return 'AdminTraining';
-        return 'PersonalTraining';
-      case 'Attendance':
-        if (canNav('AdminAttendance')) return 'AdminAttendance';
-        return 'MyAttendance';
+        return canNav('Recruitment') ? 'Recruitment' : null;
       default:
         return modId;
     }
   }
 
+  // A module is reachable when it resolves to a view this user can open.
+  const canAccessModule = (modId: string) => resolveTarget(modId) !== null;
+
+  function openModule(modId: string) {
+    const target = resolveTarget(modId);
+    if (target) onNavigate?.(target);
+  }
+
   const filtered = modules.filter((m) => {
-    // In normal mode, only show enabled modules. In settings mode, show all.
+    // In normal mode, only show enabled modules the user can actually open
+    // (an admin view they have access to, or a personal page). Settings mode shows all.
     if (!isSettings && !enabledModules.includes(m.id)) return false;
+    if (!isSettings && !canAccessModule(m.id)) return false;
 
     const matchTag    = activeTag === 'All' || m.tag === activeTag;
     const q           = query.toLowerCase();
@@ -458,6 +497,7 @@ export function Modules({ onNavigate, isSettings = false }: any) {
   const countByTag = (tag: string) =>
     modules.filter((m) => {
       if (!isSettings && !enabledModules.includes(m.id)) return false;
+      if (!isSettings && !canAccessModule(m.id)) return false;
       return tag === 'All' || m.tag === tag;
     }).length;
 
@@ -486,31 +526,8 @@ export function Modules({ onNavigate, isSettings = false }: any) {
         }}
       >
         <div style={{ flex: '1 1 300px' }}>
-          <h1
-            className="syne"
-            style={{
-              fontSize: 'clamp(22px, 3vw, 32px)',
-              fontWeight: 900,
-              color: 'var(--text-primary)',
-              margin: '0 0 8px',
-              letterSpacing: '-.025em',
-              lineHeight: 1.1,
-            }}
-          >
-            System Modules
-          </h1>
-          <p
-            style={{
-              fontSize: '13px',
-              color: 'var(--text-muted)',
-              lineHeight: 1.65,
-              margin: 0,
-              maxWidth: '440px',
-            }}
-          >
-            Access and manage every capability within the SISL portal.
-            Select a module below to get started.
-          </p>
+          <PageHeader title="Modules" subtitle="Access and manage every capability within the portal. Select a module below to get started." />
+          
         </div>
 
         {/* Header Actions */}
@@ -711,29 +728,30 @@ export function Modules({ onNavigate, isSettings = false }: any) {
               gap: '14px',
             }}
           >
-            {filtered.map((mod, i) => (
-              viewMode === 'grid' ? (
+            {filtered.map((mod, i) => {
+              const liveMod = { ...mod, stat: statFor(mod.id, '—') };
+              return viewMode === 'grid' ? (
                 <ModuleCard
                   key={mod.id}
-                  mod={mod}
+                  mod={liveMod}
                   index={i}
                   isSettings={isSettings}
                   isEnabled={enabledModules.includes(mod.id)}
                   onToggle={toggleModule}
-                  onClick={() => onNavigate?.(resolveTarget(mod.id))}
+                  onClick={() => openModule(mod.id)}
                 />
               ) : (
                 <ModuleRow
                   key={mod.id}
-                  mod={mod}
+                  mod={liveMod}
                   index={i}
                   isSettings={isSettings}
                   isEnabled={enabledModules.includes(mod.id)}
                   onToggle={toggleModule}
-                  onClick={() => onNavigate?.(resolveTarget(mod.id))}
+                  onClick={() => openModule(mod.id)}
                 />
-              )
-            ))}
+              );
+            })}
           </motion.div>
         ) : (
           <motion.div

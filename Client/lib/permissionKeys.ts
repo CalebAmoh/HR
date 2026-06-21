@@ -116,6 +116,7 @@ export const PERMISSIONS = {
   APPROVE_MEDICAL:           'approve_medical',
   MANAGE_MEDICAL_LIMITS:     'manage_medical_limits',
   MANAGE_HOSPITALS:          'manage_hospitals',
+  RESET_MEDICAL_UTILIZATION: 'reset_medical_utilization',
 
   // ── Attendance ─────────────────────────────────────────────
   VIEW_ATTENDANCE:           'view_attendance',

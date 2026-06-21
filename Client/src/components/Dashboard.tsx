@@ -9,6 +9,7 @@ import {
   Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
 import api from '../../lib/api';
+import { PageHeader } from './ui/PageHeader';
 
 /* ─────────────────────────────────────────────
    HELPERS
@@ -197,12 +198,8 @@ export function Dashboard() {
           }}
         >
           <div>
-            <h1 className="syne" style={{ fontSize: 28, fontWeight: 900, color: 'var(--text-primary)', margin: 0, letterSpacing: '-.02em' }}>
-              Dashboard
-            </h1>
-            <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '4px 0 0', fontWeight: 500 }}>
-              Welcome to the HR portal. Have a productive day.
-            </p>
+            <PageHeader title="Dashboard" subtitle="Welcome to the HR portal. Have a productive day." />
+            
           </div>
           <span className="secondary-btn" style={{ gap: 7, cursor: 'default' }}>
             <Calendar size={14} />

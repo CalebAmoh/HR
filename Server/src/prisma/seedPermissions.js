@@ -51,7 +51,7 @@ const PERMISSIONS = [
   'view_performance', 'create_performance', 'delete_performance', 'review_performance',
   // Medical (admin)
   'view_medical', 'create_medical', 'edit_medical', 'delete_medical', 'approve_medical',
-  'manage_medical_limits', 'manage_hospitals',
+  'manage_medical_limits', 'manage_hospitals', 'reset_medical_utilization',
   // Attendance (admin)
   'view_attendance', 'manage_attendance',
   // Training (admin)
@@ -91,7 +91,7 @@ const ROLES = [
       // Recruitment, Performance, Medical, Attendance, Training (admin scope)
       'view_recruitment', 'manage_jobs', 'manage_candidates', 'manage_applications', 'manage_interviews',
       'view_performance', 'create_performance', 'delete_performance', 'review_performance',
-      'view_medical', 'create_medical', 'edit_medical', 'delete_medical', 'approve_medical', 'manage_medical_limits', 'manage_hospitals',
+      'view_medical', 'create_medical', 'edit_medical', 'delete_medical', 'approve_medical', 'manage_medical_limits', 'manage_hospitals', 'reset_medical_utilization',
       'view_attendance', 'manage_attendance',
       'view_training', 'create_training', 'delete_training', 'approve_training',
     ],
@@ -130,7 +130,7 @@ const ROLES = [
       // Recruitment, Performance, Medical, Attendance, Training (HR scope)
       'view_recruitment', 'manage_jobs', 'manage_candidates', 'manage_applications', 'manage_interviews',
       'view_performance', 'create_performance', 'delete_performance', 'review_performance',
-      'view_medical', 'create_medical', 'edit_medical', 'delete_medical', 'approve_medical', 'manage_medical_limits', 'manage_hospitals',
+      'view_medical', 'create_medical', 'edit_medical', 'delete_medical', 'approve_medical', 'manage_medical_limits', 'manage_hospitals', 'reset_medical_utilization',
       'view_attendance', 'manage_attendance',
       'view_training', 'create_training', 'delete_training', 'approve_training',
     ],

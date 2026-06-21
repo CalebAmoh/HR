@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect, ReactNode, CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { CountedTextarea } from './ui/CountedTextarea';
+import { RowActions as KebabActions } from './ui/RowActions';
 import { AnimatePresence, motion } from 'motion/react';
 import { Plus, X, Search, Trash2, ChevronDown, Check, Loader2, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
@@ -284,9 +285,11 @@ function RowActions({ onEdit, onDelete, canManage = true }: { onEdit: () => void
   if (!canManage) return <td className="td text-right text-[var(--text-muted)]">—</td>;
   return (
     <td className="td text-right">
-      <div className="flex items-center justify-end gap-1">
-        <button onClick={onEdit} className="action-btn text-[var(--accent)]" title="Edit"><Pencil size={13} /></button>
-        <button onClick={onDelete} className="action-btn text-[var(--danger)]" title="Remove"><Trash2 size={13} /></button>
+      <div className="flex justify-end">
+        <KebabActions actions={[
+          { label: 'Edit', icon: Pencil, onClick: onEdit },
+          { label: 'Remove', icon: Trash2, danger: true, onClick: onDelete },
+        ]} />
       </div>
     </td>
   );

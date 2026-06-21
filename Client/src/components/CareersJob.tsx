@@ -4,9 +4,9 @@ import {
   ArrowLeft, MapPin, Clock, Briefcase, GraduationCap, Calendar,
   Link2, Loader2, Send, CheckCircle2, DollarSign,
 } from 'lucide-react';
-import axios from 'axios';
 import { toast } from 'sonner';
 import { CountedTextarea } from './ui/CountedTextarea';
+import { publicApi, BRAND_BLUE as BLUE, resolveLogoUrl } from '@/lib/publicApi';
 
 // Social icons (lucide dropped these)
 const IconFacebook = () => (
@@ -28,17 +28,8 @@ const IconLinkedIn = () => (
   </svg>
 );
 
-const publicApi = axios.create({ baseURL: '/v1/api/hr' });
-
 interface OrgSettings { company_name?: string; company_logo_url?: string; accent_color?: string }
 interface Props { code: string; onBack: () => void }
-
-const BLUE = '#1d4ed8';
-
-function resolveLogoUrl(raw?: string): string | null {
-  if (!raw) return null;
-  return raw.startsWith('http') ? raw : `/v1/api/hr/documents/${raw}`;
-}
 
 function RichText({ html }: { html: string }) {
   const lines = html.split('\n');

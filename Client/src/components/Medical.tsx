@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { PageHeader } from './ui/PageHeader';
+import { RowActions } from './ui/RowActions';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { FormModal } from './ui/FormModal';
@@ -21,6 +22,7 @@ import { toast } from 'sonner';
 import api from '../../lib/api';
 import { getCurrentUser } from '../../lib/auth';
 import { getSettings } from '../../lib/settings';
+import { currencyCode } from '../../lib/currency';
 import { useCan } from '@/hooks/useCan';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -729,20 +731,20 @@ function StaffMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean; cur
             <td className="td">{parseFloat(String(row.cost ?? 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
             <td className="td"><StatusPill status={row.status} /></td>
             <td className="td text-right">
-              <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                <button onClick={() => setViewRec(row)} className="action-btn text-[var(--text-muted)]" title="View Details"><Eye size={13} /></button>
-                {row.status === 'Draft' && rowSubmit(row) && (
-                  <button onClick={async () => {
-                    try { await api.post(`/medical/staff/${row.id}/submit`, {}); toast.success('Submitted for approval'); load(); }
-                    catch (e: any) { toast.error(e?.response?.data?.message ?? 'Failed to submit'); }
-                  }} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] text-[var(--accent)] hover:bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] border border-[color-mix(in_srgb,var(--accent)_25%,transparent)] transition-colors" title="Submit for Approval"><Send size={11} />Submit</button>
-                )}
-                {rowEdit(row) && (row.status === 'Draft' || row.status === 'Rejected') && (
-                  <button onClick={() => openEdit(row)} className="action-btn" title="Edit"><Edit size={13} /></button>
-                )}
-                {rowDelete(row) && (row.status === 'Draft' || row.status === 'Rejected' || adminMode) && (
-                  <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>
-                )}
+              <div className="inline-flex justify-end">
+                <RowActions actions={[
+                  { label: 'View Details', icon: Eye, onClick: () => setViewRec(row) },
+                  {
+                    label: 'Submit for Approval', icon: Send,
+                    hidden: !(row.status === 'Draft' && rowSubmit(row)),
+                    onClick: async () => {
+                      try { await api.post(`/medical/staff/${row.id}/submit`, {}); toast.success('Submitted for approval'); load(); }
+                      catch (e: any) { toast.error(e?.response?.data?.message ?? 'Failed to submit'); }
+                    },
+                  },
+                  { label: 'Edit', icon: Edit, onClick: () => openEdit(row), hidden: !(rowEdit(row) && (row.status === 'Draft' || row.status === 'Rejected')) },
+                  { label: 'Delete', icon: Trash2, danger: true, onClick: () => setPending(row), hidden: !(rowDelete(row) && (row.status === 'Draft' || row.status === 'Rejected' || adminMode)) },
+                ]} />
               </div>
             </td>
           </tr>
@@ -759,7 +761,7 @@ function StaffMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean; cur
               <SearchSelect value={f.employee} onChange={v => set('employee', v)}
                 options={employees} placeholder="Select employee…" disabled={!adminMode || !!currentEmpId} />
             </F>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <F label="Admission Date" required>
                 <input type="date" className={inputClass} value={f.admission_date} onChange={e => set('admission_date', e.target.value)} />
               </F>
@@ -973,20 +975,20 @@ function DependentMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean;
             <td className="td">{parseFloat(String(row.cost ?? 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
             <td className="td"><StatusPill status={row.status} /></td>
             <td className="td text-right">
-              <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                <button onClick={() => setViewRec(row)} className="action-btn text-[var(--text-muted)]" title="View Details"><Eye size={13} /></button>
-                {row.status === 'Draft' && rowSubmit(row) && (
-                  <button onClick={async () => {
-                    try { await api.post(`/medical/dependents-requests/${row.id}/submit`, {}); toast.success('Submitted for approval'); load(); }
-                    catch (e: any) { toast.error(e?.response?.data?.message ?? 'Failed to submit'); }
-                  }} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] text-[var(--accent)] hover:bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] border border-[color-mix(in_srgb,var(--accent)_25%,transparent)] transition-colors" title="Submit for Approval"><Send size={11} />Submit</button>
-                )}
-                {rowEdit(row) && (row.status === 'Draft' || row.status === 'Rejected') && (
-                  <button onClick={() => openEdit(row)} className="action-btn" title="Edit"><Edit size={13} /></button>
-                )}
-                {rowDelete(row) && (row.status === 'Draft' || row.status === 'Rejected' || adminMode) && (
-                  <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>
-                )}
+              <div className="inline-flex justify-end">
+                <RowActions actions={[
+                  { label: 'View Details', icon: Eye, onClick: () => setViewRec(row) },
+                  {
+                    label: 'Submit for Approval', icon: Send,
+                    hidden: !(row.status === 'Draft' && rowSubmit(row)),
+                    onClick: async () => {
+                      try { await api.post(`/medical/dependents-requests/${row.id}/submit`, {}); toast.success('Submitted for approval'); load(); }
+                      catch (e: any) { toast.error(e?.response?.data?.message ?? 'Failed to submit'); }
+                    },
+                  },
+                  { label: 'Edit', icon: Edit, onClick: () => openEdit(row), hidden: !(rowEdit(row) && (row.status === 'Draft' || row.status === 'Rejected')) },
+                  { label: 'Delete', icon: Trash2, danger: true, onClick: () => setPending(row), hidden: !(rowDelete(row) && (row.status === 'Draft' || row.status === 'Rejected' || adminMode)) },
+                ]} />
               </div>
             </td>
           </tr>
@@ -1023,7 +1025,7 @@ function DependentMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean;
                   value={f.dob} readOnly />
               </F>
             </div>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <F label="Date Attended" required>
                 <input type="date" className={inputClass} value={f.date_attended} onChange={e => set('date_attended', e.target.value)} />
               </F>
@@ -1168,9 +1170,11 @@ function MedicalLimitsTab() {
             <td className="td">{row.currency}</td>
             <td className="td">{parseFloat(String(row.amount ?? 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
             <td className="td text-right">
-              <div className="flex justify-end gap-2">
-                {canManage && <button onClick={() => openEdit(row)} className="action-btn"><Edit size={13} /></button>}
-                {canManage && <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]"><Trash2 size={13} /></button>}
+              <div className="flex justify-end">
+                <RowActions actions={[
+                  { label: 'Edit', icon: Edit, onClick: () => openEdit(row), hidden: !canManage },
+                  { label: 'Delete', icon: Trash2, danger: true, onClick: () => setPending(row), hidden: !canManage },
+                ]} />
               </div>
             </td>
           </tr>
@@ -1268,7 +1272,7 @@ function MedicalEnquiryDetail({ row, onClose }: { row: any; onClose: () => void 
         </div>
 
         {/* Summary strip */}
-        <div className="px-5 py-4 grid grid-cols-4 gap-3 border-b border-[var(--border)] shrink-0">
+        <div className="px-5 py-4 grid grid-cols-2 sm:grid-cols-4 gap-3 border-b border-[var(--border)] shrink-0">
           {[
             { label: 'Limit',      value: limit !== null ? fmt(limit) : '—',                     color: undefined },
             { label: 'Staff Used', value: fmt(row.staff_utilized ?? 0),                           color: undefined },
@@ -1362,14 +1366,19 @@ function MedicalEnquiryDetail({ row, onClose }: { row: any; onClose: () => void 
 // ── Staff Medical Enquiry tab ─────────────────────────────────────────────────
 
 function StaffMedicalEnquiryTab() {
+  const { can } = useCan();
+  const canReset = can('reset_medical_utilization');
   const [rows, setRows]         = useState<any[]>([]);
   const [search, setSearch]     = useState('');
   const [page, setPage]         = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [detail, setDetail]     = useState<any | null>(null);
+  const [resetOpen, setResetOpen]     = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const appCurrency = getSettings().general.currency;
 
-  useEffect(() => { api.get('/medical/enquiry').then(r => setRows(r.data.data ?? r.data ?? [])).catch(() => {}); }, []);
+  const loadRows = () => { api.get('/medical/enquiry').then(r => setRows(r.data.data ?? r.data ?? [])).catch(() => {}); };
+  useEffect(() => { loadRows(); }, []);
 
   const filtered = rows.filter(r => !search || (r.employee_name ?? '').toLowerCase().includes(search.toLowerCase()));
   useEffect(() => { setPage(1); }, [search]);
@@ -1421,9 +1430,19 @@ function StaffMedicalEnquiryTab() {
           onSearchChange={setSearch}
           searchPlaceholder="Search employees…"
           actions={
-            <button className="secondary-btn shrink-0" onClick={exportEnquiry}>
-              <Download size={14} className="inline mr-1.5" />Export
-            </button>
+            <>
+              <button className="secondary-btn shrink-0" onClick={() => setHistoryOpen(true)}>
+                <Clock size={14} className="inline mr-1.5" />History
+              </button>
+              <button className="secondary-btn shrink-0" onClick={exportEnquiry}>
+                <Download size={14} className="inline mr-1.5" />Export
+              </button>
+              {canReset && (
+                <button className="primary-btn shrink-0" onClick={() => setResetOpen(true)}>
+                  <Calendar size={14} className="inline mr-1.5" />Start New Medical Year
+                </button>
+              )}
+            </>
           }
         />
         <div className="overflow-x-auto flex-1">
@@ -1474,8 +1493,162 @@ function StaffMedicalEnquiryTab() {
       <AnimatePresence>
         {detail && <MedicalEnquiryDetail row={detail} onClose={() => setDetail(null)} />}
       </AnimatePresence>
+
+      {resetOpen && (
+        <ResetMedicalYearModal
+          employeeCount={rows.length}
+          onClose={() => setResetOpen(false)}
+          onDone={() => { setResetOpen(false); loadRows(); }}
+        />
+      )}
+      {historyOpen && <UtilizationHistoryModal onClose={() => setHistoryOpen(false)} />}
     </>
   );
+}
+
+// ── Start New Medical Year (utilization reset) ────────────────────────────────
+
+function ResetMedicalYearModal({ employeeCount, onClose, onDone }: {
+  employeeCount: number; onClose: () => void; onDone: () => void;
+}) {
+  const [periodLabel, setPeriodLabel] = useState(String(new Date().getFullYear()));
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (saving) return;
+    const label = periodLabel.trim();
+    if (!label) { toast.error('Enter a year label for the closing snapshot'); return; }
+    setSaving(true);
+    try {
+      const res = await api.post('/medical/utilization/reset', { period_label: label });
+      toast.success(res.data?.message || 'New medical year started');
+      onDone();
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Reset failed');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <FormModal title="Start New Medical Year" onClose={onClose} onSave={submit}
+      saveLabel={saving ? 'Resetting…' : 'Reset Utilization'} maxWidth="md">
+      <div className="space-y-4">
+        <p className="text-[13px] text-[var(--text-secondary)] leading-relaxed">
+          This resets <b>every employee's</b> medical utilization back to 0 for a fresh year.
+          The current year's totals are first saved to history, and per-grade medical limits are
+          left unchanged. Existing medical records, costs and GL postings are <b>not</b> deleted —
+          they simply stop counting toward the new year.
+        </p>
+        <div className="rounded-[10px] bg-[color-mix(in_srgb,var(--accent)_7%,transparent)] border border-[var(--border)] px-3 py-2.5 text-[12px] text-[var(--text-secondary)]">
+          A closing snapshot will be saved for <b>{employeeCount}</b> employee(s).
+        </div>
+        <div>
+          <label className="label">Closing Year Label</label>
+          <input className={inputClass} value={periodLabel} onChange={e => setPeriodLabel(e.target.value)}
+            placeholder="e.g. 2025" />
+          <p className="text-[11px] text-[var(--text-muted)] mt-1">
+            Labels the saved snapshot (the year you are closing). Must be unique.
+          </p>
+        </div>
+      </div>
+    </FormModal>
+  );
+}
+
+// ── Utilization history (past closed years) ───────────────────────────────────
+
+function UtilizationHistoryModal({ onClose }: { onClose: () => void }) {
+  const [rows, setRows]       = useState<any[]>([]);
+  const [periods, setPeriods] = useState<string[]>([]);
+  const [period, setPeriod]   = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    api.get('/medical/utilization/history').then(r => {
+      const data = r.data.data ?? r.data ?? [];
+      setRows(data);
+      setPeriods([...new Set(data.map((x: any) => String(x.period_label)))] as string[]);
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  const filtered = period ? rows.filter(r => String(r.period_label) === period) : rows;
+
+  return (
+    <div className="fixed inset-0 z-[110] flex justify-end">
+      <div className="absolute inset-0 bg-slate-900/30 backdrop-blur-[2px]" onClick={onClose} />
+      <motion.div
+        initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
+        transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+        className="relative z-10 w-full max-w-3xl bg-[var(--surface)] shadow-2xl flex flex-col h-full border-l border-[var(--border)]"
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)] shrink-0">
+          <div>
+            <h3 className="text-[15px] font-bold text-[var(--text-primary)] syne">Medical Utilization History</h3>
+            <p className="text-[11px] text-[var(--text-muted)] mt-0.5">Closing snapshots from past medical years</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-[var(--bg)] rounded-full text-[var(--text-muted)] transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-5 py-3 border-b border-[var(--border)] shrink-0">
+          <div className="w-full sm:w-64">
+            <SearchSelect
+              value={period}
+              onChange={setPeriod}
+              options={[{ id: '', label: 'All years' }, ...periods.map(p => ({ id: p, label: p }))]}
+              placeholder="Filter by year…"
+            />
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-auto">
+          <table className="w-full border-collapse min-w-[640px]">
+            <thead className="sticky top-0 bg-[var(--surface)] z-10">
+              <tr>
+                <th className="th">Year</th>
+                <th className="th">Employee</th>
+                <th className="th">Pay Grade</th>
+                <th className="th !text-right">Limit</th>
+                <th className="th !text-right">Total Used</th>
+                <th className="th !text-right">Balance</th>
+                <th className="th">Closed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td className="td text-center text-[var(--text-muted)] py-6" colSpan={7}>Loading…</td></tr>
+              ) : filtered.length ? filtered.map((r, i) => (
+                <tr key={i} className="tr">
+                  <td className="td font-semibold">{r.period_label}</td>
+                  <td className="td">
+                    <p className="font-medium text-[var(--text-primary)] text-[13px]">{r.employee_name}</p>
+                  </td>
+                  <td className="td">{r.grade ?? '—'}</td>
+                  <td className="td text-right">{r.medical_limit != null ? histMoney(r.medical_limit, r.currency) : '—'}</td>
+                  <td className="td text-right font-semibold">{histMoney(r.total_utilized ?? 0, r.currency)}</td>
+                  <td className="td text-right">{r.limit_balance != null ? histMoney(r.limit_balance, r.currency) : '—'}</td>
+                  <td className="td text-[12px] text-[var(--text-muted)]">
+                    {r.closed_at ? String(r.closed_at).slice(0, 10) : '—'}
+                  </td>
+                </tr>
+              )) : (
+                <tr><td className="td text-center text-[var(--text-muted)] py-6" colSpan={7}>No closed years yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+// Money formatter for history rows — uses the snapshot's own currency, falling back to the default.
+function histMoney(amount: any, currency?: string): string {
+  const n = parseFloat(String(amount ?? 0));
+  const v = Number.isFinite(n) ? n : 0;
+  const cur = currency || currencyCode();
+  return `${cur ? cur + ' ' : ''}${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 // ── Registered Hospitals tab ──────────────────────────────────────────────────
@@ -1531,9 +1704,11 @@ function RegisteredHospitalsTab() {
             </td>
             <td className="td">{row.account}</td>
             <td className="td text-right">
-              <div className="flex justify-end gap-2">
-                {canManage && <button onClick={() => openEdit(row)} className="action-btn"><Edit size={13} /></button>}
-                {canManage && <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]"><Trash2 size={13} /></button>}
+              <div className="flex justify-end">
+                <RowActions actions={[
+                  { label: 'Edit', icon: Edit, onClick: () => openEdit(row), hidden: !canManage },
+                  { label: 'Delete', icon: Trash2, danger: true, onClick: () => setPending(row), hidden: !canManage },
+                ]} />
               </div>
             </td>
           </tr>
@@ -1810,6 +1985,7 @@ function HospitalClaimsTab() {
   const [comment, setComment]         = useState('');
   const [claimItems, setClaimItems]   = useState<ClaimItem[]>([]);
   const [itemLimits, setItemLimits]   = useState<Record<string, any>>({});
+  const [uploadErrors, setUploadErrors] = useState<string[]>([]);
 
   // Item builder sub-form
   const [iEmp,  setIEmp]  = useState('');
@@ -1900,7 +2076,7 @@ function HospitalClaimsTab() {
 
   function openAdd() {
     setSel(null); setHospital(''); setHospitalType('Hospital'); setComment('');
-    setClaimItems([]); setItemLimits({}); resetItemBuilder(); setOpen(true);
+    setClaimItems([]); setItemLimits({}); setUploadErrors([]); resetItemBuilder(); setOpen(true);
   }
 
   function openEdit(row: any) {
@@ -1910,6 +2086,7 @@ function HospitalClaimsTab() {
     setComment(row.comment ?? '');
     setClaimItems(Array.isArray(row.items) ? row.items : []);
     setItemLimits({});
+    setUploadErrors([]);
     resetItemBuilder();
     setOpen(true);
     // pre-fetch limits for existing items
@@ -1953,6 +2130,7 @@ function HospitalClaimsTab() {
   async function handleExcelUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    setUploadErrors([]);
     const buf  = await file.arrayBuffer();
     const wb   = XLSX.read(buf, { type: 'array' });
     const ws   = wb.Sheets[wb.SheetNames[0]];
@@ -1996,8 +2174,8 @@ function HospitalClaimsTab() {
     });
 
     if (errors.length) {
-      toast.error(`${errors.length} row(s) had errors — check console`, { duration: 5000 });
-      console.warn('Upload errors:', errors);
+      setUploadErrors(errors);
+      toast.error(`${errors.length} row(s) skipped — see details below`, { duration: 5000 });
     }
     if (newItems.length) {
       setClaimItems(prev => [...prev, ...newItems]);
@@ -2013,7 +2191,7 @@ function HospitalClaimsTab() {
     (r.status ?? '').toLowerCase().includes(search.toLowerCase())
   );
 
-  const fmtN = (n: any) => parseFloat(String(n ?? 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtN = (n: any) => `${currencyCode() ? currencyCode() + ' ' : ''}${parseFloat(String(n ?? 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   return (
     <>
@@ -2031,13 +2209,13 @@ function HospitalClaimsTab() {
             <td className="td text-right">{fmtN(row.total_credit_amount)}</td>
             <td className="td"><span className={claimPillClass(row.status)}>{row.status}</span></td>
             <td className="td text-right">
-              <div className="flex justify-end gap-1.5">
-                {row.status === 'Draft' && <>
-                  {allowEdit && <button onClick={() => openEdit(row)} className="action-btn" title="Edit"><Edit size={13} /></button>}
-                  {allowCreate && <button onClick={() => handleSubmit(row)} className="action-btn text-[var(--accent)]" title="Submit"><Send size={13} /></button>}
-                  {allowDelete && <button onClick={() => setPending(row)} className="action-btn text-[var(--danger)]" title="Delete"><Trash2 size={13} /></button>}
-                </>}
-                <button onClick={() => setViewDetail(row)} className="action-btn" title="View Details"><Eye size={13} /></button>
+              <div className="flex justify-end">
+                <RowActions actions={[
+                  { label: 'View Details', icon: Eye, onClick: () => setViewDetail(row) },
+                  { label: 'Edit', icon: Edit, onClick: () => openEdit(row), hidden: !(row.status === 'Draft' && allowEdit) },
+                  { label: 'Submit', icon: Send, onClick: () => handleSubmit(row), hidden: !(row.status === 'Draft' && allowCreate) },
+                  { label: 'Delete', icon: Trash2, danger: true, onClick: () => setPending(row), hidden: !(row.status === 'Draft' && allowDelete) },
+                ]} />
               </div>
             </td>
           </tr>
@@ -2078,6 +2256,26 @@ function HospitalClaimsTab() {
                 </div>
               </div>
 
+              {/* Upload error details — shows exactly which rows were skipped and why */}
+              {uploadErrors.length > 0 && (
+                <div className="mb-3 rounded-[10px] border border-[var(--danger)]/30 bg-[var(--danger)]/5 overflow-hidden">
+                  <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-[var(--danger)]/20">
+                    <span className="text-[12px] font-semibold text-[var(--danger)]">
+                      {uploadErrors.length} row{uploadErrors.length !== 1 ? 's' : ''} skipped
+                    </span>
+                    <button type="button" onClick={() => setUploadErrors([])}
+                      className="text-[var(--danger)] hover:opacity-70" title="Dismiss">
+                      <X size={13} />
+                    </button>
+                  </div>
+                  <ul className="max-h-[140px] overflow-y-auto px-3 py-2 space-y-1">
+                    {uploadErrors.map((err, i) => (
+                      <li key={i} className="text-[12px] text-[var(--text-secondary)] leading-snug">• {err}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {/* Sub-form: add one item */}
               <div className="bg-[var(--bg)] rounded-[10px] p-3 mb-3 space-y-3">
                 <div className="grid grid-cols-2 gap-3">
@@ -2102,7 +2300,7 @@ function HospitalClaimsTab() {
                       options={iEmpDeps.map((d: any) => ({ id: String(d.id), label: d.name ?? String(d.id) }))}
                       placeholder="Select dependent…" />
                     {iDepDetail && (
-                      <div className="mt-2 text-[12px] text-[var(--text-muted)] bg-[var(--surface)] border border-[var(--border)] rounded-[8px] px-3 py-2 grid grid-cols-3 gap-2">
+                      <div className="mt-2 text-[12px] text-[var(--text-muted)] bg-[var(--surface)] border border-[var(--border)] rounded-[8px] px-3 py-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
                         <span><span className="font-medium text-[var(--text-primary)]">Name:</span> {iDepDetail.name}</span>
                         <span><span className="font-medium text-[var(--text-primary)]">Rel:</span> {iDepDetail.relationshipLabel ?? iDepDetail.relationship ?? '—'}</span>
                         <span><span className="font-medium text-[var(--text-primary)]">DOB:</span> {iDepDetail.dob ? String(iDepDetail.dob).slice(0, 10) : '—'}</span>
@@ -2243,8 +2441,8 @@ function MyMedicalEnquiryTab() {
   if (loading) return <div className="flex-1 flex items-center justify-center text-[13px] text-[var(--text-muted)]">Loading…</div>;
   if (!data)   return <div className="flex-1 flex items-center justify-center text-[13px] text-[var(--text-muted)]">No employee record linked to your account.</div>;
 
-  const fmt = (v: any) => v != null ? parseFloat(String(v)).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '—';
-  const currency = data.currency ?? '';
+  const currency = data.currency || currencyCode();
+  const fmt = (v: any) => v != null ? `${currency ? currency + ' ' : ''}${parseFloat(String(v)).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : '—';
 
   const exportEnquiry = () => {
     const aoa: any[][] = [
@@ -2276,7 +2474,7 @@ function MyMedicalEnquiryTab() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {[
           { label: 'Medical Limit',    value: data.medical_limit != null   ? `${currency} ${fmt(data.medical_limit)}`    : '—', accent: false },
           { label: 'Amount Utilised',  value: `${currency} ${fmt(data.amount_utilized)}`,                                       accent: true  },

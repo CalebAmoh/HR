@@ -10,6 +10,7 @@ import { SearchSelect } from './ui/SearchSelect';
 import { exportReportExcel, reportPdf, ReportPreview, uniqOpts } from './ui/reportTools';
 import api from '../../lib/api';
 import { getCurrentUser } from '../../lib/auth';
+import { PageHeader } from './ui/PageHeader';
 
 interface PayslipRun {
   run_id: string;
@@ -263,11 +264,7 @@ export function UserReports() {
     <div className="flex-1 w-full relative h-full flex flex-col">
       <div className="max-w-[1300px] w-full mx-auto px-6 py-8 flex-1 flex flex-col">
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mb-7">
-          <h1 className="syne text-[26px] font-extrabold text-[var(--text-primary)] m-0 flex items-center gap-2">
-            <FileSpreadsheet className="text-[var(--accent)]" size={28} />
-            My Reports
-          </h1>
-          <p className="text-[13px] text-[var(--text-muted)] mt-1.5">Generate and download your personal employment records.</p>
+          <PageHeader title="My Reports" subtitle="Generate and download your personal employment records." />
         </motion.div>
 
         <motion.div
@@ -453,7 +450,7 @@ export function UserReports() {
               const cur = medData.currency ?? '';
               return (
                 <div className="space-y-5">
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     {[
                       { label: 'Medical Limit',     value: medData.medical_limit    != null ? `${cur} ${fmt(medData.medical_limit)}`    : '—' },
                       { label: 'Amount Utilised',   value: `${cur} ${fmt(medData.amount_utilized)}` },
