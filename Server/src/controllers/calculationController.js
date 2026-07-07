@@ -3,6 +3,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 
 const { serialize, toBigInt } = require('../helpers/controllerHelpers');
+const { tokenizeFormula, detokenizeFormula } = require('../helpers/payrollFormula');
 
 function toDecimalString(val) {
   if (val === undefined || val === null || val === '') return null;
@@ -19,6 +20,120 @@ async function exec(sql, ...params) {
   return prisma.$executeRawUnsafe(sql, ...params);
 }
 
+// ─── Payroll column ↔ calculation group (many-to-many via payrollcolumn_groups) ──
+
+/** Map of payrollcolumn id (string) → array of group id strings it is scoped to. */
+async function columnGroupsMap() {
+  const rows = await query('SELECT payrollcolumn_id, group_id FROM payrollcolumn_groups');
+  const map = {};
+  for (const r of rows) {
+    const key = String(r.payrollcolumn_id);
+    (map[key] ??= []).push(String(r.group_id));
+  }
+  return map;
+}
+
+/** Group ids for a single column. */
+async function groupsForColumn(columnId) {
+  const rows = await query('SELECT group_id FROM payrollcolumn_groups WHERE payrollcolumn_id = ?', columnId);
+  return rows.map(r => String(r.group_id));
+}
+
+/** Replace a column's group links with `groups` (array of ids or a comma-separated string). */
+async function syncColumnGroups(columnId, groups) {
+  await exec('DELETE FROM payrollcolumn_groups WHERE payrollcolumn_id = ?', columnId);
+  const raw = Array.isArray(groups) ? groups : String(groups ?? '').split(',');
+  const ids = [...new Set(raw.map(g => toBigInt(g)).filter(Boolean).map(String))];
+  for (const gid of ids) {
+    await exec(
+      'INSERT IGNORE INTO payrollcolumn_groups (payrollcolumn_id, group_id) VALUES (?, ?)',
+      columnId, BigInt(gid)
+    );
+  }
+}
+
+// ─── Payroll column ↔ salary components (payrollcolumn_components) ───────────────
+
+/** Map of payrollcolumn id (string) → array of component id strings. */
+async function columnComponentsMap() {
+  const rows = await query('SELECT payrollcolumn_id, component_id FROM payrollcolumn_components');
+  const map = {};
+  for (const r of rows) (map[String(r.payrollcolumn_id)] ??= []).push(String(r.component_id));
+  return map;
+}
+async function componentsForColumn(columnId) {
+  const rows = await query('SELECT component_id FROM payrollcolumn_components WHERE payrollcolumn_id = ?', columnId);
+  return rows.map(r => String(r.component_id));
+}
+/** Replace a column's linked salary components with `ids` (array or CSV of component ids). */
+async function syncColumnComponents(columnId, ids) {
+  await exec('DELETE FROM payrollcolumn_components WHERE payrollcolumn_id = ?', columnId);
+  const raw = Array.isArray(ids) ? ids : String(ids ?? '').split(',');
+  const clean = [...new Set(raw.map(g => toBigInt(g)).filter(Boolean).map(String))];
+  for (const cid of clean) {
+    await exec('INSERT IGNORE INTO payrollcolumn_components (payrollcolumn_id, component_id) VALUES (?, ?)', columnId, BigInt(cid));
+  }
+}
+
+// ─── Payroll column ↔ add/subtract column links (payrollcolumn_links) ────────────
+
+/** Map of payrollcolumn id (string) → { add: [ids], subtract: [ids] }. */
+async function columnLinksMap() {
+  const rows = await query('SELECT payrollcolumn_id, target_column_id, operation FROM payrollcolumn_links');
+  const map = {};
+  for (const r of rows) {
+    const m = (map[String(r.payrollcolumn_id)] ??= { add: [], subtract: [] });
+    (r.operation === 'subtract' ? m.subtract : m.add).push(String(r.target_column_id));
+  }
+  return map;
+}
+async function linksForColumn(columnId) {
+  const rows = await query('SELECT target_column_id, operation FROM payrollcolumn_links WHERE payrollcolumn_id = ?', columnId);
+  const out = { add: [], subtract: [] };
+  for (const r of rows) (r.operation === 'subtract' ? out.subtract : out.add).push(String(r.target_column_id));
+  return out;
+}
+/** Replace a column's add/subtract links. `addIds`/`subIds` are arrays (or CSV) of column ids. */
+async function syncColumnLinks(columnId, addIds, subIds) {
+  await exec('DELETE FROM payrollcolumn_links WHERE payrollcolumn_id = ?', columnId);
+  const clean = v => [...new Set((Array.isArray(v) ? v : String(v ?? '').split(',')).map(x => parseInt(x, 10)).filter(n => Number.isInteger(n) && n !== Number(columnId)))];
+  for (const tid of clean(addIds)) await exec('INSERT IGNORE INTO payrollcolumn_links (payrollcolumn_id, target_column_id, operation) VALUES (?,?,?)', columnId, tid, 'add');
+  for (const tid of clean(subIds)) await exec('INSERT IGNORE INTO payrollcolumn_links (payrollcolumn_id, target_column_id, operation) VALUES (?,?,?)', columnId, tid, 'subtract');
+}
+
+/** Build {comp,col} id→name maps for detokenizing formulas back to current names for the client. */
+async function nameMaps() {
+  const comps = await query('SELECT id, name FROM salarycomponent');
+  const cols = await query('SELECT id, name FROM payrollcolumns');
+  return {
+    compById: new Map(comps.map(c => [String(c.id), c.name])),
+    colById: new Map(cols.map(c => [String(c.id), c.name])),
+    comps, cols,
+  };
+}
+
+/** Re-fetch one column and attach its junction refs + detokenized formula (the API shape). */
+async function buildColumnResponse(id) {
+  const [row] = await query(`
+    SELECT id, name, COALESCE(function_type,'Simple') AS function_type,
+           COALESCE(enabled,'Yes') AS enabled, COALESCE(editable,'Yes') AS editable,
+           colorder, default_value, payment_deduction,
+           salarycomponent_gl, posting_column, posting_branch,
+           calculation_function, calculation_rule,
+           COALESCE(visible, 1) AS visible, COALESCE(include_in_net, 1) AS include_in_net,
+           payslip_label
+    FROM payrollcolumns WHERE id = ?`, id);
+  if (!row) return null;
+  const { compById, colById } = await nameMaps();
+  const links = await linksForColumn(id);
+  row.deduction_groups = await groupsForColumn(id);
+  row.component_ids = await componentsForColumn(id);
+  row.add_column_ids = links.add;
+  row.sub_column_ids = links.subtract;
+  row.calculation_function = detokenizeFormula(row.calculation_function, compById, colById);
+  return row;
+}
+
 // ─── Payroll Columns ──────────────────────────────────────────────────────────
 
 // GET /calculation/payroll-columns — list all payroll columns ordered by colorder, with all display/calculation config.
@@ -29,14 +144,24 @@ const getPayrollColumns = asyncHandler(async (_req, res) => {
            COALESCE(enabled,       'Yes')    AS enabled,
            COALESCE(editable,      'Yes')    AS editable,
            colorder, default_value, payment_deduction,
-           salarycomponent_gl, posting_column, posting_branch, calculation_hook,
-           deduction_group, salary_components, calculation_columns,
-           add_columns, sub_columns, calculation_function, calculation_rule,
+           salarycomponent_gl, posting_column, posting_branch,
+           calculation_function, calculation_rule,
            COALESCE(visible, 1) AS visible, COALESCE(include_in_net, 1) AS include_in_net,
            payslip_label
     FROM payrollcolumns
     ORDER BY COALESCE(colorder, 9999) ASC, name ASC
   `);
+  const [groupMap, compMap, linkMap, { compById, colById }] = await Promise.all([
+    columnGroupsMap(), columnComponentsMap(), columnLinksMap(), nameMaps(),
+  ]);
+  for (const r of rows) {
+    const id = String(r.id);
+    r.deduction_groups = groupMap[id] ?? [];
+    r.component_ids    = compMap[id] ?? [];
+    r.add_column_ids   = linkMap[id]?.add ?? [];
+    r.sub_column_ids   = linkMap[id]?.subtract ?? [];
+    r.calculation_function = detokenizeFormula(r.calculation_function, compById, colById);
+  }
   respond.ok(res, 'Payroll columns retrieved', rows);
 });
 
@@ -45,8 +170,8 @@ const getPayrollColumns = asyncHandler(async (_req, res) => {
 const createPayrollColumn = asyncHandler(async (req, res) => {
   const {
     name, function_type = 'Simple', enabled = 'Yes', editable = 'Yes', colorder, default_value, payment_deduction,
-    salarycomponent_gl, posting_column, posting_branch, calculation_hook, deduction_group,
-    salary_components, calculation_columns, add_columns, sub_columns, calculation_function,
+    salarycomponent_gl, posting_column, posting_branch, deduction_groups,
+    component_ids, add_column_ids, sub_column_ids, calculation_function,
     calculation_rule, visible = 1, include_in_net = 1, payslip_label,
   } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
@@ -58,13 +183,14 @@ const createPayrollColumn = asyncHandler(async (req, res) => {
   const colorderVal = (colorder !== undefined && colorder !== '')
     ? parseInt(colorder)
     : Number((await query('SELECT COALESCE(MAX(colorder), 0) + 1 AS nextOrder FROM payrollcolumns'))[0].nextOrder);
+  const { comps, cols } = await nameMaps();
+  const { formula } = tokenizeFormula(calculation_function, comps, cols);
   await exec(
     `INSERT INTO payrollcolumns (
       id, name, function_type, enabled, editable, colorder, default_value, payment_deduction,
-      salarycomponent_gl, posting_column, posting_branch, calculation_hook, deduction_group,
-      salary_components, calculation_columns, add_columns, sub_columns, calculation_function,
+      salarycomponent_gl, posting_column, posting_branch, calculation_function,
       calculation_rule, visible, include_in_net, payslip_label
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     nextId, name.trim(), function_type, enabled, editable,
     colorderVal,
     default_value?.trim() || null,
@@ -72,29 +198,16 @@ const createPayrollColumn = asyncHandler(async (req, res) => {
     salarycomponent_gl?.trim() || null,
     posting_column?.trim() || 'Yes',
     posting_branch?.trim() || null,
-    calculation_hook?.trim() || null,
-    deduction_group ? toBigInt(deduction_group) : null,
-    salary_components?.trim() || null,
-    calculation_columns?.trim() || null,
-    add_columns?.trim() || null,
-    sub_columns?.trim() || null,
-    calculation_function?.trim() || null,
+    formula?.trim() || null,
     calculation_rule ? parseInt(calculation_rule) : null,
     visible !== undefined && visible !== '' ? parseInt(visible) : 1,
     include_in_net !== undefined && include_in_net !== '' ? parseInt(include_in_net) : 1,
     payslip_label?.trim() || null
   );
-  const [created] = await query(`
-    SELECT id, name, COALESCE(function_type,'Simple') AS function_type,
-           COALESCE(enabled,'Yes') AS enabled, COALESCE(editable,'Yes') AS editable,
-           colorder, default_value, payment_deduction,
-           salarycomponent_gl, posting_column, posting_branch, calculation_hook,
-           deduction_group, salary_components, calculation_columns,
-           add_columns, sub_columns, calculation_function, calculation_rule,
-           COALESCE(visible, 1) AS visible, COALESCE(include_in_net, 1) AS include_in_net,
-           payslip_label
-    FROM payrollcolumns WHERE id = ?`, nextId);
-  respond.created(res, 'Payroll column created', created);
+  await syncColumnGroups(nextId, deduction_groups);
+  await syncColumnComponents(nextId, component_ids);
+  await syncColumnLinks(nextId, add_column_ids, sub_column_ids);
+  respond.created(res, 'Payroll column created', await buildColumnResponse(nextId));
 });
 
 // PUT /calculation/payroll-columns/:id — update all fields on a payroll column; blocks duplicate names.
@@ -103,8 +216,8 @@ const updatePayrollColumn = asyncHandler(async (req, res) => {
   if (!id) return respond.badReq(res, 'Invalid ID');
   const {
     name, function_type, enabled, editable, colorder, default_value, payment_deduction,
-    salarycomponent_gl, posting_column, posting_branch, calculation_hook, deduction_group,
-    salary_components, calculation_columns, add_columns, sub_columns, calculation_function,
+    salarycomponent_gl, posting_column, posting_branch, deduction_groups,
+    component_ids, add_column_ids, sub_column_ids, calculation_function,
     calculation_rule, visible, include_in_net, payslip_label,
   } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
@@ -115,11 +228,12 @@ const updatePayrollColumn = asyncHandler(async (req, res) => {
   const dup = await query('SELECT id FROM payrollcolumns WHERE UPPER(name) = UPPER(?) AND id <> ? LIMIT 1', name.trim(), id);
   if (dup.length) return respond.conflict(res, 'A column with this name already exists');
 
+  const { comps, cols } = await nameMaps();
+  const { formula } = tokenizeFormula(calculation_function, comps, cols);
   await exec(
     `UPDATE payrollcolumns SET
       name=?, function_type=?, enabled=?, editable=?, colorder=?, default_value=?, payment_deduction=?,
-      salarycomponent_gl=?, posting_column=?, posting_branch=?, calculation_hook=?, deduction_group=?,
-      salary_components=?, calculation_columns=?, add_columns=?, sub_columns=?, calculation_function=?,
+      salarycomponent_gl=?, posting_column=?, posting_branch=?, calculation_function=?,
       calculation_rule=?, visible=?, include_in_net=?, payslip_label=?
     WHERE id=?`,
     name.trim(), function_type || 'Simple', enabled || 'Yes', editable || 'Yes',
@@ -129,30 +243,17 @@ const updatePayrollColumn = asyncHandler(async (req, res) => {
     salarycomponent_gl?.trim() || null,
     posting_column?.trim() || 'Yes',
     posting_branch?.trim() || null,
-    calculation_hook?.trim() || null,
-    deduction_group ? toBigInt(deduction_group) : null,
-    salary_components?.trim() || null,
-    calculation_columns?.trim() || null,
-    add_columns?.trim() || null,
-    sub_columns?.trim() || null,
-    calculation_function?.trim() || null,
+    formula?.trim() || null,
     calculation_rule ? parseInt(calculation_rule) : null,
     visible !== undefined && visible !== '' ? parseInt(visible) : 1,
     include_in_net !== undefined && include_in_net !== '' ? parseInt(include_in_net) : 1,
     payslip_label?.trim() || null,
     id
   );
-  const [updated] = await query(`
-    SELECT id, name, COALESCE(function_type,'Simple') AS function_type,
-           COALESCE(enabled,'Yes') AS enabled, COALESCE(editable,'Yes') AS editable,
-           colorder, default_value, payment_deduction,
-           salarycomponent_gl, posting_column, posting_branch, calculation_hook,
-           deduction_group, salary_components, calculation_columns,
-           add_columns, sub_columns, calculation_function, calculation_rule,
-           COALESCE(visible, 1) AS visible, COALESCE(include_in_net, 1) AS include_in_net,
-           payslip_label
-    FROM payrollcolumns WHERE id = ?`, id);
-  respond.ok(res, 'Payroll column updated', updated);
+  await syncColumnGroups(id, deduction_groups);
+  await syncColumnComponents(id, component_ids);
+  await syncColumnLinks(id, add_column_ids, sub_column_ids);
+  respond.ok(res, 'Payroll column updated', await buildColumnResponse(id));
 });
 
 // DELETE /calculation/payroll-columns/:id — permanently delete a payroll column by ID.
@@ -163,6 +264,10 @@ const deletePayrollColumn = asyncHandler(async (req, res) => {
   const existing = await query('SELECT id FROM payrollcolumns WHERE id = ? LIMIT 1', id);
   if (!existing.length) return respond.notFound(res, 'Payroll column not found');
 
+  // Clean up junction rows where this column is the owner OR a referenced target.
+  await exec('DELETE FROM payrollcolumn_groups WHERE payrollcolumn_id = ?', id);
+  await exec('DELETE FROM payrollcolumn_components WHERE payrollcolumn_id = ?', id);
+  await exec('DELETE FROM payrollcolumn_links WHERE payrollcolumn_id = ? OR target_column_id = ?', id, id);
   await exec('DELETE FROM payrollcolumns WHERE id = ?', id);
   respond.ok(res, 'Payroll column deleted');
 });

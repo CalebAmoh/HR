@@ -29,6 +29,17 @@ function toInt(val) {
   return isNaN(n) ? null : n;
 }
 
+/** Read an app-control toggle from the settings table. Returns `defaultOn` when never saved. */
+async function readControlSetting(name, defaultOn) {
+  const [row] = await prisma.$queryRawUnsafe(
+    `SELECT value FROM settings WHERE name=? AND category='app_controls' LIMIT 1`, name
+  ).catch(() => []);
+  return row ? row.value === '1' : defaultOn;
+}
+
+/** Whether medical claims post to the GL / pay out. Off ⇒ record-only (skip all GL postings). */
+const medicalPaymentsEnabled = () => readControlSetting('medical_payments_enabled', true);
+
 // Build userId → display name map (joins users → employee for full name)
 async function userMap(ids) {
   const unique = [...new Set(ids.filter(Boolean).map(Number).filter(n => !isNaN(n) && n > 0))];
@@ -1116,8 +1127,8 @@ exports.approveHospitalClaim = asyncHandler(async (req, res) => {
     notifyUser(claim.posted_by, { message: 'Your hospital medical claim was approved', action: 'AdminMedical', type: 'medical', fromUser: req.user?.id });
   }
 
-  // GL posting (non-blocking — approval already committed above)
-  if (claim && glCfg.url()) {
+  // GL posting (non-blocking — approval already committed above). Skipped in record-only mode.
+  if (claim && (await medicalPaymentsEnabled()) && glCfg.url()) {
     try {
       const glRows = await prisma.$queryRawUnsafe(
         `SELECT name, value FROM settings WHERE category = ?`, GL_CAT
@@ -1259,7 +1270,7 @@ exports.approveStaffMedical = asyncHandler(async (req, res) => {
     userId, id
   );
   let glPayload = null;
-  if (glCfg.url()) {
+  if ((await medicalPaymentsEnabled()) && glCfg.url()) {
     try {
       const gl  = await loadGLSettings();
       const [emp] = await prisma.$queryRawUnsafe(
@@ -1325,7 +1336,7 @@ exports.finalizeStaffMedical = asyncHandler(async (req, res) => {
     userId, id
   );
   let glPayload = null;
-  if (glCfg.url()) {
+  if ((await medicalPaymentsEnabled()) && glCfg.url()) {
     try {
       const gl  = await loadGLSettings();
       const [emp] = await prisma.$queryRawUnsafe(
@@ -1394,7 +1405,7 @@ exports.approveDependentMedical = asyncHandler(async (req, res) => {
     userId, id
   );
   let glPayload = null;
-  if (glCfg.url()) {
+  if ((await medicalPaymentsEnabled()) && glCfg.url()) {
     try {
       const gl  = await loadGLSettings();
       const [emp] = await prisma.$queryRawUnsafe(
@@ -1460,7 +1471,7 @@ exports.finalizeDependentMedical = asyncHandler(async (req, res) => {
     userId, id
   );
   let glPayload = null;
-  if (glCfg.url()) {
+  if ((await medicalPaymentsEnabled()) && glCfg.url()) {
     try {
       const gl  = await loadGLSettings();
       const [emp] = await prisma.$queryRawUnsafe(
@@ -1536,6 +1547,7 @@ exports.retryStaffMedicalGL = asyncHandler(async (req, res) => {
   if (!rec) return respond.notFound(res, 'Record not found');
   if (rec.status !== 'GL Failed') return respond.badReq(res, 'Only GL Failed records can retry posting');
   if (rec.document_ref) return respond.badReq(res, 'GL already posted for this record');
+  if (!(await medicalPaymentsEnabled())) return respond.badReq(res, 'Medical GL posting is disabled in settings');
   if (!glCfg.url()) return respond.badReq(res, 'POSTING_API_URL not configured');
   try {
     const result = await retryMedicalGL('staffmedical', id, req);
@@ -1564,6 +1576,7 @@ exports.retryDependentMedicalGL = asyncHandler(async (req, res) => {
   if (!rec) return respond.notFound(res, 'Record not found');
   if (rec.status !== 'GL Failed') return respond.badReq(res, 'Only GL Failed records can retry posting');
   if (rec.document_ref) return respond.badReq(res, 'GL already posted for this record');
+  if (!(await medicalPaymentsEnabled())) return respond.badReq(res, 'Medical GL posting is disabled in settings');
   if (!glCfg.url()) return respond.badReq(res, 'POSTING_API_URL not configured');
   try {
     const result = await retryMedicalGL('dependentmedical', id, req);
@@ -1598,6 +1611,7 @@ exports.retryHospitalClaimGL = asyncHandler(async (req, res) => {
   if (!claim) return respond.notFound(res, 'Claim not found');
   if (claim.status !== 'GL Failed') return respond.badReq(res, 'Only GL Failed claims can retry posting');
   if (claim.document_ref) return respond.badReq(res, 'GL already posted for this claim');
+  if (!(await medicalPaymentsEnabled())) return respond.badReq(res, 'Medical GL posting is disabled in settings');
   if (!glCfg.url()) return respond.badReq(res, 'POSTING_API_URL not configured');
 
   try {

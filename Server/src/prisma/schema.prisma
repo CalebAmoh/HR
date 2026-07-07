@@ -1091,6 +1091,8 @@ model employees {
   posting_date             DateTime? @db.Date
 }
 
+// Per-employee salary component EXCEPTIONS (overrides/excludes/adds) on top of the components an
+// employee inherits from their paygrade/notch. excluded=true removes an inherited component.
 model employeesalary {
   id              BigInt                        @id @default(autoincrement())
   employee        BigInt
@@ -1103,6 +1105,31 @@ model employeesalary {
   original_amount Decimal?                      @db.Decimal(50, 0)
   annual_rent     Decimal?                      @default(0.00) @db.Decimal(60, 2)
   ann_date        DateTime?                     @db.Date
+  excluded        Boolean                       @default(false)
+}
+
+// Salary components assigned to a paygrade — every employee on that paygrade inherits them.
+model paygrade_components {
+  id           BigInt   @id @default(autoincrement())
+  paygrade_id  BigInt
+  component_id BigInt
+  amount       Decimal? @db.Decimal(30, 2)
+  working_days Int?
+
+  @@unique([paygrade_id, component_id], map: "uq_pgc_grade_comp")
+  @@index([component_id], map: "idx_pgc_component")
+}
+
+// Salary components assigned to a notch — employees on that notch inherit them (override paygrade).
+model notch_components {
+  id           BigInt   @id @default(autoincrement())
+  notch_id     BigInt
+  component_id BigInt
+  amount       Decimal? @db.Decimal(30, 2)
+  working_days Int?
+
+  @@unique([notch_id, component_id], map: "uq_ntc_notch_comp")
+  @@index([component_id], map: "idx_ntc_component")
 }
 
 /// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
@@ -1533,11 +1560,11 @@ model nationality {
 }
 
 model notches {
-  id       BigInt   @id @default(autoincrement())
-  name     String   @unique(map: "name") @db.VarChar(50)
-  paygrade String   @db.VarChar(50)
-  currency String?  @db.VarChar(10)
-  amount   Decimal? @default(0.00) @db.Decimal(20, 2)
+  id         BigInt   @id @default(autoincrement())
+  name       String   @unique(map: "name") @db.VarChar(50)
+  paygradeId BigInt?
+  currency   String?  @db.VarChar(10)
+  amount     Decimal? @default(0.00) @db.Decimal(20, 2)
 }
 
 /// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
@@ -1621,24 +1648,49 @@ model payrollcolumns {
   posting_column       String?                       @db.VarChar(10)
   payment_deduction    String?                       @db.VarChar(20)
   posting_branch       String?                       @db.VarChar(20)
-  calculation_hook     String?                       @db.VarChar(200)
-  salary_components    String?                       @db.VarChar(500)
-  deductions           String?                       @db.VarChar(500)
-  add_columns          String?                       @db.VarChar(500)
-  sub_columns          String?                       @db.VarChar(500)
   colorder             Int?
   editable             payrollcolumns_editable?      @default(Yes)
   enabled              payrollcolumns_enabled?       @default(Yes)
   default_value        String?                       @db.VarChar(25)
-  calculation_columns  String?                       @db.VarChar(500)
   calculation_function String?                       @db.Text
-  deduction_group      BigInt?
   function_type        payrollcolumns_function_type? @default(Simple)
-  pay_frequency        Int?
   calculation_rule     Int?
   visible              Boolean                       @default(true)
   include_in_net       Boolean                       @default(true)
   payslip_label        String?                       @db.VarChar(100)
+}
+
+// A payroll column's linked salary components (replaces the old salary_components CSV-of-names).
+model payrollcolumn_components {
+  id               BigInt @id @default(autoincrement())
+  payrollcolumn_id Int
+  component_id     BigInt
+
+  @@unique([payrollcolumn_id, component_id], map: "uq_pcc_col_comp")
+  @@index([component_id], map: "idx_pcc_component")
+}
+
+// A payroll column's add/subtract references to other columns (replaces add_columns + sub_columns
+// CSV-of-names). `operation` is 'add' or 'subtract'.
+model payrollcolumn_links {
+  id               BigInt @id @default(autoincrement())
+  payrollcolumn_id Int
+  target_column_id Int
+  operation        String @db.VarChar(10)
+
+  @@unique([payrollcolumn_id, target_column_id, operation], map: "uq_pcl_col_target_op")
+  @@index([target_column_id], map: "idx_pcl_target")
+}
+
+// Junction table: a payroll column can be scoped to many calculation groups (many-to-many).
+// Replaces the old single payrollcolumns.deduction_group BigInt. Empty = column is universal.
+model payrollcolumn_groups {
+  id               BigInt @id @default(autoincrement())
+  payrollcolumn_id Int
+  group_id         BigInt
+
+  @@unique([payrollcolumn_id, group_id], map: "uq_pcg_col_group")
+  @@index([group_id], map: "idx_pcg_group")
 }
 
 model payrollcolumntemplates {
@@ -2804,6 +2856,7 @@ model CodeListValue {
   codeList    CodeList @relation(fields: [codeListId], references: [id])
 
   @@unique([codeListId, code])
+  @@unique([codeListId, label])
   @@map("codelistvalue")
 }
 
@@ -3675,6 +3728,8 @@ model performance_goal {
   hr_score               Decimal? @db.Decimal(5, 2)
   source                 String   @default("hr") @db.VarChar(20)
   comment                String?  @db.Text
+  supervisor_comment     String?  @db.Text
+  hr_comment             String?  @db.Text
   document_ref           String?  @db.VarChar(150)
   created_at             DateTime? @default(now()) @db.DateTime(0)
   updated_at             DateTime? @default(now()) @db.DateTime(0)
@@ -3756,4 +3811,52 @@ model trainingnomination {
   completed_at        DateTime?
   created_at          DateTime  @default(now())
   updated_at          DateTime  @default(now()) @updatedAt
+}
+
+// ── AI Assistant ───────────────────────────────────────────────────────────────
+// Vector index for offline RAG. content + its embedding (JSON array) and where it came
+// from (help article or a document). Cosine similarity is computed in Node.
+model ai_embeddings {
+  id          BigInt   @id @default(autoincrement())
+  source_type String   @db.VarChar(20)   // 'help' | 'document'
+  source_id   String   @db.VarChar(120)  // article id / document id
+  chunk_index Int      @default(0)
+  title       String?  @db.VarChar(255)
+  content     String   @db.Text
+  embedding   String   @db.LongText       // JSON-encoded number[]
+  updated_at  DateTime @default(now()) @updatedAt
+
+  @@index([source_type], map: "idx_ai_emb_source")
+}
+
+// Per-user assistant chat history.
+model ai_messages {
+  id         BigInt   @id @default(autoincrement())
+  user_id    BigInt
+  role       String   @db.VarChar(16)     // 'user' | 'assistant'
+  content    String   @db.Text
+  created_at DateTime @default(now()) @db.DateTime(0)
+
+  @@index([user_id], map: "idx_ai_msg_user")
+}
+
+// Cached attrition-risk scorecard results (recomputed on demand / nightly).
+model ai_attrition_scores {
+  id           BigInt   @id @default(autoincrement())
+  employee_id  BigInt   @unique(map: "uq_ai_attr_emp")
+  score        Int                          // 0–100
+  band         String   @db.VarChar(10)     // Low | Medium | High
+  factors      String   @db.Text            // JSON: top contributing factors
+  computed_at  DateTime @default(now()) @db.DateTime(0)
+}
+
+// Admin-managed free-form knowledge the assistant can feed on (in addition to the help file,
+// the knowledge/ folder, and company documents). Indexed into ai_embeddings on reindex.
+model ai_knowledge {
+  id         BigInt   @id @default(autoincrement())
+  title      String   @db.VarChar(255)
+  content    String   @db.LongText
+  enabled    Boolean  @default(true)
+  created_at DateTime @default(now()) @db.DateTime(0)
+  updated_at DateTime @default(now()) @updatedAt @db.DateTime(0)
 }

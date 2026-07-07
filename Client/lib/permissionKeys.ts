@@ -127,6 +127,10 @@ export const PERMISSIONS = {
   CREATE_TRAINING:           'create_training',
   DELETE_TRAINING:           'delete_training',
   APPROVE_TRAINING:          'approve_training',
+
+  // ── AI Assistant ───────────────────────────────────────────
+  USE_AI_ASSISTANT:          'use_ai_assistant',
+  VIEW_AI_INSIGHTS:          'view_ai_insights',
 } as const;
 
 export type PermissionKey = typeof PERMISSIONS[keyof typeof PERMISSIONS];
@@ -204,4 +208,7 @@ export const NAV_PERMISSIONS: Record<string, string[]> = {
   System:             ['view_app_settings'],
   Settings:           ['view_settings'],
   AuditLogs:          ['view_audit_logs'],
+
+  // AI
+  AiInsights:         ['view_ai_insights'],
 };

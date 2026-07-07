@@ -56,6 +56,8 @@ const PERMISSIONS = [
   'view_attendance', 'manage_attendance',
   // Training (admin)
   'view_training', 'create_training', 'delete_training', 'approve_training',
+  // AI Assistant
+  'use_ai_assistant', 'view_ai_insights',
 ];
 
 // ── Role definitions ──────────────────────────────────────────────────────────
@@ -94,6 +96,7 @@ const ROLES = [
       'view_medical', 'create_medical', 'edit_medical', 'delete_medical', 'approve_medical', 'manage_medical_limits', 'manage_hospitals', 'reset_medical_utilization',
       'view_attendance', 'manage_attendance',
       'view_training', 'create_training', 'delete_training', 'approve_training',
+      'use_ai_assistant', 'view_ai_insights',
     ],
   },
   {
@@ -133,6 +136,7 @@ const ROLES = [
       'view_medical', 'create_medical', 'edit_medical', 'delete_medical', 'approve_medical', 'manage_medical_limits', 'manage_hospitals', 'reset_medical_utilization',
       'view_attendance', 'manage_attendance',
       'view_training', 'create_training', 'delete_training', 'approve_training',
+      'use_ai_assistant', 'view_ai_insights',
     ],
   },
   {

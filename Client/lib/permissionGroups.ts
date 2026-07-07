@@ -99,6 +99,11 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     color: { active: '#d97706', light: '#fffbeb', text: '#92400e', border: '#fcd34d' },
     perms: ['view_training', 'create_training', 'delete_training', 'approve_training'],
   },
+  {
+    label: 'AI Assistant',
+    color: { active: '#7c3aed', light: '#f5f3ff', text: '#5b21b6', border: '#c4b5fd' },
+    perms: ['use_ai_assistant', 'view_ai_insights'],
+  },
 ];
 
 /** Human-readable label for a permission key (e.g. create_users → Create Users). */

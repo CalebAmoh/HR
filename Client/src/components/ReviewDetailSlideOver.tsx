@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { DocPreviewModal } from './ui/DocPreviewModal';
 import { CountedTextarea } from './ui/CountedTextarea';
 import { ConfirmModal } from './ui/ConfirmModal';
+import { DraftWithAI } from './ai/DraftWithAI';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -208,7 +209,7 @@ function CompetencyCard({ n, selfRating, supRating, hrRating, selfComment, supCo
               {/* Comment — editable for active rater, read-only if they left one */}
               {active ? (
                 <CountedTextarea
-                  className="border border-[var(--border)] rounded-[7px] px-3 py-1.5 text-[12px] bg-white resize-none w-full focus:outline-none focus:border-[var(--accent)]"
+                  className="border border-[var(--border)] rounded-[7px] px-3 py-1.5 text-[12px] bg-white resize-y w-full focus:outline-none focus:border-[var(--accent)]"
                   rows={2}
                   maxChars={500}
                   placeholder="Add a comment on this competency…"
@@ -270,7 +271,7 @@ function ScoreDisplay({ val, maxPts, canEdit, setter }: { val: string; maxPts: n
   );
 }
 
-const ta = 'border border-[var(--border)] rounded-[8px] px-3 py-2 text-[13px] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] w-full resize-none';
+const ta = 'border border-[var(--border)] rounded-[8px] px-3 py-2 text-[13px] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] w-full resize-y min-h-[64px]';
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
@@ -296,6 +297,8 @@ export function ReviewDetailSlideOver({ reviewId, mode, onClose, readOnly = fals
   const [goalHrScores,      setGoalHrScores]      = useState<Record<string, string>>({});
   const [goalActualResults, setGoalActualResults] = useState<Record<string, string>>({});
   const [goalComments,      setGoalComments]      = useState<Record<string, string>>({});
+  const [goalSupComments,   setGoalSupComments]   = useState<Record<string, string>>({});
+  const [goalHrComments,    setGoalHrComments]    = useState<Record<string, string>>({});
   const [goalDocRefs,       setGoalDocRefs]       = useState<Record<string, string>>({});
   const [goalDocUploading,  setGoalDocUploading]  = useState<Record<string, boolean>>({});
 
@@ -368,13 +371,17 @@ export function ReviewDetailSlideOver({ reviewId, mode, onClose, readOnly = fals
       const ghs: Record<string, string> = {};
       const gar: Record<string, string> = {};
       const gc:  Record<string, string> = {};
+      const gsc: Record<string, string> = {};
+      const ghc: Record<string, string> = {};
       const gd:  Record<string, string> = {};
       (rev.goals ?? []).forEach((g: any) => {
         ges[String(g.id)] = g.employee_score   != null ? String(safeScore(g.employee_score))   : '';
         gss[String(g.id)] = g.supervisor_score != null ? String(safeScore(g.supervisor_score)) : '';
         ghs[String(g.id)] = g.hr_score         != null ? String(safeScore(g.hr_score))         : '';
         gar[String(g.id)] = g.actual_result    ?? '';
-        gc[String(g.id)]  = g.comment          ?? '';
+        gc[String(g.id)]  = g.comment            ?? '';
+        gsc[String(g.id)] = g.supervisor_comment ?? '';
+        ghc[String(g.id)] = g.hr_comment         ?? '';
         gd[String(g.id)]  = g.document_ref     ?? '';
       });
       setGoalEmpScores(ges);
@@ -382,6 +389,8 @@ export function ReviewDetailSlideOver({ reviewId, mode, onClose, readOnly = fals
       setGoalHrScores(ghs);
       setGoalActualResults(gar);
       setGoalComments(gc);
+      setGoalSupComments(gsc);
+      setGoalHrComments(ghc);
       setGoalDocRefs(gd);
 
       // Pre-fill competency ratings
@@ -419,12 +428,16 @@ export function ReviewDetailSlideOver({ reviewId, mode, onClose, readOnly = fals
       const hs  = hrScores[goalId];
       const ar  = goalActualResults[goalId] ?? '';
       const cmt = goalComments[goalId] ?? '';
+      const scmt = goalSupComments[goalId] ?? '';
+      const hcmt = goalHrComments[goalId] ?? '';
       const payload: any = {};
       if (es  !== undefined) payload.employee_score   = es  !== '' ? parseFloat(es)  : null;
       if (ss  !== undefined) payload.supervisor_score = ss  !== '' ? parseFloat(ss)  : null;
       if (hs  !== undefined) payload.hr_score         = hs  !== '' ? parseFloat(hs)  : null;
       if (ar  !== undefined) payload.actual_result    = ar  || null;
       if (cmt !== undefined) payload.comment          = cmt || null;
+      payload.supervisor_comment = scmt || null;
+      payload.hr_comment         = hcmt || null;
       if (Object.keys(payload).length) {
         await api.put(`/performance/goals/${goalId}`, payload)
           .catch((err: any) => toast.error(err?.response?.data?.message ?? `Failed to save goal score`));
@@ -650,7 +663,6 @@ export function ReviewDetailSlideOver({ reviewId, mode, onClose, readOnly = fals
                         const empScore   = goalEmpScores[gId]     ?? '';
                         const supScore   = goalSupScores[gId]     ?? '';
                         const hrScore    = goalHrScores[gId]      ?? '';
-                        const actualResult = goalActualResults[gId] ?? '';
                         const maxPts     = g.weight ?? 100;
 
                         return (
@@ -752,21 +764,21 @@ export function ReviewDetailSlideOver({ reviewId, mode, onClose, readOnly = fals
                                   </div>
                                 </div>
 
-                                {/* Actual Result */}
+                                {/* Your Comment */}
                                 <div className="flex flex-col gap-1">
-                                  <span className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">Actual Result</span>
+                                  <span className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">Your Comment</span>
                                   {canEmpEdit ? (
                                     <CountedTextarea
-                                      className="border border-[var(--border)] rounded-[7px] px-3 py-2 text-[12.5px] bg-[var(--surface)] resize-none w-full focus:outline-none focus:border-[var(--accent)]"
-                                      rows={2} maxChars={500}
-                                      placeholder="What did you actually achieve?"
-                                      value={actualResult}
-                                      onChange={e => setGoalActualResults(prev => ({ ...prev, [gId]: e.target.value }))}
+                                      className="border border-[var(--border)] rounded-[7px] px-3 py-2 text-[12.5px] bg-[var(--surface)] resize-y w-full focus:outline-none focus:border-[var(--accent)]"
+                                      rows={2} maxChars={300}
+                                      placeholder="Add your comment on this goal…"
+                                      value={goalComments[gId] ?? ''}
+                                      onChange={e => setGoalComments(prev => ({ ...prev, [gId]: e.target.value }))}
                                     />
-                                  ) : actualResult ? (
-                                    <p className="text-[12.5px] text-[var(--text-primary)]">{actualResult}</p>
+                                  ) : goalComments[gId] ? (
+                                    <p className="text-[12.5px] text-[var(--text-primary)]">{goalComments[gId]}</p>
                                   ) : (
-                                    <p className="text-[12px] text-[var(--text-muted)] italic">Not recorded</p>
+                                    <p className="text-[12px] text-[var(--text-muted)] italic">No comment</p>
                                   )}
                                 </div>
                               </div>
@@ -780,6 +792,26 @@ export function ReviewDetailSlideOver({ reviewId, mode, onClose, readOnly = fals
                                 </div>
                               )}
 
+                              {/* Supervisor comment */}
+                              {(mode === 'supervisor' || mode === 'hr') && (
+                                <div className="flex flex-col gap-1">
+                                  <span className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">Supervisor Comment</span>
+                                  {canSupEdit ? (
+                                    <CountedTextarea
+                                      className="border border-[var(--border)] rounded-[7px] px-3 py-2 text-[12.5px] bg-[var(--surface)] resize-y w-full focus:outline-none focus:border-[var(--accent)]"
+                                      rows={2} maxChars={300}
+                                      placeholder="Add your comment on this goal…"
+                                      value={goalSupComments[gId] ?? ''}
+                                      onChange={e => setGoalSupComments(prev => ({ ...prev, [gId]: e.target.value }))}
+                                    />
+                                  ) : goalSupComments[gId] ? (
+                                    <p className="text-[12.5px] text-[var(--text-primary)]">{goalSupComments[gId]}</p>
+                                  ) : (
+                                    <p className="text-[12px] text-[var(--text-muted)] italic">No comment</p>
+                                  )}
+                                </div>
+                              )}
+
                               {/* HR score row */}
                               {mode === 'hr' && (
                                 <div className="flex flex-col gap-1 pt-2 border-t border-[var(--border)]">
@@ -789,23 +821,26 @@ export function ReviewDetailSlideOver({ reviewId, mode, onClose, readOnly = fals
                                 </div>
                               )}
 
-                              {/* Comment */}
-                              <div className="flex flex-col gap-1">
-                                <span className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">Comment</span>
-                                {canEmpEdit ? (
-                                  <CountedTextarea
-                                    className="border border-[var(--border)] rounded-[7px] px-3 py-2 text-[12.5px] bg-[var(--surface)] resize-none w-full focus:outline-none focus:border-[var(--accent)]"
-                                    rows={2} maxChars={300}
-                                    placeholder="Add your comment on this goal…"
-                                    value={goalComments[gId] ?? ''}
-                                    onChange={e => setGoalComments(prev => ({ ...prev, [gId]: e.target.value }))}
-                                  />
-                                ) : goalComments[gId] ? (
-                                  <p className="text-[12.5px] text-[var(--text-primary)]">{goalComments[gId]}</p>
-                                ) : (
-                                  <p className="text-[12px] text-[var(--text-muted)] italic">No comment</p>
-                                )}
-                              </div>
+                              {/* HR comment */}
+                              {mode === 'hr' && (
+                                <div className="flex flex-col gap-1">
+                                  <span className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">HR Comment</span>
+                                  {canHrEdit ? (
+                                    <CountedTextarea
+                                      className="border border-[var(--border)] rounded-[7px] px-3 py-2 text-[12.5px] bg-[var(--surface)] resize-y w-full focus:outline-none focus:border-[var(--accent)]"
+                                      rows={2} maxChars={300}
+                                      placeholder="Add your comment on this goal…"
+                                      value={goalHrComments[gId] ?? ''}
+                                      onChange={e => setGoalHrComments(prev => ({ ...prev, [gId]: e.target.value }))}
+                                    />
+                                  ) : goalHrComments[gId] ? (
+                                    <p className="text-[12.5px] text-[var(--text-primary)]">{goalHrComments[gId]}</p>
+                                  ) : (
+                                    <p className="text-[12px] text-[var(--text-muted)] italic">No comment</p>
+                                  )}
+                                </div>
+                              )}
+
                             </div>
                           </div>
                         );
@@ -881,7 +916,17 @@ export function ReviewDetailSlideOver({ reviewId, mode, onClose, readOnly = fals
                   </div>
                 )}
                 <div>
-                  <label className="label">Supervisor Comments</label>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="label">Supervisor Comments</label>
+                    {mode === 'supervisor' && statusIdx === 1 && (
+                      <DraftWithAI
+                        kind="review_feedback"
+                        maxChars={1000}
+                        getContext={() => `Performance review feedback for ${review?.employee?.name ?? 'the employee'}${calcSupScore ? `, overall score ${calcSupScore}/5` : ''}. Strengths: ${strengths || 'not specified'}. Areas for improvement: ${improvements || 'not specified'}.`}
+                        onText={setSupComments}
+                      />
+                    )}
+                  </div>
                   <CountedTextarea className={ta} rows={3} value={supComments}
                     readOnly={mode !== 'supervisor' || statusIdx !== 1}
                     onChange={e => setSupComments(e.target.value)}
@@ -939,7 +984,17 @@ export function ReviewDetailSlideOver({ reviewId, mode, onClose, readOnly = fals
                   </div>
                 )}
                 <div>
-                  <label className="label">HR Comments</label>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="label">HR Comments</label>
+                    {mode === 'hr' && statusIdx === 2 && !readOnly && (
+                      <DraftWithAI
+                        kind="review_feedback"
+                        maxChars={1000}
+                        getContext={() => `HR final review comments for ${review?.employee?.name ?? 'the employee'}${calcHrScore ? `, overall score ${calcHrScore}/5` : ''}. Supervisor notes: ${supComments || 'none'}. Strengths: ${strengths || 'none'}. Areas for improvement: ${improvements || 'none'}.`}
+                        onText={setHrComments}
+                      />
+                    )}
+                  </div>
                   <CountedTextarea className={ta} rows={2} value={hrComments}
                     readOnly={readOnly || mode !== 'hr' || statusIdx < 2 || statusIdx === 4}
                     onChange={e => setHrComments(e.target.value)}
@@ -960,7 +1015,17 @@ export function ReviewDetailSlideOver({ reviewId, mode, onClose, readOnly = fals
                   );
                 })()}
                 <div>
-                  <label className="label">Development Plan</label>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="label">Development Plan</label>
+                    {mode === 'hr' && statusIdx === 2 && !readOnly && (
+                      <DraftWithAI
+                        kind="development_plan"
+                        maxChars={2000}
+                        getContext={() => `Development plan for ${review?.employee?.name ?? 'the employee'}. Strengths: ${strengths || 'none'}. Areas for improvement: ${improvements || 'none'}. HR comments: ${hrComments || 'none'}.`}
+                        onText={setDevelopmentPlan}
+                      />
+                    )}
+                  </div>
                   <CountedTextarea className={ta} rows={3} value={developmentPlan}
                     readOnly={readOnly || mode !== 'hr' || statusIdx < 2 || statusIdx === 4}
                     onChange={e => setDevelopmentPlan(e.target.value)}

@@ -8,6 +8,7 @@ import { Organogram } from './Organogram';
 import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
+import { FilterSelect } from './ui/FilterSelect';
 import { RowActions } from './ui/RowActions';
 import api from '../../lib/api';
 import { useCan } from '@/hooks/useCan';
@@ -126,10 +127,13 @@ export function Company() {
     <>
       <div className="flex items-center gap-2">
         <label className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wide syne">Type:</label>
-        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="w-[160px] py-1 text-xs">
-          <option value="">All Types</option>
-          {typeOptions.map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
+        <FilterSelect
+          value={typeFilter}
+          onChange={setTypeFilter}
+          options={[{ value: '', label: 'All Types' }, ...typeOptions.map(t => ({ value: t, label: t }))]}
+          placeholder="All Types"
+          minWidth={160}
+        />
       </div>
       {typeFilter && (
         <button onClick={() => setTypeFilter('')} className="text-[12px] font-bold text-[var(--accent)] hover:text-blue-800 flex items-center gap-1">

@@ -222,8 +222,8 @@ export function System() {
     setLogoPreview(URL.createObjectURL(file));   // instant local preview
     try {
       const res = await api.post('/employees/documents/upload', fd, { headers: { 'Content-Type': undefined } });
-      const hash = res.data?.data?.hash ?? res.data?.hash;
-      if (hash) setSetupForm(f => ({ ...f, logoName: hash }));
+      const filename = res.data?.data?.filename ?? res.data?.filename;
+      if (filename) setSetupForm(f => ({ ...f, logoName: filename }));
       else toast.error('Upload succeeded but no file reference returned');
     } catch { toast.error('Logo upload failed'); }
     finally { setLogoUploading(false); }

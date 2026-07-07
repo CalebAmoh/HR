@@ -19,6 +19,115 @@ async function exec(sql, ...params) {
   return prisma.$executeRawUnsafe(sql, ...params);
 }
 
+/** Read an app-control toggle from the settings table. Returns `defaultOn` when never saved. */
+async function readControlSetting(name, defaultOn) {
+  const [row] = await query(
+    `SELECT value FROM settings WHERE name=? AND category='app_controls' LIMIT 1`, name
+  ).catch(() => []);
+  return row ? row.value === '1' : defaultOn;
+}
+
+/** Attach `groupIds` (array of calculation-group id strings) to each payroll column from the
+ *  payrollcolumn_groups junction table. Empty array = the column is universal (runs for everyone). */
+async function attachColumnGroups(cols) {
+  if (!cols.length) return cols;
+  const rows = await query('SELECT payrollcolumn_id, group_id FROM payrollcolumn_groups');
+  const map = {};
+  for (const r of rows) (map[String(r.payrollcolumn_id)] ??= []).push(String(r.group_id));
+  for (const c of cols) c.groupIds = map[String(c.id)] ?? [];
+  return cols;
+}
+
+/** Attach `componentNames` (linked salary component names) and `links` ([{target_column_id,operation}])
+ *  to each payroll column from the junction tables, and return `compNameById` (id→name) for resolving
+ *  {comp:id} tokens in formulas. Replaces the old salary_components / add_columns / sub_columns CSVs. */
+async function attachColumnRefs(cols) {
+  const compNameById = new Map((await query('SELECT id, name FROM salarycomponent')).map(c => [String(c.id), c.name]));
+  if (!cols.length) return { compNameById };
+  const compRows = await query('SELECT payrollcolumn_id, component_id FROM payrollcolumn_components');
+  const linkRows = await query('SELECT payrollcolumn_id, target_column_id, operation FROM payrollcolumn_links');
+  const compMap = {}; for (const r of compRows) (compMap[String(r.payrollcolumn_id)] ??= []).push(String(r.component_id));
+  const linkMap = {}; for (const r of linkRows) (linkMap[String(r.payrollcolumn_id)] ??= []).push({ target_column_id: Number(r.target_column_id), operation: r.operation });
+  for (const c of cols) {
+    c.componentNames = (compMap[String(c.id)] || []).map(cid => compNameById.get(cid)).filter(Boolean);
+    c.links = linkMap[String(c.id)] || [];
+  }
+  return { compNameById };
+}
+
+/**
+ * Build each employee's salary map (`salaryByEmp[eid][COMPONENT_NAME_UPPER] = amount`) by resolving,
+ * in order (later overrides earlier):
+ *   1. paygrade components (employee.paygradeId → paygrade_components)
+ *   2. notch components    (employee.notcheId  → notch_components, override paygrade on same component)
+ *   3. per-employee exceptions (employeesalary): excluded → remove; else override/add
+ *   4. notch base salary injection: notch name alias + the is_notch_linked component (Basic Salary)
+ *      when not already set and not excluded.
+ * Null/blank amounts are skipped so calcColumn's default_value can still fire (matches old behaviour).
+ * Component NAMES (uppercased) stay the keys, so calcColumn is unchanged.
+ */
+async function buildSalaryByEmp(empIdBigs) {
+  const salaryByEmp = {};
+  const [notchLinkedComp] = await query(`SELECT name FROM salarycomponent WHERE is_notch_linked = 1 LIMIT 1`);
+  const notchCompKey = notchLinkedComp?.name?.toUpperCase() || null;
+  if (!empIdBigs.length) return { salaryByEmp, notchLinkedComp, notchWarning: null, salaryRowsFound: 0, notchRowsFound: 0 };
+
+  const ph = empIdBigs.map(() => '?').join(',');
+  const compNameById = new Map((await query('SELECT id, name FROM salarycomponent')).map(c => [String(c.id), c.name]));
+  const emps = await query(`SELECT id, paygradeId, notcheId FROM employee WHERE id IN (${ph})`, ...empIdBigs);
+
+  const pgIds = [...new Set(emps.map(e => e.paygradeId).filter(v => v != null).map(String))];
+  const ntIds = [...new Set(emps.map(e => e.notcheId).filter(v => v != null).map(String))];
+  const pgComps = pgIds.length ? await query(`SELECT paygrade_id, component_id, CAST(amount AS CHAR) amount FROM paygrade_components WHERE paygrade_id IN (${pgIds.map(() => '?').join(',')})`, ...pgIds.map(BigInt)) : [];
+  const ntComps = ntIds.length ? await query(`SELECT notch_id, component_id, CAST(amount AS CHAR) amount FROM notch_components WHERE notch_id IN (${ntIds.map(() => '?').join(',')})`, ...ntIds.map(BigInt)) : [];
+  const exceptions = await query(`SELECT employee, component, CAST(amount AS CHAR) amount, excluded FROM employeesalary WHERE employee IN (${ph})`, ...empIdBigs);
+  const notchRows = await query(`SELECT e.id AS employee, CAST(n.amount AS CHAR) amount, n.name AS notch_name FROM employee e JOIN notches n ON n.id = e.notcheId WHERE e.id IN (${ph})`, ...empIdBigs);
+
+  const byKey = (rows, k) => { const m = {}; for (const r of rows) (m[String(r[k])] ??= []).push(r); return m; };
+  const pgByGrade = byKey(pgComps, 'paygrade_id');
+  const ntByNotch = byKey(ntComps, 'notch_id');
+  const excByEmp  = byKey(exceptions, 'employee');
+  const notchByEmp = {}; for (const r of notchRows) notchByEmp[String(Number(r.employee))] = r;
+
+  const hasAmt = v => !(v === null || v === undefined || v === '');
+  let sourceCount = 0;
+  for (const emp of emps) {
+    const eid = String(Number(emp.id));
+    const map = {};
+    const excludedKeys = new Set();
+    const put = (compId, amount) => {
+      const nm = compNameById.get(String(compId));
+      if (!nm || !hasAmt(amount)) return;
+      map[nm.toUpperCase()] = parseFloat(amount) || 0;
+      sourceCount++;
+    };
+    // 1. paygrade   2. notch (override)
+    (pgByGrade[String(emp.paygradeId)] || []).forEach(r => put(r.component_id, r.amount));
+    (ntByNotch[String(emp.notcheId)]   || []).forEach(r => put(r.component_id, r.amount));
+    // 3. exceptions
+    (excByEmp[eid] || []).forEach(r => {
+      const nm = compNameById.get(String(r.component));
+      if (!nm) return;
+      const key = nm.toUpperCase();
+      if (r.excluded === 1 || r.excluded === true) { delete map[key]; excludedKeys.add(key); }
+      else if (hasAmt(r.amount)) { map[key] = parseFloat(r.amount) || 0; sourceCount++; }
+    });
+    // 4. notch base salary injection
+    const nb = notchByEmp[eid];
+    if (nb) {
+      const amt = parseFloat(nb.amount) || 0;
+      map[String(nb.notch_name).toUpperCase()] = amt;
+      if (notchCompKey && !(notchCompKey in map) && !excludedKeys.has(notchCompKey)) map[notchCompKey] = amt;
+    }
+    salaryByEmp[eid] = map;
+  }
+
+  const notchWarning = notchRows.length > 0 && !notchLinkedComp
+    ? 'No grade-scale component is linked. Employees on the grade scale may have incorrect values. Go to Payroll Management → Components to link one.'
+    : null;
+  return { salaryByEmp, notchLinkedComp, notchWarning, salaryRowsFound: sourceCount, notchRowsFound: notchRows.length };
+}
+
 // ── Formula evaluator ─────────────────────────────────────────────────────────
 function safeEval(formula, vars = {}) {
   let expr = String(formula || '0');
@@ -49,52 +158,61 @@ function matchesBracket(item, amount) {
   return lowerOk && upperOk;
 }
 
+/** Round a value UP to 2 decimal places. The small epsilon absorbs floating-point noise so a value
+ *  that is already exact to the cent (e.g. 12.35) is not pushed up to 12.36. */
+function ceilTo2(n) {
+  return Math.ceil(n * 100 - 1e-6) / 100;
+}
+
 // ── Calculation engine ────────────────────────────────────────────────────────
-function calcColumn(col, salaryMap, allCols, savedCalcs, empId, exemptions, cache = {}) {
+function calcColumn(col, salaryMap, allCols, savedCalcs, empId, exemptions, cache = {}, ctx = {}) {
   if (cache[col.id] !== undefined) return cache[col.id];
 
   // Guard against circular references: mark this column as in-progress (0)
   // so any recursive call back to this column returns 0 instead of infinitely recursing
   cache[col.id] = 0;
 
+  // A column tied to salary component(s) only applies to employees who actually have at least one of
+  // those components. If the employee has none of them, the whole column is 0 for them — its default
+  // value, formula, add/subtract columns and calculation rule are all skipped. A column with NO
+  // linked components stays universal (its calculation/default applies to everyone).
+  // componentNames is attached per-run from the payrollcolumn_components junction.
+  const compNames = col.componentNames || [];
+  if (compNames.length > 0 && !compNames.some(name => salaryMap[String(name).toUpperCase()] !== undefined)) {
+    cache[col.id] = 0;
+    return 0;
+  }
+
   // 1. Sum linked salary components; fall back to default_value if sum is 0
-  const compNames = (col.salary_components || '').split(',').map(s => s.trim()).filter(Boolean);
   const defaultVal = parseFloat(col.default_value || '0') || 0;
-  let result = compNames.reduce((sum, name) => sum + (parseFloat(salaryMap[name.toUpperCase()]) || 0), 0);
+  let result = compNames.reduce((sum, name) => sum + (parseFloat(salaryMap[String(name).toUpperCase()]) || 0), 0);
   if (result === 0 && defaultVal > 0) result = defaultVal;
 
-  // 2. Evaluate formula if present
+  // 2. Evaluate formula if present. The formula is stored in TOKEN form ({comp:id}/{col:id}); resolve
+  // each token directly to a value by id — no name matching at eval time (rename-proof). Column tokens
+  // use ONLY already-cached values (0 otherwise), preserving the colorder dependency rule.
   if (col.calculation_function && col.calculation_function.trim()) {
-    const vars = {};
-    // salary component values — always available
-    Object.entries(salaryMap).forEach(([k, v]) => { vars[k] = v; });
-    // Only use ALREADY-CACHED column values; never recursively compute here.
-    // Recursive on-demand computation caused cache poisoning: a column computed
-    // mid-formula-eval would see sibling columns' sentinel values (0) instead of
-    // their real values, storing a wrong result in the cache permanently.
-    // Columns that need a peer's value in their formula must come after it in colorder.
-    allCols.forEach(c => {
-      if (c.id !== col.id && cache[c.id] !== undefined) {
-        vars[c.name.toUpperCase()] = cache[c.id];
-        vars[c.name] = cache[c.id];
-      }
-    });
-    const formulaResult = safeEval(col.calculation_function, vars);
+    const expr = col.calculation_function
+      .replace(/\{comp:(\d+)\}/g, (_, id) => {
+        const nm = ctx.compNameById ? ctx.compNameById.get(String(id)) : undefined;
+        const v = nm ? salaryMap[String(nm).toUpperCase()] : undefined;
+        return `(${parseFloat(v) || 0})`;
+      })
+      .replace(/\{col:(\d+)\}/g, (_, id) => {
+        const v = cache[id];
+        return `(${v !== undefined && v !== null ? (Number(v) || 0) : 0})`;
+      });
+    const formulaResult = safeEval(expr, {});
     if (!isNaN(formulaResult)) result = formulaResult;
   }
 
-  // 3. Add columns
-  const addNames = (col.add_columns || '').split(',').map(s => s.trim()).filter(Boolean);
-  addNames.forEach(name => {
-    const found = allCols.find(c => c.name.toLowerCase() === name.toLowerCase());
-    if (found && found.id !== col.id) result += calcColumn(found, salaryMap, allCols, savedCalcs, empId, exemptions, cache);
-  });
-
-  // 4. Subtract columns
-  const subNames = (col.sub_columns || '').split(',').map(s => s.trim()).filter(Boolean);
-  subNames.forEach(name => {
-    const found = allCols.find(c => c.name.toLowerCase() === name.toLowerCase());
-    if (found && found.id !== col.id) result -= calcColumn(found, salaryMap, allCols, savedCalcs, empId, exemptions, cache);
+  // 3/4. Add / subtract linked columns (resolved by id from the payrollcolumn_links junction)
+  (col.links || []).forEach(link => {
+    const found = allCols.find(c => Number(c.id) === Number(link.target_column_id));
+    if (found && Number(found.id) !== Number(col.id)) {
+      const v = calcColumn(found, salaryMap, allCols, savedCalcs, empId, exemptions, cache, ctx);
+      result += link.operation === 'subtract' ? -v : v;
+    }
   });
 
   // 5. Apply calculation rule — only when explicitly linked via calculation_rule.
@@ -119,7 +237,7 @@ function calcColumn(col, salaryMap, allCols, savedCalcs, empId, exemptions, cach
         if (tgt && String(tgt.id) !== String(col.id)) {
           base = cache[tgt.id] !== undefined
             ? cache[tgt.id]
-            : calcColumn(tgt, salaryMap, allCols, savedCalcs, empId, exemptions, cache);
+            : calcColumn(tgt, salaryMap, allCols, savedCalcs, empId, exemptions, cache, ctx);
         }
       }
       const bracket = sc.items.find(item => matchesBracket(item, base));
@@ -135,7 +253,8 @@ function calcColumn(col, salaryMap, allCols, savedCalcs, empId, exemptions, cach
           if (cache[c.id] !== undefined) { bracketVars[c.name] = cache[c.id]; bracketVars[c.name.toUpperCase()] = cache[c.id]; }
         });
         const calcResult = safeEval(bracket.value, bracketVars);
-        if (!isNaN(calcResult)) result = parseFloat(calcResult.toFixed(2));
+        // Saved-calculation (bracket) results round UP to the nearest cent.
+        if (!isNaN(calcResult)) result = ceilTo2(calcResult);
       }
     });
   }
@@ -246,15 +365,18 @@ const generatePayroll = asyncHandler(async (req, res) => {
   );
 
   // Load all enabled columns — no pay_frequency filter; columns are not per-frequency.
-  // deduction_group on a column means "only run for employees in this group"; NULL = universal.
+  // A column's calculation groups (payrollcolumn_groups) mean "only run for employees in those
+  // groups"; no groups = universal.
   const allCols = await query(
-    `SELECT id, name, salary_components, add_columns, sub_columns, calculation_function,
-            payment_deduction, colorder, default_value, calculation_rule, deduction_group
+    `SELECT id, name, calculation_function,
+            payment_deduction, colorder, default_value, calculation_rule
      FROM payrollcolumns
      WHERE enabled='Yes'
      ORDER BY COALESCE(colorder, 99999), id`
   );
   if (!allCols.length) return respond.ok(res, 'No enabled payroll columns found', []);
+  await attachColumnGroups(allCols);
+  const { compNameById } = await attachColumnRefs(allCols);
 
   // Load payroll employees
   let empQuery = `SELECT pe.id, pe.employee, pe.deduction_group, pe.deduction_exemptions FROM payrollemployees pe WHERE pe.pay_frequency = ?`;
@@ -281,68 +403,8 @@ const generatePayroll = asyncHandler(async (req, res) => {
   const empIdNums = payrollEmps.map(e => String(Number(e.employee)));
   const empIdBigs = payrollEmps.map(e => BigInt(e.employee));
 
-  const salaryRows = empIdBigs.length
-    ? await query(`
-        SELECT es.employee, sc.name AS comp_name, CAST(es.amount AS CHAR) AS amount
-        FROM employeesalary es
-        JOIN salarycomponent sc ON sc.id = es.component
-        WHERE es.employee IN (${empIdBigs.map(() => '?').join(',')})
-      `, ...empIdBigs)
-    : [];
-
-  // Load notch (basic salary grade) for each employee
-  const notchRows = empIdBigs.length
-    ? await query(`
-        SELECT e.id AS employee, CAST(n.amount AS CHAR) AS amount, n.name AS notch_name
-        FROM employee e
-        JOIN notches n ON n.id = e.notcheId
-        WHERE e.id IN (${empIdBigs.map(() => '?').join(',')})
-      `, ...empIdBigs)
-    : [];
-
-  // Build notch-amount lookup first so salary rows can fall back to it
-  const notchAmtByEmp = {};
-  notchRows.forEach(row => {
-    notchAmtByEmp[String(Number(row.employee))] = parseFloat(row.amount) || 0;
-  });
-
-  // Build per-employee salary map
-  const salaryByEmp = {};
-  salaryRows.forEach(row => {
-    const eid = String(Number(row.employee));
-    if (!salaryByEmp[eid]) salaryByEmp[eid] = {};
-    // Skip NULL amounts entirely — a null amount means "assigned but not yet configured".
-    // Storing it as 0 would block notch overrides and prevent default_value from firing.
-    if (row.amount === null || row.amount === undefined || row.amount === '') return;
-    const amt = parseFloat(row.amount) || 0;
-    salaryByEmp[eid][row.comp_name.toUpperCase()] = amt;
-  });
-
-  // Find which salary component the user has explicitly designated as grade-scale linked.
-  // This makes the notch alias survive renames — we look up the current name via the flag.
-  const [notchLinkedComp] = await query(
-    `SELECT name FROM salarycomponent WHERE is_notch_linked = 1 LIMIT 1`
-  );
-  const notchCompKey = notchLinkedComp?.name?.toUpperCase() || null;
-
-  // Add notch under its own name + the designated grade-scale component name + legacy alias.
-  // The `in` operator check (not falsy) ensures employees with an explicit 0 are never
-  // overwritten — they correctly fall through to default_value in calcColumn.
-  notchRows.forEach(row => {
-    const eid = String(Number(row.employee));
-    if (!salaryByEmp[eid]) salaryByEmp[eid] = {};
-    const amt = parseFloat(row.amount) || 0;
-    salaryByEmp[eid][row.notch_name.toUpperCase()] = amt;
-    if (notchCompKey && !(notchCompKey in salaryByEmp[eid])) {
-      salaryByEmp[eid][notchCompKey] = amt;
-    }
-    // Backward-compat: keep 'BASIC SALARY' alias for installs that haven't flagged a component yet
-    if (!('BASIC SALARY' in salaryByEmp[eid])) salaryByEmp[eid]['BASIC SALARY'] = amt;
-  });
-
-  const notchWarning = notchRows.length > 0 && !notchLinkedComp
-    ? 'No grade-scale component is linked. Employees on the grade scale may have incorrect values. Go to Payroll Management → Components to link one.'
-    : null;
+  // Build each employee's salary map from inherited paygrade/notch components + per-employee exceptions.
+  const { salaryByEmp, notchWarning, salaryRowsFound, notchRowsFound } = await buildSalaryByEmp(empIdBigs);
 
   // Diagnostics
   const emptySalaryEmps = empIdNums.filter(eid => !salaryByEmp[eid] || Object.keys(salaryByEmp[eid]).length === 0);
@@ -350,14 +412,14 @@ const generatePayroll = asyncHandler(async (req, res) => {
   // Detect salary components that applicable payroll columns need but no selected employee has.
   // Columns with a default value can still calculate without an employee salary row, so skip them.
   const applicableCols = allCols.filter(col =>
-    payrollEmps.some(pe => !col.deduction_group || String(col.deduction_group) === String(pe.deduction_group ?? ''))
+    !col.groupIds.length || payrollEmps.some(pe => col.groupIds.includes(String(pe.deduction_group ?? '')))
   );
   const neededComponents = new Set();
   applicableCols.forEach(col => {
     const hasDefault = (parseFloat(col.default_value || '0') || 0) > 0;
     if (hasDefault) return;
     if (col.calculation_function && col.calculation_function.trim()) return;
-    (col.salary_components || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+    (col.componentNames || []).map(s => String(s).trim().toUpperCase()).filter(Boolean)
       .forEach(name => neededComponents.add(name));
   });
   const foundComponents = new Set();
@@ -376,10 +438,10 @@ const generatePayroll = asyncHandler(async (req, res) => {
     const salaryMap = salaryByEmp[eid] || {};
     const cache = {};
     for (const col of allCols) {
-      // Skip group-specific columns for employees not in that group.
-      // A column with no deduction_group (null) is universal and always runs.
-      if (col.deduction_group && String(col.deduction_group) !== String(pe.deduction_group ?? '')) continue;
-      const amount = calcColumn(col, salaryMap, allCols, savedCalcs, pe.employee, pe.deduction_exemptions, cache);
+      // Skip group-specific columns for employees not in any of the column's groups.
+      // A column with no groups is universal and always runs.
+      if (col.groupIds.length && !col.groupIds.includes(String(pe.deduction_group ?? ''))) continue;
+      const amount = calcColumn(col, salaryMap, allCols, savedCalcs, pe.employee, pe.deduction_exemptions, cache, { compNameById });
       await exec(insertSql, BigInt(id), BigInt(pe.employee), parseInt(col.id), String(amount));
     }
   }
@@ -389,8 +451,8 @@ const generatePayroll = asyncHandler(async (req, res) => {
   respond.ok(res, 'Payroll generated', {
     employees:           payrollEmps.length,
     columns:             allCols.length,
-    salaryRowsFound:     salaryRows.length,
-    notchRowsFound:      notchRows.length,
+    salaryRowsFound:     salaryRowsFound,
+    notchRowsFound:      notchRowsFound,
     empsWithNoSalary:    emptySalaryEmps.length,
     missingComponents,
     notchWarning,
@@ -428,10 +490,12 @@ const debugPayrollRun = asyncHandler(async (req, res) => {
   if (!run) return respond.notFound(res, 'Run not found');
 
   const allCols = await query(
-    `SELECT id, name, salary_components, add_columns, sub_columns, calculation_function,
-            payment_deduction, colorder, default_value, calculation_rule, deduction_group
+    `SELECT id, name, calculation_function,
+            payment_deduction, colorder, default_value, calculation_rule
      FROM payrollcolumns WHERE enabled='Yes' ORDER BY COALESCE(colorder, 99999), id`
   );
+  await attachColumnGroups(allCols);
+  const { compNameById } = await attachColumnRefs(allCols);
 
   let empQuery = `SELECT pe.id, pe.employee, pe.deduction_group, pe.deduction_exemptions FROM payrollemployees pe WHERE pe.pay_frequency = ?`;
   const empParams = [parseInt(run.pay_frequency)];
@@ -439,34 +503,7 @@ const debugPayrollRun = asyncHandler(async (req, res) => {
   const payrollEmps = await query(empQuery, ...empParams);
 
   const empIdBigs = payrollEmps.map(e => BigInt(e.employee));
-  const salaryRows = empIdBigs.length
-    ? await query(`SELECT es.employee, sc.name AS comp_name, CAST(es.amount AS CHAR) AS amount
-                   FROM employeesalary es JOIN salarycomponent sc ON sc.id = es.component
-                   WHERE es.employee IN (${empIdBigs.map(() => '?').join(',')})`, ...empIdBigs)
-    : [];
-  const notchRows = empIdBigs.length
-    ? await query(`SELECT e.id AS employee, CAST(n.amount AS CHAR) AS amount, n.name AS notch_name
-                   FROM employee e JOIN notches n ON n.id = e.notcheId
-                   WHERE e.id IN (${empIdBigs.map(() => '?').join(',')})`, ...empIdBigs)
-    : [];
-  const [notchLinkedComp] = await query(`SELECT name FROM salarycomponent WHERE is_notch_linked = 1 LIMIT 1`);
-  const notchCompKey = notchLinkedComp?.name?.toUpperCase() || null;
-
-  const salaryByEmp = {};
-  salaryRows.forEach(row => {
-    const eid = String(Number(row.employee));
-    if (!salaryByEmp[eid]) salaryByEmp[eid] = {};
-    if (row.amount === null || row.amount === undefined || row.amount === '') return;
-    salaryByEmp[eid][row.comp_name.toUpperCase()] = parseFloat(row.amount) || 0;
-  });
-  notchRows.forEach(row => {
-    const eid = String(Number(row.employee));
-    if (!salaryByEmp[eid]) salaryByEmp[eid] = {};
-    const amt = parseFloat(row.amount) || 0;
-    salaryByEmp[eid][row.notch_name.toUpperCase()] = amt;
-    if (notchCompKey && !(notchCompKey in salaryByEmp[eid])) salaryByEmp[eid][notchCompKey] = amt;
-    if (!('BASIC SALARY' in salaryByEmp[eid])) salaryByEmp[eid]['BASIC SALARY'] = amt;
-  });
+  const { salaryByEmp, notchLinkedComp } = await buildSalaryByEmp(empIdBigs);
 
   const savedCalcs = await query(`SELECT sc.id, sc.name, sc.target_type, sc.target_name FROM savedcalculations sc`);
   const calcItems = await query(`SELECT * FROM calculationprocessitems ORDER BY sort_order`);
@@ -478,9 +515,9 @@ const debugPayrollRun = asyncHandler(async (req, res) => {
     const cache = {};
     const colResults = [];
     for (const col of allCols) {
-      if (col.deduction_group && String(col.deduction_group) !== String(pe.deduction_group ?? '')) continue;
-      const amount = calcColumn(col, salaryMap, allCols, savedCalcs, pe.employee, pe.deduction_exemptions, cache);
-      colResults.push({ id: col.id, name: col.name, salary_components: col.salary_components, default_value: col.default_value, calculation_function: col.calculation_function, amount });
+      if (col.groupIds.length && !col.groupIds.includes(String(pe.deduction_group ?? ''))) continue;
+      const amount = calcColumn(col, salaryMap, allCols, savedCalcs, pe.employee, pe.deduction_exemptions, cache, { compNameById });
+      colResults.push({ id: col.id, name: col.name, salary_components: (col.componentNames || []).join(','), default_value: col.default_value, calculation_function: col.calculation_function, amount });
     }
     return { employee: eid, salaryMap, columns: colResults };
   });
@@ -579,7 +616,10 @@ const finalizePayroll = asyncHandler(async (req, res) => {
   let finalStatus = 'Completed';
 
   // ── GL posting ───────────────────────────────────────────────────────────────
-  const _glUrl = (await getApiConfig()).gl_url;
+  // Skip entirely when payroll postings are switched off (record-only mode) — the run still
+  // finalizes to 'Completed', just without any journal posted to the general ledger.
+  const glEnabled = await readControlSetting('payroll_payments_enabled', true);
+  const _glUrl = glEnabled ? (await getApiConfig()).gl_url : null;
   if (_glUrl) {
     try {
       const result = await buildAndPostGL(id, req);
@@ -612,6 +652,7 @@ const retryGLPosting = asyncHandler(async (req, res) => {
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status !== 'GL Failed') return respond.badReq(res, 'Only a GL Failed run can retry GL posting');
   if (run.document_ref) return respond.badReq(res, 'GL already posted for this run');
+  if (!(await readControlSetting('payroll_payments_enabled', true))) return respond.badReq(res, 'Payroll GL posting is disabled in settings');
   if (!(await getApiConfig()).gl_url) return respond.badReq(res, 'GL API URL not configured');
 
   try {

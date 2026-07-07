@@ -180,11 +180,11 @@ function ModuleCard({ key,mod, index, onClick, isSettings, isEnabled, onToggle }
         className="syne"
         style={{
           fontSize: '14.5px',
-          fontWeight: 800,
+          fontWeight: 700,                 // match the page title (font-bold)
           color: 'var(--text-primary)',
           margin: '0 0 7px',
           lineHeight: 1.25,
-          letterSpacing: '-.01em',
+          letterSpacing: '-0.025em',       // match the page title (tracking-tight)
         }}
       >
         {mod.title}

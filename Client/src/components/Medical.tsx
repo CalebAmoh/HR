@@ -18,6 +18,7 @@ import { ConfirmAlert } from './ConfirmAlert';
 import { inputClass } from './ui/FormField';
 import { CountedTextarea } from './ui/CountedTextarea';
 import { SearchSelect } from './ui/SearchSelect';
+import { OcrScanButton, type OcrFields } from './ai/OcrScanButton';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { getCurrentUser } from '../../lib/auth';
@@ -757,6 +758,16 @@ function StaffMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean; cur
             onClose={() => setOpen(false)}
             onSave={handleSave}
             saveLabel={saving ? 'Saving…' : 'Save'}>
+            <div className="flex items-center justify-between gap-2 mb-3 px-3 py-2 rounded-lg bg-[var(--purple-dim)] border border-[var(--border)]">
+              <span className="text-[11.5px] text-[var(--text-secondary)]">Have a receipt? Let AI read it and fill the fields.</span>
+              <OcrScanButton onExtract={(x: OcrFields) => setF(p => ({
+                ...p,
+                ...(x.amount != null ? { cost: String(x.amount) } : {}),
+                ...(x.date ? { admission_date: String(x.date) } : {}),
+                ...(x.hospital ? { hospital: String(x.hospital) } : {}),
+                ...(x.description && !p.illness_type ? { illness_type: String(x.description) } : {}),
+              }))} />
+            </div>
             <F label="Employee" required>
               <SearchSelect value={f.employee} onChange={v => set('employee', v)}
                 options={employees} placeholder="Select employee…" disabled={!adminMode || !!currentEmpId} />

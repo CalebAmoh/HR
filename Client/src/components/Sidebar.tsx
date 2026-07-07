@@ -72,7 +72,8 @@ const menuSections: MenuSection[] = [
         hasSubmenu: true,
         subItems: [
           { label: 'Manage Employees', id: 'Employees'      },
-          { label: 'Self-Onboarding',  id: 'SelfOnboarding' },
+          { label: 'Self-Onboard Setup',  id: 'SelfOnboarding' },
+          { label: 'AI Insights',      id: 'AiInsights'     },
         ],
       },
       { icon: Building2, label: 'Company',   moduleIds: ['Company'],       hasSubmenu: true },
@@ -104,7 +105,7 @@ const menuSections: MenuSection[] = [
         moduleIds: ['Payroll'],
         hasSubmenu: true,
         subItems: [
-          { label: 'Salary',  id: 'Salary'  },
+          { label: 'Salary Setup',  id: 'Salary'  },
           { label: 'Payroll', id: 'Payroll' },
         ],
       },
@@ -247,6 +248,14 @@ export function Sidebar({ currentUser,activeView, setActiveView, isOpen, onClose
       {/* ── NAVIGATION ─────────────────────────────────────────────── */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden py-2 space-y-1 custom-scrollbar">
         {menuSections.map((section, si) => {
+          // Hide an entire section (its label + divider) when the user can't access any of its
+          // items — mirrors the per-item visibility checks in the items map below.
+          const sectionHasItems = section.items.some(item => {
+            if (item.moduleIds && !item.moduleIds.some(m => enabledModules.includes(m))) return false;
+            if (item.subItems) return item.subItems.some(s => canNav(s.id));
+            return canNav(item.id ?? item.label);
+          });
+          if (!sectionHasItems) return null;
           return (
             <div
               key={si}
@@ -265,7 +274,7 @@ export function Sidebar({ currentUser,activeView, setActiveView, isOpen, onClose
                     borderRadius: 7,
                   }}
                 >
-                  <span className="syne text-[9.5px] font-black tracking-[0.12em] uppercase text-[var(--text-muted)] whitespace-nowrap">
+                  <span className="syne text-[11px] font-bold tracking-tight text-[var(--text-muted)] whitespace-nowrap">
                     {section.title}
                   </span>
                   <div style={{ flex: 1, height: 1, background: 'var(--border)', opacity: 0.5 }} />

@@ -9,6 +9,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { getCurrentUser } from '../../lib/auth';
+import { employeeFieldVisible } from '../../lib/settings';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type TabId = 'Personal' | 'Employment' | 'Relationships' | 'Qualifications' | 'Documents' | 'Leave' | 'Attendance';
@@ -48,9 +49,11 @@ const CopyBtn: React.FC<{ value: string }> = ({ value }) => {
   );
 };
 
-const Field: React.FC<{ label: string; value?: React.ReactNode; copiable?: string; span2?: boolean; monospace?: boolean }> = ({
-  label, value, copiable, span2 = false, monospace = false,
+const Field: React.FC<{ label: string; value?: React.ReactNode; copiable?: string; span2?: boolean; monospace?: boolean; fieldKey?: string }> = ({
+  label, value, copiable, span2 = false, monospace = false, fieldKey,
 }) => {
+  // Rows tied to a configurable field hide when that field is turned off in Controls → Employee Form.
+  if (fieldKey && !employeeFieldVisible(fieldKey)) return null;
   const isEmpty = value == null || value === '' || value === '—';
   return (
     <div className={span2 ? 'col-span-2' : ''}>
@@ -196,40 +199,40 @@ const PersonalPanel: React.FC<{ emp: any }> = ({ emp }) => (
   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
     <Card title="Basic Information" icon={User} accent="#7c3aed">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5">
-        <Field label="Date of Birth"  value={fmtDate(emp.dateOfBirth)}   />
-        <Field label="Place of Birth" value={fmt(emp.place_of_birth)}     />
-        <Field label="Gender"         value={emp.gender?.label}           />
-        <Field label="Nationality"    value={emp.nationality?.label}      />
-        <Field label="Religion"       value={emp.religion?.label}         />
-        <Field label="Marital Status" value={fmt(emp.marital_status)}     />
+        <Field label="Date of Birth"  value={fmtDate(emp.dateOfBirth)}   fieldKey="dateOfBirth" />
+        <Field label="Place of Birth" value={fmt(emp.place_of_birth)}     fieldKey="place_of_birth" />
+        <Field label="Gender"         value={emp.gender?.label}           fieldKey="genderId" />
+        <Field label="Nationality"    value={emp.nationality?.label}      fieldKey="nationalityId" />
+        <Field label="Religion"       value={emp.religion?.label}         fieldKey="religionId" />
+        <Field label="Marital Status" value={fmt(emp.marital_status)}     fieldKey="marital_status" />
         {emp.marital_status === 'Married' && (
-          <Field label="Spouse" value={fmt(emp.spouse_name)} />
+          <Field label="Spouse" value={fmt(emp.spouse_name)} fieldKey="spouse_name" />
         )}
-        <Field label="Father's Name"  value={fmt(emp.father_name)}        />
-        <Field label="Mother's Name"  value={fmt(emp.mother_name)}        />
+        <Field label="Father's Name"  value={fmt(emp.father_name)}        fieldKey="father_name" />
+        <Field label="Mother's Name"  value={fmt(emp.mother_name)}        fieldKey="mother_name" />
       </div>
     </Card>
 
     <Card title="Contact Details" icon={MapPin} accent="#0284c7">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5">
-        <Field label="Mobile"         value={fmt(emp.mobilePhone)}                 copiable={emp.mobilePhone ?? undefined} />
+        <Field label="Mobile"         value={fmt(emp.mobilePhone)}                 copiable={emp.mobilePhone ?? undefined} fieldKey="mobilePhone" />
         <Field label="Work Phone"     value={fmt(emp.phone)}                       copiable={emp.phone ?? undefined} />
-        <Field label="Work Email"     value={fmt(emp.work_email ?? emp.email)}     copiable={emp.work_email ?? emp.email ?? undefined} />
-        <Field label="Personal Email" value={fmt(emp.personal_email)}              copiable={emp.personal_email ?? undefined} />
-        <Field label="Address" value={[emp.address1, emp.city, emp.country].filter(Boolean).join(', ') || null} span2 />
+        <Field label="Work Email"     value={fmt(emp.work_email ?? emp.email)}     copiable={emp.work_email ?? emp.email ?? undefined} fieldKey="work_email" />
+        <Field label="Personal Email" value={fmt(emp.personal_email)}              copiable={emp.personal_email ?? undefined} fieldKey="personal_email" />
+        <Field label="Address" value={[emp.address1, emp.city, emp.country].filter(Boolean).join(', ') || null} span2 fieldKey="address1" />
       </div>
     </Card>
 
     <div className="lg:col-span-2">
       <Card title="Identification Documents" icon={IdCard} accent="#b45309">
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-5">
-          <Field label="National ID"      value={fmt(emp.nationalIdNumber)}   copiable={emp.nationalIdNumber ?? undefined} monospace />
-          <Field label="NIN Expiry"       value={fmtDate(emp.nationalIdExpiry)} />
-          <Field label="SSN / Staff ID"   value={fmt(emp.ssn_num)}            copiable={emp.ssn_num ?? undefined} monospace />
-          <Field label="Passport No."     value={fmt(emp.passportNumber)}     copiable={emp.passportNumber ?? undefined} monospace />
-          <Field label="Passport Expiry"  value={fmtDate(emp.passportExpiry)} />
-          <Field label="Driver's License" value={fmt(emp.driverLicenseNum)}   copiable={emp.driverLicenseNum ?? undefined} monospace />
-          <Field label="License Expiry"   value={fmtDate(emp.driverLicenseExp)} />
+          <Field label="National ID"      value={fmt(emp.nationalIdNumber)}   copiable={emp.nationalIdNumber ?? undefined} monospace fieldKey="nationalIdNumber" />
+          <Field label="NIN Expiry"       value={fmtDate(emp.nationalIdExpiry)} fieldKey="nationalIdExpiry" />
+          <Field label="SSN"   value={fmt(emp.ssn_num)}            copiable={emp.ssn_num ?? undefined} monospace fieldKey="ssn_num" />
+          <Field label="Passport No."     value={fmt(emp.passportNumber)}     copiable={emp.passportNumber ?? undefined} monospace fieldKey="passportNumber" />
+          <Field label="Passport Expiry"  value={fmtDate(emp.passportExpiry)} fieldKey="passportExpiry" />
+          <Field label="Driver's License" value={fmt(emp.driverLicenseNum)}   copiable={emp.driverLicenseNum ?? undefined} monospace fieldKey="driverLicenseNum" />
+          <Field label="License Expiry"   value={fmtDate(emp.driverLicenseExp)} fieldKey="driverLicenseExp" />
         </div>
       </Card>
     </div>
@@ -241,32 +244,32 @@ const EmploymentPanel: React.FC<{ emp: any }> = ({ emp }) => (
     <Card title="Job Details" icon={Briefcase} accent="#059669">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5">
         <Field label="Employee ID"       value={fmt(emp.employee_id)}              copiable={emp.employee_id ?? undefined} monospace />
-        <Field label="Job Title"         value={emp.jobTitle?.label}               />
-        <Field label="Employment Status" value={emp.employmentStatus?.label}       />
-        <Field label="Staff Level"       value={emp.staffLevel?.label ?? fmt(emp.staff_level)} />
-        <Field label="Staff Role"        value={emp.staffRole?.label  ?? fmt(emp.staff_role)}  />
-        <Field label="Hire Date"         value={fmtDate(emp.hireDate)}             />
-        <Field label="Confirmation Date" value={fmtDate(emp.confirmationDate)}     />
+        <Field label="Job Title"         value={emp.jobTitle?.label}               fieldKey="jobTitleId" />
+        <Field label="Employment Status" value={emp.employmentStatus?.label}       fieldKey="employmentStatusId" />
+        <Field label="Staff Level"       value={emp.staffLevel?.label ?? fmt(emp.staff_level)} fieldKey="staff_level" />
+        <Field label="Staff Role"        value={emp.staffRole?.label  ?? fmt(emp.staff_role)}  fieldKey="staff_role" />
+        <Field label="Hire Date"         value={fmtDate(emp.hireDate)}             fieldKey="hireDate" />
+        <Field label="Confirmation Date" value={fmtDate(emp.confirmationDate)}     fieldKey="confirmationDate" />
         <Field label="Retirement Date"   value={fmtDate(emp.retirement_date)}      />
       </div>
     </Card>
 
     <Card title="Organisation" icon={Building2} accent="#0066b3">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5">
-        <Field label="Department"  value={emp.department?.title}  />
-        <Field label="Branch"      value={emp.branch?.title}      />
-        <Field label="Unit"        value={emp.unit?.title}        />
-        <Field label="Outlet"      value={emp.outlet?.title}      />
-        <Field label="Supervisor"  value={emp.supervisor?.name}   span2 />
+        <Field label="Department"  value={emp.department?.title}  fieldKey="departmentId" />
+        <Field label="Branch"      value={emp.branch?.title}      fieldKey="branchId" />
+        <Field label="Unit"        value={emp.unit?.title}        fieldKey="unitId" />
+        <Field label="Outlet"      value={emp.outlet?.title}      fieldKey="outletId" />
+        <Field label="Supervisor"  value={emp.supervisor?.name}   span2 fieldKey="supervisorId" />
       </div>
     </Card>
 
     <div className="lg:col-span-2">
       <Card title="Payroll & Financial" icon={CreditCard} accent="#7c3aed">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-5">
-          <Field label="Paygrade"    value={fmt(emp.paygrade)} />
-          <Field label="Notch"       value={fmt(emp.notch)} />
-          <Field label="Bank Account" value={fmt(emp.bankAccount)} copiable={emp.bankAccount ?? undefined} monospace />
+          <Field label="Paygrade"    value={fmt(emp.paygrade)} fieldKey="paygradeId" />
+          <Field label="Notch"       value={fmt(emp.notch)} fieldKey="notcheId" />
+          <Field label="Bank Account" value={fmt(emp.bankAccount)} copiable={emp.bankAccount ?? undefined} monospace fieldKey="bankAccount" />
         </div>
       </Card>
     </div>
@@ -293,10 +296,10 @@ const RelationshipsPanel: React.FC<{ emp: any }> = ({ emp }) => {
     <div className="space-y-4">
       <Card title="Next of Kin" icon={Heart} accent="#e11d48">
         <div className="grid grid-cols-2 gap-x-6 gap-y-5">
-          <Field label="Full Name" value={fmt(emp.nxt_kin_fname)} span2 />
-          <Field label="Phone"     value={fmt(emp.nxt_kin_phone)} copiable={emp.nxt_kin_phone ?? undefined} />
-          <Field label="Email"     value={fmt(emp.nxt_kin_email)} copiable={emp.nxt_kin_email ?? undefined} />
-          <Field label="Address"   value={fmt(emp.nxt_kin_address)} span2 />
+          <Field label="Full Name" value={fmt(emp.nxt_kin_fname)} span2 fieldKey="nxt_kin_fname" />
+          <Field label="Phone"     value={fmt(emp.nxt_kin_phone)} copiable={emp.nxt_kin_phone ?? undefined} fieldKey="nxt_kin_phone" />
+          <Field label="Email"     value={fmt(emp.nxt_kin_email)} copiable={emp.nxt_kin_email ?? undefined} fieldKey="nxt_kin_email" />
+          <Field label="Address"   value={fmt(emp.nxt_kin_address)} span2 fieldKey="nxt_kin_address" />
         </div>
       </Card>
 
@@ -391,10 +394,10 @@ const QualificationsPanel: React.FC<{ emp: any }> = ({ emp }) => {
 
 const DocumentsPanel: React.FC<{ emp: any }> = ({ emp }) => {
   const docs = [
-    { label: 'Fit & Proper Form',   value: emp.fit_and_proper   },
-    { label: 'Police Clearance',    value: emp.policeClearance  },
-    { label: 'Medical Clearance',   value: emp.medicalClearance },
-  ];
+    { label: 'Fit & Proper Form',   value: emp.fit_and_proper,   key: 'fit_and_proper'   },
+    { label: 'Police Clearance',    value: emp.policeClearance,  key: 'policeClearance'  },
+    { label: 'Medical Clearance',   value: emp.medicalClearance, key: 'medicalClearance' },
+  ].filter(d => employeeFieldVisible(d.key));
 
   return (
     <Card title="Clearance Documents" icon={FileText} accent="#475569">

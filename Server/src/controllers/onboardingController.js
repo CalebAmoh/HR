@@ -3,6 +3,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond      = require('../helpers/respondHelper');
 const { s }        = require('../helpers/controllerHelpers');
 const { notifyUsersWithPermission } = require('../helpers/notificationHelper');
+const { isFieldVisible } = require('../config/employeeFormFields');
 const crypto       = require('crypto');
 const os           = require('os');
 
@@ -58,18 +59,33 @@ const DEFAULT_CONFIG = {
   requiredFields: [...ALWAYS_ON_KEYS],
 };
 
+// Reads the employee-form field config (Settings → Controls → Employee Form). That config is the
+// master gate: a field hidden there is not available on self-onboarding either.
+async function readEmployeeFieldCfg() {
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT value FROM settings WHERE name='employee_form_fields' AND category='app_controls' LIMIT 1`
+  ).catch(() => []);
+  if (!rows.length || !rows[0].value) return {};
+  try { return JSON.parse(rows[0].value); } catch { return {}; }
+}
+
 async function readConfig() {
   const raw = await readSetting('onboarding_config');
-  if (!raw) return { ...DEFAULT_CONFIG };
-  try {
-    const parsed = JSON.parse(raw);
-    return {
-      enabledFields:  Array.isArray(parsed.enabledFields)  ? parsed.enabledFields  : DEFAULT_CONFIG.enabledFields,
-      requiredFields: Array.isArray(parsed.requiredFields) ? parsed.requiredFields : DEFAULT_CONFIG.requiredFields,
-    };
-  } catch {
-    return { ...DEFAULT_CONFIG };
+  let base = { ...DEFAULT_CONFIG };
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      base = {
+        enabledFields:  Array.isArray(parsed.enabledFields)  ? parsed.enabledFields  : DEFAULT_CONFIG.enabledFields,
+        requiredFields: Array.isArray(parsed.requiredFields) ? parsed.requiredFields : DEFAULT_CONFIG.requiredFields,
+      };
+    } catch { base = { ...DEFAULT_CONFIG }; }
   }
+  // Apply the master gate — drop any field hidden in the employee-form controls.
+  const empCfg = await readEmployeeFieldCfg();
+  const enabledFields  = base.enabledFields.filter(k => isFieldVisible(empCfg, k));
+  const requiredFields = base.requiredFields.filter(k => isFieldVisible(empCfg, k) && enabledFields.includes(k));
+  return { enabledFields, requiredFields };
 }
 
 async function getOrCreateToken() {

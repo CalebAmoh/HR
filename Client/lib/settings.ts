@@ -1,4 +1,6 @@
 import api from './api';
+import { defaultFieldConfig, EMPLOYEE_FORM_FIELDS_BY_KEY, type EmployeeFieldConfig } from '../src/config/employeeFormFields';
+import { DEFAULT_EMPLOYEE_ID_PATTERN } from './employeeIdFormat';
 
 export interface AppSettings {
   companyStructure: {
@@ -6,6 +8,8 @@ export interface AppSettings {
   };
   employees: {
     autoGenerateNumber: boolean;
+    /** Template for the auto-generated employee ID, e.g. EMP-{YYYY}-{SEQ4}. */
+    idFormat: string;
   };
   recruitment: {
     autoGenerateCode: boolean;
@@ -13,6 +17,7 @@ export interface AppSettings {
   approvals: {
     employeeApproval: boolean;
     employeeSelfApproval: boolean;
+    employeeUpdateApproval: boolean;
     payrollApproval: boolean;
     selfApproval: boolean;
     medicalApproval: boolean;
@@ -21,9 +26,19 @@ export interface AppSettings {
   general: {
     currency: string;
   };
+  // Master switches: when off, the module records data only — no GL/payment postings.
+  payments: {
+    leave: boolean;
+    medical: boolean;
+    payroll: boolean;
+  };
   medicalClaims: {
     hospitalWhtRate: number;
     pharmacyWhtRate: number;
+  };
+  // Per-field visibility/required config for the employee-creation form.
+  employeeForm: {
+    fields: EmployeeFieldConfig;
   };
 }
 
@@ -33,6 +48,7 @@ const DEFAULTS: AppSettings = {
   },
   employees: {
     autoGenerateNumber: true,
+    idFormat: DEFAULT_EMPLOYEE_ID_PATTERN,
   },
   recruitment: {
     autoGenerateCode: false,
@@ -40,6 +56,7 @@ const DEFAULTS: AppSettings = {
   approvals: {
     employeeApproval: true,
     employeeSelfApproval: false,
+    employeeUpdateApproval: true,
     payrollApproval: false,
     selfApproval: false,
     medicalApproval: true,
@@ -48,9 +65,17 @@ const DEFAULTS: AppSettings = {
   general: {
     currency: 'SLE',
   },
+  payments: {
+    leave: true,
+    medical: true,
+    payroll: true,
+  },
   medicalClaims: {
     hospitalWhtRate: 0,
     pharmacyWhtRate: 0,
+  },
+  employeeForm: {
+    fields: defaultFieldConfig(),
   },
 };
 
@@ -62,6 +87,15 @@ let cache: AppSettings = structuredClone(DEFAULTS);
 // Remove any settings persisted by older builds so nothing lingers in the browser.
 try { localStorage.removeItem('hr_settings'); } catch { /* no localStorage — ignore */ }
 
+/** Whether an employee field is configured to show (Settings → Controls → Employee Form).
+ *  Drives the create form AND the read views (detail slide-over, personal info). Locked core
+ *  fields are always visible. Reads the cache directly (no clone) so it's cheap per-field. */
+export function employeeFieldVisible(key: string): boolean {
+  const meta = EMPLOYEE_FORM_FIELDS_BY_KEY[key];
+  if (meta?.locked) return true;
+  return cache.employeeForm.fields[key]?.visible ?? meta?.defaultVisible ?? true;
+}
+
 export function getSettings(): AppSettings {
   // Return a fresh copy so callers can't mutate the shared cache.
   return {
@@ -70,7 +104,9 @@ export function getSettings(): AppSettings {
     recruitment:      { ...cache.recruitment },
     approvals:        { ...cache.approvals },
     general:          { ...cache.general },
+    payments:         { ...cache.payments },
     medicalClaims:    { ...cache.medicalClaims },
+    employeeForm:     { fields: structuredClone(cache.employeeForm.fields) },
   };
 }
 
@@ -80,17 +116,23 @@ export function getSettings(): AppSettings {
 // medicalClaims is excluded: it persists through its own /medical/settings endpoint.
 const SERVER_KEYS: Record<string, Record<string, string>> = {
   companyStructure: { autoGenerateCode:   'company_auto_generate_code' },
-  employees:        { autoGenerateNumber: 'employee_auto_generate_number' },
+  employees:        { autoGenerateNumber: 'employee_auto_generate_number', idFormat: 'employee_id_format' },
   recruitment:      { autoGenerateCode:   'recruitment_auto_generate_code' },
   approvals: {
     employeeApproval:     'approval_employee',
     employeeSelfApproval: 'approval_employee_self',
+    employeeUpdateApproval: 'approval_employee_update',
     payrollApproval:      'approval_payroll',
     selfApproval:         'approval_payroll_self',
     medicalApproval:      'approval_medical',
     medicalSelfApproval:  'approval_medical_self',
   },
   general: { currency: 'general_currency' },
+  payments: {
+    leave:   'leave_payments_enabled',
+    medical: 'medical_payments_enabled',
+    payroll: 'payroll_payments_enabled',
+  },
 };
 
 function writeCache(settings: AppSettings): void {
@@ -116,6 +158,14 @@ export async function initControlSettings(): Promise<void> {
         (merged as any)[section][field] = typeof def === 'boolean' ? flat[serverKey] === '1' : flat[serverKey];
       }
     }
+    // employee_form_fields is a JSON object value — parse it separately and merge over the
+    // registry defaults so newly-added fields automatically appear with their defaults.
+    try {
+      const raw = flat['employee_form_fields'];
+      merged.employeeForm = {
+        fields: raw ? { ...defaultFieldConfig(), ...JSON.parse(raw) } : defaultFieldConfig(),
+      };
+    } catch { merged.employeeForm = { fields: defaultFieldConfig() }; }
     writeCache(merged);
   } catch { /* offline — keep cached/default values */ }
 }
@@ -130,6 +180,14 @@ export function saveSetting<K extends keyof AppSettings>(
     [section]: { ...(current[section] as object), ...(values as object) },
   };
   writeCache(updated);
+
+  // The employee-form field config is stored as a single JSON string setting.
+  if (section === 'employeeForm') {
+    const cfg = updated.employeeForm.fields ?? {};
+    api.put('/settings/controls', { employee_form_fields: JSON.stringify(cfg) })
+      .catch(() => { /* cache still holds the value locally */ });
+    return;
+  }
 
   // Write-through to the server so the setting applies to every user
   const fields = SERVER_KEYS[section as string];

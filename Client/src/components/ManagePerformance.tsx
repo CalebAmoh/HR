@@ -18,6 +18,7 @@ import { FormModal } from './ui/FormModal';
 import { FormField, inputClass } from './ui/FormField';
 import { ConfirmModal } from './ui/ConfirmModal';
 import { SearchSelect, MultiSearchSelect } from './ui/SearchSelect';
+import { FilterSelect } from './ui/FilterSelect';
 import { ReviewDetailSlideOver } from './ReviewDetailSlideOver';
 import { CountedTextarea } from './ui/CountedTextarea';
 
@@ -906,22 +907,22 @@ function ReviewsTab() {
                   placeholder="All Employees"
                 />
               </div>
-              <div className="flex flex-col gap-1 min-w-[160px]">
-                <label className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">Cycle</label>
-                <select className="text-[12px] h-8 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
-                  value={cycleFilter} onChange={e => { setCycleFilter(e.target.value); setPage(1); }}>
-                  <option value="">All Cycles</option>
-                  {cycles.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              </div>
-              <div className="flex flex-col gap-1 min-w-[160px]">
-                <label className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">Status</label>
-                <select className="text-[12px] h-8 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
-                  value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}>
-                  <option value="">All</option>
-                  {REVIEW_STATUSES.map(s => <option key={s}>{s}</option>)}
-                </select>
-              </div>
+              <FilterSelect
+                label="Cycle"
+                value={cycleFilter}
+                onChange={v => { setCycleFilter(v); setPage(1); }}
+                placeholder="All Cycles"
+                minWidth={160}
+                options={[{ value: '', label: 'All Cycles' }, ...cycles.map(c => ({ value: String(c.id), label: c.name }))]}
+              />
+              <FilterSelect
+                label="Status"
+                value={statusFilter}
+                onChange={v => { setStatusFilter(v); setPage(1); }}
+                placeholder="All"
+                minWidth={160}
+                options={[{ value: '', label: 'All' }, ...REVIEW_STATUSES.map(s => ({ value: s, label: s }))]}
+              />
               {activeFilterCount > 0 && (
                 <button onClick={() => { setStatusFilter(''); setCycleFilter(''); setEmployeeFilter(''); }}
                   className="flex items-center gap-1 text-[12px] text-[var(--danger)] hover:underline h-8 self-end">
@@ -1069,14 +1070,14 @@ function GoalsTab() {
                   placeholder="All Employees"
                 />
               </div>
-              <div className="flex flex-col gap-1 min-w-[150px]">
-                <label className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">Status</label>
-                <select className="text-[12px] h-8 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
-                  value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}>
-                  <option value="">All</option>
-                  {GOAL_STATUSES.map(s => <option key={s}>{s}</option>)}
-                </select>
-              </div>
+              <FilterSelect
+                label="Status"
+                value={statusFilter}
+                onChange={v => { setStatusFilter(v); setPage(1); }}
+                placeholder="All"
+                minWidth={150}
+                options={[{ value: '', label: 'All' }, ...GOAL_STATUSES.map(s => ({ value: s, label: s }))]}
+              />
               {activeFilterCount > 0 && (
                 <button onClick={() => { setStatusFilter(''); setEmployeeFilter(''); }}
                   className="flex items-center gap-1 text-[12px] text-[var(--danger)] hover:underline h-8 self-end">
@@ -1219,14 +1220,14 @@ function CompetenciesTab() {
           }
           filterBar={showFilters ? (
             <div className="flex flex-wrap items-end gap-3">
-              <div className="flex flex-col gap-1 min-w-[150px]">
-                <label className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">Category</label>
-                <select className="text-[12px] h-8 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
-                  value={categoryFilter} onChange={e => { setCategoryFilter(e.target.value); setPage(1); }}>
-                  <option value="">All Categories</option>
-                  {COMP_CATEGORIES.map(c => <option key={c}>{c}</option>)}
-                </select>
-              </div>
+              <FilterSelect
+                label="Category"
+                value={categoryFilter}
+                onChange={v => { setCategoryFilter(v); setPage(1); }}
+                placeholder="All Categories"
+                minWidth={150}
+                options={[{ value: '', label: 'All Categories' }, ...COMP_CATEGORIES.map(c => ({ value: c, label: c }))]}
+              />
               {activeFilterCount > 0 && (
                 <button onClick={() => setCategoryFilter('')}
                   className="flex items-center gap-1 text-[12px] text-[var(--danger)] hover:underline h-8 self-end">

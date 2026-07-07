@@ -3,6 +3,7 @@ import { Zap, Menu, UserCircle, CalendarDays, LogOut, Moon, Sun } from 'lucide-r
 import { AppUser } from '@/types/permissions';
 import { setTheme } from '@/lib/theme';
 import { NotificationBell } from './NotificationBell';
+import { AssistantWidget } from './ai/AssistantWidget';
 import { UserProfileModal } from './UserProfileModal';
 import api from '@/lib/api';
 
@@ -72,6 +73,7 @@ export function Header({ onMenuToggle, onLogout, currentUser, onNavigate }: { on
           {isDark ? <Sun className="w-[18px] h-[18px]" /> : <Moon className="w-[18px] h-[18px]" />}
         </button>
 
+        <AssistantWidget />
         <NotificationBell onNavigate={onNavigate} />
 
         <div className="w-[1px] h-6 bg-[var(--border)] mx-1"></div>

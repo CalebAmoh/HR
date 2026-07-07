@@ -131,21 +131,21 @@ export function InterviewForm({ onClose, initialData, onSave, candidates = [], j
           /* ── Edit mode: simple selects, no filtering ── */
           <>
             <FormField label="Job Posting">
-              <select name="job" value={formData.job} onChange={handleChange} className={inputClass}>
-                <option value="">— None —</option>
-                {jobs.map((j: any) => (
-                  <option key={j.id} value={String(j.id)}>{j.title}</option>
-                ))}
-              </select>
+              <SearchSelect
+                value={formData.job}
+                onChange={v => handleChange({ target: { name: 'job', value: v } } as any)}
+                options={[{ id: '', label: '— None —' }, ...jobs.map((j: any) => ({ id: String(j.id), label: j.title }))]}
+                placeholder="Select a job posting…"
+              />
             </FormField>
 
             <FormField label="Candidate" required>
-              <select name="candidate" value={formData.candidate} onChange={handleChange} className={inputClass}>
-                <option value="">— Select —</option>
-                {candidates.map((c: any) => (
-                  <option key={c.id} value={String(c.id)}>{c.first_name} {c.last_name}</option>
-                ))}
-              </select>
+              <SearchSelect
+                value={formData.candidate}
+                onChange={v => handleChange({ target: { name: 'candidate', value: v } } as any)}
+                options={candidates.map((c: any) => ({ id: String(c.id), label: `${c.first_name} ${c.last_name}` }))}
+                placeholder="Select candidate…"
+              />
             </FormField>
           </>
         ) : (
@@ -193,12 +193,11 @@ export function InterviewForm({ onClose, initialData, onSave, candidates = [], j
         </FormField>
 
         <FormField label="Status">
-          <select name="status" value={formData.status} onChange={handleChange} className={inputClass}>
-            <option value="Scheduled">Scheduled</option>
-            <option value="Completed">Completed</option>
-            <option value="Cancelled">Cancelled</option>
-            <option value="No Show">No Show</option>
-          </select>
+          <SearchSelect
+            value={formData.status}
+            onChange={v => handleChange({ target: { name: 'status', value: v } } as any)}
+            options={['Scheduled', 'Completed', 'Cancelled', 'No Show'].map(s => ({ id: s, label: s }))}
+          />
         </FormField>
 
         <div className="sm:col-span-2">
@@ -251,12 +250,12 @@ export function InterviewForm({ onClose, initialData, onSave, candidates = [], j
 
         {formData.status === 'Completed' && (
           <FormField label="Outcome">
-            <select name="outcome" value={formData.outcome} onChange={handleChange} className={inputClass}>
-              <option value="">— Select —</option>
-              <option value="Passed">Passed</option>
-              <option value="Failed">Failed</option>
-              <option value="Pending">Pending Decision</option>
-            </select>
+            <SearchSelect
+              value={formData.outcome}
+              onChange={v => handleChange({ target: { name: 'outcome', value: v } } as any)}
+              options={[{ id: 'Passed', label: 'Passed' }, { id: 'Failed', label: 'Failed' }, { id: 'Pending', label: 'Pending Decision' }]}
+              placeholder="Select…"
+            />
           </FormField>
         )}
 

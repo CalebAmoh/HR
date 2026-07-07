@@ -23,6 +23,9 @@ app.use(express.urlencoded({ extended: false, limit: '50mb' }));
 app.use(cookieParser());
 app.use(morgan(process.env.LOG_LEVEL));
 
+// Per-request async context (lets the Prisma audit middleware know the acting user).
+app.use(require('./middleware/requestContext').withRequest);
+
 BigInt.prototype.toJSON = function () {
   return this.toString();
 };

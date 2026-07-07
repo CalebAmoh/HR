@@ -11,7 +11,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { getCurrentUser } from '../../lib/auth';
-import { getSettings } from '../../lib/settings';
+import { getSettings, employeeFieldVisible } from '../../lib/settings';
 import { DocumentViewer } from './DocumentViewer';
 import { severityPill, statusPillD, INCIDENT_TYPES, SEVERITIES, STATUSES } from './DisciplinaryTab';
 import { MultiSearchSelect } from './ui/SearchSelect';
@@ -46,16 +46,21 @@ const readFileAsBase64 = (file: File): Promise<string> =>
 
 // ─── Subcomponents ────────────────────────────────────────────────────────────
 
-const InfoField: React.FC<{ label: string; value?: React.ReactNode; span2?: boolean }> = ({
-  label, value, span2 = false,
-}) => (
-  <div className={span2 ? 'sm:col-span-2' : ''}>
-    <p className="text-[10.5px] font-semibold tracking-[0.08em] uppercase text-slate-400 mb-1">{label}</p>
-    <p className="text-[13.5px] font-medium text-slate-800 leading-snug">
-      {value ?? <span className="text-slate-300 font-normal italic">—</span>}
-    </p>
-  </div>
-);
+// `fieldKey` ties a row to a configurable employee field; when that field is hidden in
+// Settings → Controls → Employee Form the row is omitted from the detail view too.
+const InfoField: React.FC<{ label: string; value?: React.ReactNode; span2?: boolean; fieldKey?: string }> = ({
+  label, value, span2 = false, fieldKey,
+}) => {
+  if (fieldKey && !employeeFieldVisible(fieldKey)) return null;
+  return (
+    <div className={span2 ? 'sm:col-span-2' : ''}>
+      <p className="text-[10.5px] font-semibold tracking-[0.08em] uppercase text-slate-400 mb-1">{label}</p>
+      <p className="text-[13.5px] font-medium text-slate-800 leading-snug">
+        {value ?? <span className="text-slate-300 font-normal italic">—</span>}
+      </p>
+    </div>
+  );
+};
 
 const SectionCard: React.FC<{
   title: string;
@@ -178,39 +183,39 @@ const PersonalTab: React.FC<{ employee: any }> = ({ employee }) => (
   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
     <SectionCard title="Basic Information" icon={User} accent="#7c3aed">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5">
-        <InfoField label="Date of Birth"   value={fmtDate(employee.dateOfBirth)} />
-        <InfoField label="Place of Birth"  value={fmt(employee.place_of_birth)} />
-        <InfoField label="Gender"          value={employee.gender?.label} />
-        <InfoField label="Nationality"     value={employee.nationality?.label} />
-        <InfoField label="Religion"        value={employee.religion?.label} />
-        <InfoField label="Marital Status"  value={fmt(employee.marital_status)} />
+        <InfoField label="Date of Birth"   value={fmtDate(employee.dateOfBirth)} fieldKey="dateOfBirth" />
+        <InfoField label="Place of Birth"  value={fmt(employee.place_of_birth)} fieldKey="place_of_birth" />
+        <InfoField label="Gender"          value={employee.gender?.label} fieldKey="genderId" />
+        <InfoField label="Nationality"     value={employee.nationality?.label} fieldKey="nationalityId" />
+        <InfoField label="Religion"        value={employee.religion?.label} fieldKey="religionId" />
+        <InfoField label="Marital Status"  value={fmt(employee.marital_status)} fieldKey="marital_status" />
         {employee.marital_status === 'Married' && (
-          <InfoField label="Spouse" value={fmt(employee.spouse_name)} />
+          <InfoField label="Spouse" value={fmt(employee.spouse_name)} fieldKey="spouse_name" />
         )}
-        <InfoField label="Father's Name"  value={fmt(employee.father_name)} />
-        <InfoField label="Mother's Name"  value={fmt(employee.mother_name)} />
+        <InfoField label="Father's Name"  value={fmt(employee.father_name)} fieldKey="father_name" />
+        <InfoField label="Mother's Name"  value={fmt(employee.mother_name)} fieldKey="mother_name" />
       </div>
     </SectionCard>
 
     <SectionCard title="Contact Details" icon={MapPin} accent="#0066b3">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5">
-        <InfoField label="Mobile"          value={fmt(employee.mobilePhone)} />
-        <InfoField label="Work Email"      value={fmt(employee.work_email ?? employee.email)} />
-        <InfoField label="Personal Email"  value={fmt(employee.personal_email)} />
-        <InfoField label="Address"         value={[employee.address1, employee.city, employee.country].filter(Boolean).join(', ') || null} span2 />
+        <InfoField label="Mobile"          value={fmt(employee.mobilePhone)} fieldKey="mobilePhone" />
+        <InfoField label="Work Email"      value={fmt(employee.work_email ?? employee.email)} fieldKey="work_email" />
+        <InfoField label="Personal Email"  value={fmt(employee.personal_email)} fieldKey="personal_email" />
+        <InfoField label="Address"         value={[employee.address1, employee.city, employee.country].filter(Boolean).join(', ') || null} span2 fieldKey="address1" />
       </div>
     </SectionCard>
 
     <div className="lg:col-span-2">
       <SectionCard title="Identification" icon={IdCard} accent="#b45309">
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-5">
-          <InfoField label="National ID"       value={fmt(employee.nationalIdNumber)} />
-          <InfoField label="NIN Expiry"        value={fmtDate(employee.nationalIdExpiry)} />
-          <InfoField label="Passport"          value={fmt(employee.passportNumber)} />
-          <InfoField label="Passport Expiry"   value={fmtDate(employee.passportExpiry)} />
-          <InfoField label="Driver's License"  value={fmt(employee.driverLicenseNum)} />
-          <InfoField label="License Expiry"    value={fmtDate(employee.driverLicenseExp)} />
-          <InfoField label="SSN / Staff ID"    value={fmt(employee.ssn_num)} />
+          <InfoField label="National ID"       value={fmt(employee.nationalIdNumber)} fieldKey="nationalIdNumber" />
+          <InfoField label="NIN Expiry"        value={fmtDate(employee.nationalIdExpiry)} fieldKey="nationalIdExpiry" />
+          <InfoField label="Passport"          value={fmt(employee.passportNumber)} fieldKey="passportNumber" />
+          <InfoField label="Passport Expiry"   value={fmtDate(employee.passportExpiry)} fieldKey="passportExpiry" />
+          <InfoField label="Driver's License"  value={fmt(employee.driverLicenseNum)} fieldKey="driverLicenseNum" />
+          <InfoField label="License Expiry"    value={fmtDate(employee.driverLicenseExp)} fieldKey="driverLicenseExp" />
+          <InfoField label="SSN"    value={fmt(employee.ssn_num)} fieldKey="ssn_num" />
         </div>
       </SectionCard>
     </div>
@@ -222,25 +227,25 @@ const EmploymentTab: React.FC<{ employee: any }> = ({ employee }) => (
     <SectionCard title="Job Details" icon={Briefcase} accent="#059669">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5">
         <InfoField label="Employee ID"        value={fmt(employee.employee_id)} />
-        <InfoField label="Job Title"          value={employee.jobTitle?.label} />
-        <InfoField label="Employment Status"  value={employee.employmentStatus?.label} />
-        <InfoField label="Staff Level"        value={employee.staffLevel?.label ?? fmt(employee.staff_level)} />
-        <InfoField label="Staff Role"         value={employee.staffRole?.label ?? fmt(employee.staff_role)} />
-        <InfoField label="Department"         value={employee.department?.title} />
-        <InfoField label="Branch"             value={employee.branch?.title} />
-        <InfoField label="Unit"               value={employee.unit?.title} />
-        <InfoField label="Outlet"             value={employee.outlet?.title} />
-        <InfoField label="Supervisor"         value={employee.supervisor?.name} />
-        <InfoField label="Hire Date"          value={fmtDate(employee.hireDate)} />
-        <InfoField label="Confirmation Date"  value={fmtDate(employee.confirmationDate)} />
+        <InfoField label="Job Title"          value={employee.jobTitle?.label} fieldKey="jobTitleId" />
+        <InfoField label="Employment Status"  value={employee.employmentStatus?.label} fieldKey="employmentStatusId" />
+        <InfoField label="Staff Level"        value={employee.staffLevel?.label ?? fmt(employee.staff_level)} fieldKey="staff_level" />
+        <InfoField label="Staff Role"         value={employee.staffRole?.label ?? fmt(employee.staff_role)} fieldKey="staff_role" />
+        <InfoField label="Department"         value={employee.department?.title} fieldKey="departmentId" />
+        <InfoField label="Branch"             value={employee.branch?.title} fieldKey="branchId" />
+        <InfoField label="Unit"               value={employee.unit?.title} fieldKey="unitId" />
+        <InfoField label="Outlet"             value={employee.outlet?.title} fieldKey="outletId" />
+        <InfoField label="Supervisor"         value={employee.supervisor?.name} fieldKey="supervisorId" />
+        <InfoField label="Hire Date"          value={fmtDate(employee.hireDate)} fieldKey="hireDate" />
+        <InfoField label="Confirmation Date"  value={fmtDate(employee.confirmationDate)} fieldKey="confirmationDate" />
       </div>
     </SectionCard>
 
     <SectionCard title="Financial" icon={CreditCard} accent="#0066b3">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5">
-        <InfoField label="Bank Account"  value={fmt(employee.bankAccount)} span2 />
-        <InfoField label="Pay Grade"     value={fmt(employee.paygrade)} />
-        <InfoField label="Salary Notch"  value={fmt(employee.notch)} />
+        <InfoField label="Bank Account"  value={fmt(employee.bankAccount)} span2 fieldKey="bankAccount" />
+        <InfoField label="Pay Grade"     value={fmt(employee.paygrade)} fieldKey="paygradeId" />
+        <InfoField label="Salary Notch"  value={fmt(employee.notch)} fieldKey="notcheId" />
       </div>
     </SectionCard>
   </div>
@@ -308,10 +313,10 @@ const RelationshipsTab: React.FC<{ employee: any }> = ({ employee }) => {
     <div className="space-y-4">
       <SectionCard title="Next of Kin" icon={Heart} accent="#e11d48">
         <div className="grid grid-cols-2 gap-x-6 gap-y-5">
-          <InfoField label="Full Name" value={fmt(employee.nxt_kin_fname)} span2 />
-          <InfoField label="Phone"     value={fmt(employee.nxt_kin_phone)} />
-          <InfoField label="Email"     value={fmt(employee.nxt_kin_email)} />
-          <InfoField label="Address"   value={fmt(employee.nxt_kin_address)} span2 />
+          <InfoField label="Full Name" value={fmt(employee.nxt_kin_fname)} span2 fieldKey="nxt_kin_fname" />
+          <InfoField label="Phone"     value={fmt(employee.nxt_kin_phone)} fieldKey="nxt_kin_phone" />
+          <InfoField label="Email"     value={fmt(employee.nxt_kin_email)} fieldKey="nxt_kin_email" />
+          <InfoField label="Address"   value={fmt(employee.nxt_kin_address)} span2 fieldKey="nxt_kin_address" />
         </div>
       </SectionCard>
 
@@ -416,9 +421,9 @@ const DocumentsTab: React.FC<{ employee: any; onViewDocument: (document: any) =>
   <div className="space-y-4">
     <SectionCard title="Clearance Documents" icon={FileText} accent="#475569">
       <div>
-        <ClearanceDoc label="Fit & Proper Form"   value={employee.fit_and_proper}  onView={onViewDocument} />
-        <ClearanceDoc label="Police Clearance"    value={employee.policeClearance} onView={onViewDocument} />
-        <ClearanceDoc label="Medical Clearance"   value={employee.medicalClearance} onView={onViewDocument} />
+        {employeeFieldVisible('fit_and_proper')   && <ClearanceDoc label="Fit & Proper Form"   value={employee.fit_and_proper}  onView={onViewDocument} />}
+        {employeeFieldVisible('policeClearance')  && <ClearanceDoc label="Police Clearance"    value={employee.policeClearance} onView={onViewDocument} />}
+        {employeeFieldVisible('medicalClearance') && <ClearanceDoc label="Medical Clearance"   value={employee.medicalClearance} onView={onViewDocument} />}
         {employee.resignation_letter && (
           <ClearanceDoc label="Resignation Letter" value={employee.resignation_letter} onView={onViewDocument} />
         )}

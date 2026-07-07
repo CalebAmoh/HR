@@ -17,6 +17,7 @@ import { EmployeeFormFull } from './EmployeeFormFull';
 import {
   ONBOARDING_FIELDS, ONBOARDING_GROUPS, ONBOARDING_FIELD_MAP, ALWAYS_ON_KEYS,
 } from '@/lib/onboardingFields';
+import { employeeFieldVisible } from '@/lib/settings';
 
 const TABS = ['Form Builder', 'Share Link', 'Submissions'];
 const DOC_BASE = '/v1/api/hr/documents';
@@ -284,7 +285,9 @@ export function SelfOnboarding() {
           </div>
           <div className="p-4 sm:p-5 space-y-6">
             {ONBOARDING_GROUPS.map(group => {
-              const fields = ONBOARDING_FIELDS.filter(f => f.group === group);
+              // Only offer fields that are visible in Settings → Controls → Employee Form —
+              // that config is the master gate for what self-onboarding can collect.
+              const fields = ONBOARDING_FIELDS.filter(f => f.group === group && employeeFieldVisible(f.key));
               if (!fields.length) return null;
               return (
                 <div key={group}>

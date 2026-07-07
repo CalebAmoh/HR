@@ -5,10 +5,26 @@ import {
   LayoutGrid, CalendarRange, Bell, SlidersHorizontal,
   Building2, Users, ShieldCheck, Stethoscope, Banknote, Network, CalendarClock, FileText, Briefcase,
   Mail, Server, AtSign, Eye, EyeOff, Send, Loader2, GraduationCap,
-  Clock, MapPin, Tablet, KeyRound, Copy, RefreshCw, Lock,
+  Clock, MapPin, Tablet, KeyRound, Copy, RefreshCw, Lock, Sparkles, CheckCircle2, XCircle, Plus, Trash2, Pencil,
 } from 'lucide-react';
 import { Modules } from './Modules';
+import {
+  aiGetConfig, aiSaveConfig, aiHealth, aiReindex, type AiHealth,
+  aiListKnowledge, aiSaveKnowledge, aiSetKnowledgeEnabled, aiDeleteKnowledge, type KnowledgeEntry,
+} from '../../lib/aiClient';
 import { getSettings, saveSetting } from '../../lib/settings';
+import {
+  EMPLOYEE_FORM_FIELDS, EMPLOYEE_FORM_STEPS, EMPLOYEE_FORM_FIELDS_BY_KEY,
+  defaultFieldConfig, type EmployeeFieldConfig, type FieldFlags,
+} from '../config/employeeFormFields';
+import { ONBOARDING_FIELDS } from '@/lib/onboardingFields';
+import {
+  EMPLOYEE_ID_TOKENS, EMPLOYEE_ID_MAX_LENGTH, formatEmployeeId, patternIsValid,
+} from '@/lib/employeeIdFormat';
+
+// Fields the self-onboarding form builder can offer (its own catalog is a subset of the employee
+// form). Used to flag, in the Employee Form controls, which fields don't surface in onboarding.
+const ONBOARDING_FIELD_KEYS = new Set(ONBOARDING_FIELDS.map(f => f.key));
 import { useCan } from '@/hooks/useCan';
 import { inputClass } from './ui/FormField';
 import { CountedTextarea } from './ui/CountedTextarea';
@@ -54,6 +70,67 @@ function ControlRow({ label, description, checked, onChange }: {
   );
 }
 
+// Settings → Controls → General → Employees: defines the structure auto-generated employee IDs follow.
+// Edits a template string (e.g. EMP-{YYYY}-{SEQ4}); commits on blur and shows a live preview.
+function EmployeeIdFormatEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => { setDraft(value); }, [value]);
+
+  const commit = () => {
+    const next = draft.trim();
+    if (!next || next === value) { setDraft(value); return; }
+    onChange(next);
+    saveSetting('employees', { idFormat: next });
+  };
+
+  const sample = formatEmployeeId(draft || '', 1234);
+  const noSeq = !patternIsValid(draft);
+  const tooLong = sample.length > EMPLOYEE_ID_MAX_LENGTH;
+
+  return (
+    <div className="px-5 py-4">
+      <p className="text-[12px] font-semibold text-[var(--text-primary)] leading-snug">Employee ID Structure</p>
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+        spellCheck={false}
+        placeholder="EMP-{YYYY}-{SEQ4}"
+        className="mt-1.5 w-full px-3 py-2 rounded-[8px] border border-[var(--border)] bg-[var(--surface)] text-[13px] font-mono text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+      />
+      <div className="mt-2 flex items-center gap-2 text-[12px]">
+        <span className="text-[var(--text-muted)]">Preview</span>
+        <span className="font-mono font-semibold text-[var(--text-primary)] px-2 py-0.5 rounded-md bg-[var(--surface-hover)] border border-[var(--border)]">{sample}</span>
+      </div>
+      {noSeq && (
+        <p className="mt-2 text-[11px] font-medium text-[var(--danger)] leading-relaxed">
+          The structure must include a sequence token (e.g. {'{SEQ4}'}) so every employee gets a unique ID.
+        </p>
+      )}
+      {!noSeq && tooLong && (
+        <p className="mt-2 text-[11px] font-medium text-[var(--danger)] leading-relaxed">
+          This structure produces an ID longer than {EMPLOYEE_ID_MAX_LENGTH} characters — shorten the prefix or padding.
+        </p>
+      )}
+      <div className="mt-3 pt-3 border-t border-[var(--border-light)]">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Tokens</p>
+        <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1">
+          {EMPLOYEE_ID_TOKENS.map(t => (
+            <div key={t.token} className="flex items-baseline gap-1.5 text-[11px] leading-relaxed">
+              <code className="font-mono font-semibold text-[var(--accent)]">{t.token}</code>
+              <span className="text-[var(--text-muted)] truncate">{t.label}</span>
+            </div>
+          ))}
+        </div>
+        <p className="mt-2 text-[11px] text-[var(--text-muted)] leading-relaxed">
+          Numbering is continuous and never resets. Any other characters (e.g. <code className="font-mono">EMP</code>, <code className="font-mono">-</code>, <code className="font-mono">/</code>) are kept as-is.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function SectionCard({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
   return (
     <div className="border border-[var(--border)] rounded-[12px] overflow-visible">
@@ -62,6 +139,106 @@ function SectionCard({ icon, title, children }: { icon: ReactNode; title: string
         <span className="text-[11px] font-bold syne uppercase tracking-widest text-[var(--text-primary)]">{title}</span>
       </div>
       {children}
+    </div>
+  );
+}
+
+// A possibly-disabled toggle (locked / not-applicable fields are shown but greyed out).
+function MaybeToggle({ checked, disabled, onChange }: { checked: boolean; disabled?: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className={disabled ? 'opacity-40 pointer-events-none' : ''}>
+      <Toggle checked={checked} onChange={(v) => { if (!disabled) onChange(v); }} />
+    </div>
+  );
+}
+
+// Settings → Controls → Employee Form: per-field visibility + required for the Add Employee form.
+function EmployeeFormFieldsSection() {
+  const [fields, setFields] = useState<EmployeeFieldConfig>(() => getSettings().employeeForm.fields);
+
+  const flag = (key: string): FieldFlags => fields[key] ?? {
+    visible:  EMPLOYEE_FORM_FIELDS_BY_KEY[key]?.defaultVisible  ?? true,
+    required: EMPLOYEE_FORM_FIELDS_BY_KEY[key]?.defaultRequired ?? false,
+  };
+
+  const update = (key: string, patch: Partial<FieldFlags>) => {
+    setFields((prev) => {
+      const cur = prev[key] ?? flag(key);
+      let next: FieldFlags = { ...cur, ...patch };
+      if (next.visible === false) next = { ...next, required: false }; // can't require a hidden field
+      const merged = { ...prev, [key]: next };
+      saveSetting('employeeForm', { fields: merged });
+      return merged;
+    });
+  };
+
+  const resetDefaults = () => {
+    const d = defaultFieldConfig();
+    setFields(d);
+    saveSetting('employeeForm', { fields: d });
+  };
+
+  return (
+    <div className="space-y-5 max-w-3xl">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-[12px] text-[var(--text-muted)] leading-relaxed">
+          Choose which fields appear on the <strong className="text-[var(--text-secondary)]">Add Employee</strong> form and
+          which are required. Core identity fields (First/Last name, Work Email) are always shown and required.
+          Fields tagged <span className="font-semibold text-[var(--text-secondary)]">Not on self onboarding</span> aren’t
+          part of the Self-Onboarding form builder, so changing them here won’t affect onboarding.
+        </p>
+        <button onClick={resetDefaults} className="secondary-btn shrink-0 text-[12px]">
+          <RefreshCw size={13} /> Reset to defaults
+        </button>
+      </div>
+
+      {EMPLOYEE_FORM_STEPS.map((stepDef) => {
+        const stepFields = EMPLOYEE_FORM_FIELDS.filter((f) => f.step === stepDef.id);
+        if (!stepFields.length) return null;
+        return (
+          <SectionCard key={stepDef.id} icon={<Users size={13} />} title={stepDef.label}>
+            <div className="flex items-center gap-4 px-5 py-2 bg-[var(--bg)] border-b border-[var(--border-light)] text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
+              <span className="flex-1">Field</span>
+              <span className="w-[64px] text-center">Visible</span>
+              <span className="w-[64px] text-center">Required</span>
+            </div>
+            {stepFields.map((f) => {
+              const fl = flag(f.key);
+              const locked = !!f.locked;
+              return (
+                <div key={f.key} className="flex items-center gap-4 px-5 py-3 border-b border-[var(--border-light)] last:border-0">
+                  <div className="flex-1 min-w-0 flex items-center gap-2">
+                    <p className="text-[13px] font-semibold text-[var(--text-primary)] leading-snug shrink-0">{f.label}</p>
+                    {locked && (
+                      <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-[var(--accent-dim)] text-[var(--accent)] shrink-0">
+                        Always required
+                      </span>
+                    )}
+                    {!ONBOARDING_FIELD_KEYS.has(f.key) && (
+                      <span
+                        title="This field isn’t part of self-onboarding — it won’t appear in the Self-Onboarding form builder."
+                        className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-[var(--surface-hover)] text-[var(--text-muted)] border border-[var(--border)] whitespace-nowrap shrink-0"
+                      >
+                        Not on self onboarding
+                      </span>
+                    )}
+                  </div>
+                  <div className="w-[64px] flex justify-center">
+                    <MaybeToggle checked={locked ? true : fl.visible} disabled={locked} onChange={(v) => update(f.key, { visible: v })} />
+                  </div>
+                  <div className="w-[64px] flex justify-center">
+                    <MaybeToggle
+                      checked={locked ? true : (fl.visible && fl.required)}
+                      disabled={locked || !fl.visible}
+                      onChange={(v) => update(f.key, { required: v })}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </SectionCard>
+        );
+      })}
     </div>
   );
 }
@@ -187,7 +364,8 @@ function CurrencySelect({ value, onChange }: { value: string; onChange: (code: s
 // ─── Controls sub-tab sections ────────────────────────────────────────────────
 
 function GeneralSection({
-  autoGenCode, setAutoGenCode, autoGenEmpNum, setAutoGenEmpNum, autoGenJobCode, setAutoGenJobCode,
+  autoGenCode, setAutoGenCode, autoGenEmpNum, setAutoGenEmpNum, empIdFormat, setEmpIdFormat,
+  autoGenJobCode, setAutoGenJobCode,
   currency, setCurrency, allowDocumentDownload, setAllowDocumentDownload, saveDocumentSetting,
 }: any) {
   return (
@@ -205,10 +383,13 @@ function GeneralSection({
         <SectionCard icon={<Users size={13} />} title="Employees">
           <ControlRow
             label="Auto Generate Employee Number"
-            description="Automatically assign an employee number on creation using the format EMP-YEAR-0001. When off, you can enter the number manually."
+            description="Automatically assign an employee number on creation using the structure below. When off, you can enter the number manually."
             checked={autoGenEmpNum}
             onChange={(v) => { setAutoGenEmpNum(v); saveSetting('employees', { autoGenerateNumber: v }); }}
           />
+          {autoGenEmpNum && (
+            <EmployeeIdFormatEditor value={empIdFormat} onChange={setEmpIdFormat} />
+          )}
         </SectionCard>
 
         <SectionCard icon={<Briefcase size={13} />} title="Recruitment">
@@ -245,9 +426,55 @@ function GeneralSection({
   );
 }
 
+// Settings → Controls → Postings: master switches deciding whether each module posts to the GL /
+// makes payments. When off, the module is record-only — no journal entries / payouts are generated.
+function PostingsSection({
+  payLeave, setPayLeave, payMedical, setPayMedical, payPayroll, setPayPayroll,
+}: any) {
+  return (
+    <div className="space-y-4">
+      <p className="text-[12px] text-[var(--text-muted)] leading-relaxed max-w-3xl">
+        These switches decide whether a module posts to the general ledger (and triggers payments).
+        Turn one <span className="font-semibold text-[var(--text-primary)]">off</span> to use that
+        module for record-keeping only — requests and approvals still work, but nothing is posted to
+        the GL or paid out.
+      </p>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 auto-rows-min">
+        <SectionCard icon={<CalendarRange size={13} />} title="Leave">
+          <ControlRow
+            label="Post Leave Allowance Payments"
+            description="When on, approved leave allowances are scheduled and posted to the general ledger. When off, leave is recorded only — no allowance is paid or posted."
+            checked={payLeave}
+            onChange={(v) => { setPayLeave(v); saveSetting('payments', { leave: v }); }}
+          />
+        </SectionCard>
+
+        <SectionCard icon={<Stethoscope size={13} />} title="Medical">
+          <ControlRow
+            label="Post Medical Claim Payments"
+            description="When on, approved hospital, staff and dependent medical claims post to the general ledger. When off, medical claims are recorded only — no GL entry or reimbursement is posted."
+            checked={payMedical}
+            onChange={(v) => { setPayMedical(v); saveSetting('payments', { medical: v }); }}
+          />
+        </SectionCard>
+
+        <SectionCard icon={<Banknote size={13} />} title="Payroll">
+          <ControlRow
+            label="Post Payroll to General Ledger"
+            description="When on, finalizing a payroll run posts the journal to the general ledger. When off, payroll runs are recorded and finalized only — no GL posting is attempted."
+            checked={payPayroll}
+            onChange={(v) => { setPayPayroll(v); saveSetting('payments', { payroll: v }); }}
+          />
+        </SectionCard>
+      </div>
+    </div>
+  );
+}
+
 function ApprovalsSection({
   employeeApproval, setEmployeeApproval,
   employeeSelfApproval, setEmployeeSelfApproval,
+  employeeUpdateApproval, setEmployeeUpdateApproval,
   payrollApproval, setPayrollApproval,
   selfApproval, setSelfApproval,
   medicalSelfApproval, setMedicalSelfApproval,
@@ -273,6 +500,12 @@ function ApprovalsSection({
           description="Allow the same user who created an employee record to also approve it. When off, a different user must perform the approval."
           checked={employeeSelfApproval}
           onChange={(v) => { setEmployeeSelfApproval(v); saveSetting('approvals', { employeeSelfApproval: v }); }}
+        />
+        <ControlRow
+          label="Require Approval on Edit"
+          description="When on, editing an employee sends the record back through approval before it syncs to the external system — just like a new employee. When off, edits keep the employee's current status and sync immediately."
+          checked={employeeUpdateApproval}
+          onChange={(v) => { setEmployeeUpdateApproval(v); saveSetting('approvals', { employeeUpdateApproval: v }); }}
         />
       </SectionCard>
 
@@ -866,8 +1099,8 @@ function IntegrationsSection({ glUrl, setGlUrl, glApiKey, setGlApiKey, glApiSecr
 
 // ─── Controls tab ─────────────────────────────────────────────────────────────
 
-type ControlsSubTab = 'General' | 'Approvals' | 'Leave' | 'Attendance' | 'Medical & GL' | 'Integrations';
-const CONTROLS_SUBTABS: ControlsSubTab[] = ['General', 'Approvals', 'Leave', 'Attendance', 'Medical & GL', 'Integrations'];
+type ControlsSubTab = 'General' | 'Approvals' | 'Postings' | 'Leave' | 'Attendance' | 'Medical & GL' | 'Employee Form' | 'Integrations';
+const CONTROLS_SUBTABS: ControlsSubTab[] = ['General', 'Approvals', 'Postings', 'Leave', 'Attendance', 'Medical & GL', 'Employee Form', 'Integrations'];
 
 function ControlsTab() {
   const { can } = useCan();
@@ -877,9 +1110,14 @@ function ControlsTab() {
   // ── General / Approvals state (server-backed, in-memory cache) ────────────
   const [autoGenCode,          setAutoGenCode]          = useState(() => getSettings().companyStructure.autoGenerateCode);
   const [autoGenEmpNum,        setAutoGenEmpNum]        = useState(() => getSettings().employees.autoGenerateNumber);
+  const [empIdFormat,          setEmpIdFormat]          = useState(() => getSettings().employees.idFormat);
   const [autoGenJobCode,       setAutoGenJobCode]       = useState(() => getSettings().recruitment.autoGenerateCode);
+  const [payLeave,             setPayLeave]             = useState(() => getSettings().payments.leave);
+  const [payMedical,           setPayMedical]           = useState(() => getSettings().payments.medical);
+  const [payPayroll,           setPayPayroll]           = useState(() => getSettings().payments.payroll);
   const [employeeApproval,     setEmployeeApproval]     = useState(() => getSettings().approvals.employeeApproval);
   const [employeeSelfApproval, setEmployeeSelfApproval] = useState(() => getSettings().approvals.employeeSelfApproval);
+  const [employeeUpdateApproval, setEmployeeUpdateApproval] = useState(() => getSettings().approvals.employeeUpdateApproval);
   const [payrollApproval,      setPayrollApproval]      = useState(() => getSettings().approvals.payrollApproval);
   const [selfApproval,         setSelfApproval]         = useState(() => getSettings().approvals.selfApproval);
   const [medicalSelfApproval,  setMedicalSelfApproval]  = useState(() => getSettings().approvals.medicalSelfApproval);
@@ -1126,6 +1364,7 @@ function ControlsTab() {
           <GeneralSection
             autoGenCode={autoGenCode} setAutoGenCode={setAutoGenCode}
             autoGenEmpNum={autoGenEmpNum} setAutoGenEmpNum={setAutoGenEmpNum}
+            empIdFormat={empIdFormat} setEmpIdFormat={setEmpIdFormat}
             autoGenJobCode={autoGenJobCode} setAutoGenJobCode={setAutoGenJobCode}
             currency={currency} setCurrency={setCurrency}
             allowDocumentDownload={allowDocumentDownload} setAllowDocumentDownload={setAllowDocumentDownload}
@@ -1136,6 +1375,7 @@ function ControlsTab() {
           <ApprovalsSection
             employeeApproval={employeeApproval}       setEmployeeApproval={setEmployeeApproval}
             employeeSelfApproval={employeeSelfApproval} setEmployeeSelfApproval={setEmployeeSelfApproval}
+            employeeUpdateApproval={employeeUpdateApproval} setEmployeeUpdateApproval={setEmployeeUpdateApproval}
             payrollApproval={payrollApproval}         setPayrollApproval={setPayrollApproval}
             selfApproval={selfApproval}               setSelfApproval={setSelfApproval}
             medicalSelfApproval={medicalSelfApproval} setMedicalSelfApproval={setMedicalSelfApproval}
@@ -1143,6 +1383,13 @@ function ControlsTab() {
             saveFlowSettings={saveFlowSettings}
             trainingApprovalFlow={trainingApprovalFlow}   setTrainingApprovalFlow={setTrainingApprovalFlow}
             saveTrainingFlowSettings={saveTrainingFlowSettings}
+          />
+        )}
+        {subTab === 'Postings' && (
+          <PostingsSection
+            payLeave={payLeave}     setPayLeave={setPayLeave}
+            payMedical={payMedical} setPayMedical={setPayMedical}
+            payPayroll={payPayroll} setPayPayroll={setPayPayroll}
           />
         )}
         {subTab === 'Leave' && (
@@ -1160,6 +1407,7 @@ function ControlsTab() {
           />
         )}
         {subTab === 'Attendance' && <AttendanceSection />}
+        {subTab === 'Employee Form' && <EmployeeFormFieldsSection />}
         {subTab === 'Medical & GL' && (
           <MedicalGlSection
             whtHosp={whtHosp}   setWhtHosp={setWhtHosp}
@@ -1451,7 +1699,218 @@ function NotificationSettingsTab() {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-const TABS = ['Modules', 'Notification Settings', 'Controls', 'Email Setup'] as const;
+function AiSettingsTab() {
+  const [cfg, setCfg]       = useState<any>(null);
+  const [health, setHealth] = useState<AiHealth | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [reindexing, setReindexing] = useState(false);
+
+  const refresh = () => {
+    aiGetConfig().then(setCfg).catch(() => {});
+    aiHealth().then(setHealth).catch(() => setHealth({ ok: false, enabled: true, reason: 'Unavailable' }));
+  };
+  useEffect(refresh, []);
+
+  if (!cfg) return <div className="p-6 text-[13px] text-[var(--text-muted)]">Loading…</div>;
+
+  const setFeature = (k: string, v: boolean) => setCfg({ ...cfg, features: { ...cfg.features, [k]: v } });
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await aiSaveConfig({
+        enabled: cfg.enabled, base_url: cfg.baseUrl, chat_model: cfg.chatModel,
+        embed_model: cfg.embedModel, features: cfg.features,
+      });
+      toast.success('AI settings saved');
+      refresh();
+    } catch (e: any) { toast.error(e?.response?.data?.message || 'Save failed'); }
+    finally { setSaving(false); }
+  };
+
+  const reindex = async () => {
+    setReindexing(true);
+    try { const r = await aiReindex(); toast.success(`Reindexed ${r.chunks} knowledge chunks`); }
+    catch (e: any) { toast.error(e?.response?.data?.message || 'Reindex failed'); }
+    finally { setReindexing(false); }
+  };
+
+  const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => (
+    <button type="button" onClick={() => onChange(!on)}
+      className="relative w-10 h-5 rounded-full transition-colors shrink-0"
+      style={{ background: on ? 'var(--accent)' : 'var(--border)' }}>
+      <span className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" style={{ left: on ? '22px' : '2px' }} />
+    </button>
+  );
+
+  return (
+    <div className="p-5 sm:p-6 space-y-6 overflow-y-auto">
+      {/* Status */}
+      <div className="flex items-center gap-2 text-[13px] px-4 py-3 rounded-xl border border-[var(--border)]"
+        style={{ background: health?.ok ? 'var(--success-dim)' : 'var(--warning-dim)' }}>
+        {health?.ok
+          ? <CheckCircle2 size={16} className="text-[var(--success)]" />
+          : <XCircle size={16} className="text-[var(--warning)]" />}
+        <span className="text-[var(--text-secondary)]">
+          {health?.ok
+            ? `Connected to local AI · models: ${(health.models || []).join(', ') || 'none pulled'}`
+            : (health?.reason || 'AI service unavailable')}
+        </span>
+      </div>
+
+      {/* Master enable */}
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <p className="text-[14px] font-semibold text-[var(--text-primary)]">Enable AI</p>
+          <p className="text-[12px] text-[var(--text-muted)]">Master switch for all on-premise AI features.</p>
+        </div>
+        <Toggle on={!!cfg.enabled} onChange={v => setCfg({ ...cfg, enabled: v })} />
+      </div>
+
+      {/* Connection */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div>
+          <label className="block text-[12px] font-semibold text-[var(--text-secondary)] mb-1">Ollama base URL</label>
+          <input className={inputClass} value={cfg.baseUrl || ''} onChange={e => setCfg({ ...cfg, baseUrl: e.target.value })} placeholder="http://localhost:11434" />
+        </div>
+        <div>
+          <label className="block text-[12px] font-semibold text-[var(--text-secondary)] mb-1">Chat model</label>
+          <input className={inputClass} value={cfg.chatModel || ''} onChange={e => setCfg({ ...cfg, chatModel: e.target.value })} placeholder="llama3.2:3b" />
+        </div>
+        <div>
+          <label className="block text-[12px] font-semibold text-[var(--text-secondary)] mb-1">Embedding model</label>
+          <input className={inputClass} value={cfg.embedModel || ''} onChange={e => setCfg({ ...cfg, embedModel: e.target.value })} placeholder="nomic-embed-text" />
+        </div>
+      </div>
+
+      {/* Feature toggles */}
+      <div>
+        <p className="text-[13px] font-semibold text-[var(--text-primary)] mb-2">Features</p>
+        <div className="space-y-2">
+          {[
+            { k: 'assistant', label: 'Assistant (Q&A chat)' },
+            { k: 'drafting',  label: 'Drafting & writing' },
+            { k: 'ocr',       label: 'Document understanding (OCR)' },
+            { k: 'insights',  label: 'Predictions & insights' },
+          ].map(f => (
+            <div key={f.k} className="flex items-center justify-between px-3 py-2 rounded-lg bg-[var(--bg)] border border-[var(--border)]">
+              <span className="text-[13px] text-[var(--text-secondary)]">{f.label}</span>
+              <Toggle on={cfg.features?.[f.k] !== false} onChange={v => setFeature(f.k, v)} />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 pt-2">
+        <button onClick={save} disabled={saving} className="primary-btn">
+          {saving ? <Loader2 size={14} className="inline mr-1.5 animate-spin" /> : null}Save
+        </button>
+        <button onClick={reindex} disabled={reindexing} className="secondary-btn">
+          <RefreshCw size={14} className={`inline mr-1.5 ${reindexing ? 'animate-spin' : ''}`} />Reindex knowledge
+        </button>
+        <span className="text-[11px] text-[var(--text-muted)]">Rebuilds the help/document search index used by the assistant.</span>
+      </div>
+
+      <KnowledgeManager />
+    </div>
+  );
+}
+
+// Admin-managed knowledge entries the assistant feeds on (alongside the help content, the
+// server-side knowledge/ folder, and company documents). Changes apply after Reindex.
+function KnowledgeManager() {
+  const [items, setItems]   = useState<KnowledgeEntry[]>([]);
+  const [loading, setLoad]  = useState(true);
+  const [editing, setEditing] = useState<KnowledgeEntry | null>(null);
+  const [title, setTitle]   = useState('');
+  const [content, setContent] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const refresh = () => { setLoad(true); aiListKnowledge().then(setItems).catch(() => {}).finally(() => setLoad(false)); };
+  useEffect(refresh, []);
+
+  const startAdd  = () => { setEditing({ id: '', title: '', content: '', enabled: true }); setTitle(''); setContent(''); };
+  const startEdit = (e: KnowledgeEntry) => { setEditing(e); setTitle(e.title); setContent(e.content); };
+  const cancel    = () => { setEditing(null); setTitle(''); setContent(''); };
+
+  const save = async () => {
+    if (!title.trim() || !content.trim()) { toast.error('Title and content are required'); return; }
+    setSaving(true);
+    try {
+      await aiSaveKnowledge({ id: editing?.id || undefined, title: title.trim(), content: content.trim() });
+      toast.success(editing?.id ? 'Entry updated — reindex to apply' : 'Entry added — reindex to apply');
+      cancel(); refresh();
+    } catch (e: any) { toast.error(e?.response?.data?.message || 'Save failed'); }
+    finally { setSaving(false); }
+  };
+
+  const toggle = async (e: KnowledgeEntry) => {
+    try { await aiSetKnowledgeEnabled(e.id, !e.enabled); setItems(its => its.map(i => i.id === e.id ? { ...i, enabled: !i.enabled } : i)); }
+    catch { toast.error('Could not update'); }
+  };
+
+  const remove = async (e: KnowledgeEntry) => {
+    if (!window.confirm(`Delete "${e.title}"?`)) return;
+    try { await aiDeleteKnowledge(e.id); toast.success('Deleted — reindex to apply'); refresh(); }
+    catch { toast.error('Delete failed'); }
+  };
+
+  return (
+    <div className="border-t border-[var(--border)] mt-6 pt-5">
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <div>
+          <p className="text-[14px] font-semibold text-[var(--text-primary)]">Knowledge</p>
+          <p className="text-[12px] text-[var(--text-muted)]">Facts and policies the assistant can use to answer questions. Click <b>Reindex knowledge</b> above after changes.</p>
+        </div>
+        {!editing && (
+          <button onClick={startAdd} className="secondary-btn shrink-0"><Plus size={14} className="inline mr-1.5" />Add entry</button>
+        )}
+      </div>
+
+      {editing && (
+        <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3 space-y-2.5">
+          <input className={inputClass} value={title} onChange={e => setTitle(e.target.value)} placeholder="Title (e.g. Remote Work Policy)" />
+          <textarea className={`${inputClass} min-h-[120px]`} value={content} onChange={e => setContent(e.target.value)} placeholder="Write the knowledge content the assistant should know…" />
+          <div className="flex gap-2">
+            <button onClick={save} disabled={saving} className="primary-btn">
+              {saving ? <Loader2 size={14} className="inline mr-1.5 animate-spin" /> : null}{editing.id ? 'Update' : 'Add'}
+            </button>
+            <button onClick={cancel} className="secondary-btn">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3 space-y-2">
+        {loading ? (
+          <p className="text-[12px] text-[var(--text-muted)]">Loading…</p>
+        ) : items.length === 0 ? (
+          <p className="text-[12px] text-[var(--text-muted)]">No knowledge entries yet. Add one above, or drop files into the server's <code>src/data/knowledge/</code> folder.</p>
+        ) : items.map(e => (
+          <div key={e.id} className="flex items-start justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold text-[var(--text-primary)] truncate">{e.title}</p>
+              <p className="text-[12px] text-[var(--text-muted)] line-clamp-2">{e.content}</p>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button onClick={() => toggle(e)} title={e.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}
+                className="relative w-9 h-5 rounded-full transition-colors" style={{ background: e.enabled ? 'var(--accent)' : 'var(--border)' }}>
+                <span className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all" style={{ left: e.enabled ? '18px' : '2px' }} />
+              </button>
+              <button onClick={() => startEdit(e)} className="p-1.5 rounded-md hover:bg-[var(--surface-hover)] text-[var(--text-muted)]"><Pencil size={14} /></button>
+              <button onClick={() => remove(e)} className="p-1.5 rounded-md hover:bg-[var(--danger-dim)] text-[var(--danger)]"><Trash2 size={14} /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <p className="text-[11px] text-[var(--text-muted)] mt-3">
+        Power tip: for bulk or file-based content, drop <code>.md</code>, <code>.txt</code> or <code>.json</code> files into the server's <code>src/data/knowledge/</code> folder — they're indexed too.
+      </p>
+    </div>
+  );
+}
+
+const TABS = ['Modules', 'Notification Settings', 'Controls', 'Email Setup', 'AI'] as const;
 type Tab = (typeof TABS)[number];
 
 export function Settings() {
@@ -1489,6 +1948,7 @@ export function Settings() {
             {tab === 'Notification Settings' && <Bell                size={13} />}
             {tab === 'Controls'              && <SlidersHorizontal   size={13} />}
             {tab === 'Email Setup'           && <Mail                size={13} />}
+            {tab === 'AI'                    && <Sparkles            size={13} />}
             {tab}
           </button>
         ))}
@@ -1524,6 +1984,9 @@ export function Settings() {
                 {activeTab === 'Controls'              && <ControlsTab />}
                 {activeTab === 'Email Setup'           && (
                   <fieldset disabled={!canManage} className={`border-0 m-0 p-0 h-full ${!canManage ? 'readonly-section' : ''}`}><EmailSetupTab /></fieldset>
+                )}
+                {activeTab === 'AI'                    && (
+                  <fieldset disabled={!canManage} className={`border-0 m-0 p-0 h-full ${!canManage ? 'readonly-section' : ''}`}><AiSettingsTab /></fieldset>
                 )}
               </div>
             )}

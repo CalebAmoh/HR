@@ -60,6 +60,7 @@
     "sequelize": "^6.37.7",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
+    "tesseract.js": "^7.0.0",
     "toad-scheduler": "^3.0.1",
     "uuid": "^9.0.1",
     "xlsx": "^0.18.5"

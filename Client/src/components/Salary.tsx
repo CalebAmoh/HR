@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Edit, Trash2, Tag, DollarSign, Users, BarChart2, GitBranch, CreditCard, TrendingUp, Clock, X, AlertTriangle } from 'lucide-react';
+import { Plus, Edit, Trash2, Tag, DollarSign, Users, BarChart2, GitBranch, CreditCard, TrendingUp, Clock, X, AlertTriangle, Layers } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
@@ -11,23 +11,26 @@ import { RowActions } from './ui/RowActions';
 import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
+import { FilterSelect } from './ui/FilterSelect';
 import { CountedTextarea } from './ui/CountedTextarea';
 import { useCan } from '@/hooks/useCan';
 
 // Action permission required to manage each salary tab
 const SALARY_TAB_PERM: Record<string, string> = {
-  'Component Types':     'manage_salary_component_types',
-  'Components':          'manage_salary_components',
-  'Employee Components': 'manage_employee_salary_components',
-  'Paygrades & Notches': 'manage_notch_setup',
-  'Payment Types':       'manage_payment_types',
-  'Increment/Decrement': 'manage_notch_movements',
+  'Component Types':      'manage_salary_component_types',
+  'Components':           'manage_salary_components',
+  'Component Assignment': 'manage_notch_setup',
+  'Exceptions':           'manage_employee_salary_components',
+  'Paygrades & Notches':  'manage_notch_setup',
+  'Payment Types':        'manage_payment_types',
+  'Increment/Decrement':  'manage_notch_movements',
 };
 
 const SALARY_TABS = [
   { label: 'Component Types',     icon: Tag        },
   { label: 'Components',          icon: DollarSign },
-  { label: 'Employee Components', icon: Users      },
+  { label: 'Component Assignment', icon: Layers    },
+  { label: 'Exceptions',          icon: Users      },
   { label: 'Paygrades & Notches', icon: BarChart2  },
   { label: 'Payment Types',       icon: CreditCard },
   { label: 'Increment/Decrement', icon: TrendingUp },
@@ -36,7 +39,7 @@ const SALARY_TABS = [
 const ENDPOINTS: Record<string, string> = {
   'Component Types':     '/salary/component-types',
   'Components':          '/salary/components',
-  'Employee Components': '/salary/employee-components',
+  'Exceptions': '/salary/employee-components',
   'Payment Types':       '/salary/payment-types',
   'Increment/Decrement': '/salary/notch-movements',
 };
@@ -45,7 +48,7 @@ const blankForm = (tab: string) => {
   switch (tab) {
     case 'Component Types':     return { code: '', name: '', description: '' };
     case 'Components':          return { name: '', details: '', is_notch_linked: 0 };
-    case 'Employee Components': return { employees: [], component: '', working_days: '', amount: '' };
+    case 'Exceptions': return { employees: [], component: '', working_days: '', amount: '', excluded: false };
     case 'Payment Types':       return { name: '', description: '', generate_payslip: 1 };
     case 'Increment/Decrement': return { notchIds: [], operation: 'Increment', percentage: '', date: new Date().toISOString().slice(0, 10) };
     default:                    return {};
@@ -135,7 +138,7 @@ function MultiSelectNotchField({
 
   const visible = useMemo(() => {
     let list = notches;
-    if (filterPg) list = list.filter((n: any) => n.paygrade === filterPg);
+    if (filterPg) list = list.filter((n: any) => String(n.paygradeId) === filterPg);
     const q = search.trim().toLowerCase();
     if (q) list = list.filter((n: any) => (n.label ?? n.name ?? '').toLowerCase().includes(q));
     return list;
@@ -173,7 +176,7 @@ function MultiSelectNotchField({
       <div className="flex gap-2 mb-2">
         <select value={filterPg} onChange={(e: any) => setFilterPg(e.target.value)} className="flex-1 text-xs !py-1.5">
           <option value="">All paygrades</option>
-          {paygrades.map((p: any) => <option key={p.id} value={p.name}>{p.name}</option>)}
+          {paygrades.map((p: any) => <option key={p.id} value={String(p.id)}>{p.name}</option>)}
         </select>
         <input value={search} onChange={(e: any) => setSearch(e.target.value)} placeholder="Search notches..." className="flex-1 text-xs !py-1.5" />
       </div>
@@ -195,7 +198,7 @@ function MultiSelectNotchField({
             <label key={n.id} className="flex items-center gap-2 px-3 py-2 hover:bg-[var(--bg)] cursor-pointer border-b border-[var(--border)] last:border-b-0">
               <input type="checkbox" checked={selectedSet.has(id)} onChange={() => toggle(id)} className="accent-[var(--accent)] shrink-0" />
               <span className="flex-1 min-w-0 truncate text-sm">{n.label ?? n.name}</span>
-              {n.paygrade && <span className="text-xs text-[var(--text-muted)] shrink-0">{n.paygrade}</span>}
+              {n.paygrade_name && <span className="text-xs text-[var(--text-muted)] shrink-0">{n.paygrade_name}</span>}
             </label>
           );
         })}
@@ -213,6 +216,176 @@ function TabBar({ activeTab, setActiveTab }: { activeTab: string; setActiveTab: 
           {label}
         </button>
       ))}
+    </div>
+  );
+}
+
+// ── Component Assignment tab — assign salary components to a paygrade or notch ───────────────────
+function ComponentAssignmentTab({ refs, canManage, activeTab, setActiveTab }: {
+  refs: any; canManage: boolean; activeTab: string; setActiveTab: (t: string) => void;
+}) {
+  const [targetType, setTargetType] = useState<'paygrade' | 'notch'>('paygrade');
+  const [targetId, setTargetId] = useState('');
+  const [rows, setRows] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState<any>(null);
+  const [form, setForm] = useState<any>({ component: '', amount: '', working_days: '' });
+  const [saving, setSaving] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<any>(null);
+
+  const endpoint = targetType === 'paygrade' ? '/salary/paygrade-components' : '/salary/notch-components';
+  const targets = (targetType === 'paygrade' ? refs.paygrades : refs.notches) ?? [];
+  // The "grade-linked" component gets its value from the notch amount automatically — flag it so users
+  // know assigning it here overrides that notch amount.
+  const gradeLinked = (refs.components ?? []).find((c: any) => c.is_notch_linked);
+  const selectedIsGradeLinked = gradeLinked && String(form.component) === String(gradeLinked.id);
+
+  const load = async () => {
+    if (!targetId) { setRows([]); return; }
+    setLoading(true);
+    try { const r = await api.get(`${endpoint}?target_id=${targetId}`); setRows(r.data.data ?? []); }
+    catch { toast.error('Failed to load assignments'); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [targetType, targetId]);
+  // Reset the selected target when switching paygrade/notch
+  useEffect(() => { setTargetId(''); setRows([]); }, [targetType]);
+
+  const openAdd = () => { setEditing(null); setForm({ component: '', amount: '', working_days: '' }); setModalOpen(true); };
+  const openEdit = (row: any) => { setEditing(row); setForm({ component: String(row.component_id), amount: row.amount ?? '', working_days: row.working_days ?? '' }); setModalOpen(true); };
+
+  const save = async () => {
+    if (!targetId) return toast.error(`Select a ${targetType} first`);
+    if (!editing && !form.component) return toast.error('Component is required');
+    setSaving(true);
+    try {
+      if (editing) await api.put(`${endpoint}/${editing.id}`, { amount: form.amount, working_days: form.working_days });
+      else await api.post(endpoint, { target_id: targetId, component: form.component, amount: form.amount, working_days: form.working_days });
+      toast.success(editing ? 'Updated' : 'Component assigned');
+      setModalOpen(false);
+      await load();
+    } catch (e: any) { toast.error(e?.response?.data?.message ?? 'Save failed'); }
+    finally { setSaving(false); }
+  };
+
+  const confirmDelete = async () => {
+    const row = pendingDelete; setPendingDelete(null);
+    try { await api.delete(`${endpoint}/${row.id}`); toast.success('Removed'); await load(); }
+    catch (e: any) { toast.error(e?.response?.data?.message ?? 'Delete failed'); }
+  };
+
+  const targetLabel = (t: any) => t.label ?? t.name ?? `#${t.id}`;
+
+  return (
+    <div className="p-4 sm:p-6 w-full max-w-[1400px] mx-auto overflow-x-hidden flex flex-col h-full relative">
+      <PageHeader title="Payroll Management" subtitle="Manage salary components, increments, and payment setups." />
+      <TabBar activeTab={activeTab} setActiveTab={setActiveTab} />
+
+      <p className="mb-3 max-w-3xl text-[13px] leading-relaxed text-[var(--text-secondary)]">
+        Assign components to a <span className="font-semibold text-[var(--text-primary)]">paygrade</span> or
+        <span className="font-semibold text-[var(--text-primary)]"> notch</span> — every employee on it inherits them
+        (a notch overrides its paygrade). Use <span className="font-semibold text-[var(--text-primary)]">Exceptions</span> for
+        per-employee changes.
+      </p>
+      {gradeLinked && (
+        <div className="mb-4 max-w-3xl flex items-center gap-2.5 rounded-[10px] px-3.5 py-2.5"
+          style={{ background: 'var(--warning-dim)', border: '1px solid color-mix(in srgb, var(--warning) 30%, transparent)' }}>
+          <AlertTriangle size={15} className="shrink-0" style={{ color: 'var(--warning)' }} />
+          <span className="text-[12.5px] leading-snug text-[var(--text-secondary)]">
+            Basic pay is automatic — the <span className="font-semibold text-[var(--text-primary)]">notch amount</span> fills
+            <span className="font-semibold text-[var(--text-primary)]"> {gradeLinked.label}</span>, so you don't need to assign it here.
+          </span>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <div className="inline-flex rounded-lg border border-[var(--border)] overflow-hidden">
+          {(['paygrade', 'notch'] as const).map(t => (
+            <button key={t} onClick={() => setTargetType(t)}
+              className={`px-4 py-2 text-[13px] font-semibold capitalize transition-colors ${targetType === t ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:bg-[var(--bg)]'}`}>
+              {t}
+            </button>
+          ))}
+        </div>
+        <div className="w-72">
+          <Combobox
+            options={targets.map((t: any) => ({ id: String(t.id), label: targetLabel(t) }))}
+            value={targetId}
+            onChange={(id: string) => setTargetId(id)}
+            placeholder={`Select a ${targetType}…`}
+          />
+        </div>
+        {targetId && canManage && (
+          <button onClick={openAdd} className="primary-btn shrink-0"><Plus className="w-[14px] h-[14px]" /> Assign Component</button>
+        )}
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[16px] overflow-hidden flex flex-col flex-1 min-h-0 drop-shadow-sm">
+        <div className="overflow-x-auto flex-1">
+          {!targetId ? (
+            <div className="p-10 text-center text-[var(--text-muted)] text-sm">Select a {targetType} to view and assign its components.</div>
+          ) : loading ? (
+            <div className="p-8 text-center text-slate-500 text-sm">Loading...</div>
+          ) : (
+            <table className="w-full border-collapse">
+              <thead><tr>
+                {['Component', 'Working Days', 'Amount'].map(h => <th key={h} scope="col" className="th">{h}</th>)}
+                {canManage && <th className="th text-right"><span className="sr-only">Actions</span></th>}
+              </tr></thead>
+              <tbody>
+                {rows.length ? rows.map((row, i) => (
+                  <motion.tr key={row.id ?? i} className="tr" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.04 + i * 0.03 }}>
+                    <td className="td font-medium text-[var(--text-primary)]">{row.componentName ?? '-'}</td>
+                    <td className="td">{row.working_days ?? '-'}</td>
+                    <td className="td">{fmtMoney(row.amount)}</td>
+                    {canManage && (
+                      <td className="td"><div className="flex justify-end">
+                        <RowActions actions={[
+                          { label: 'Edit', icon: Edit, onClick: () => openEdit(row) },
+                          { label: 'Delete', icon: Trash2, danger: true, onClick: () => setPendingDelete(row) },
+                        ]} />
+                      </div></td>
+                    )}
+                  </motion.tr>
+                )) : (
+                  <tr><td colSpan={4} className="td text-center py-10 text-[var(--text-muted)]">No components assigned to this {targetType} yet.</td></tr>
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      {modalOpen && (
+        <FormModal title={editing ? 'Edit Assigned Component' : 'Assign Component'} onClose={() => setModalOpen(false)} onSave={save} saveLabel={saving ? 'Saving…' : 'Save'}>
+          <div className="mb-4">
+            <label className="label">Component <span className="text-[var(--danger)]">*</span></label>
+            <Combobox
+              options={(refs.components ?? []).map((c: any) => ({ id: String(c.id), label: c.is_notch_linked ? `${c.label} — basic pay, from notch amount` : c.label }))}
+              value={form.component ? String(form.component) : ''}
+              onChange={(id: string) => setForm((f: any) => ({ ...f, component: id }))}
+              placeholder="Search component…"
+              disabled={!!editing}
+            />
+          </div>
+          {selectedIsGradeLinked && (
+            <div className="mb-4 flex items-start gap-2.5 rounded-[10px] px-3.5 py-2.5"
+              style={{ background: 'var(--warning-dim)', border: '1px solid color-mix(in srgb, var(--warning) 30%, transparent)' }}>
+              <AlertTriangle size={15} className="mt-[1px] shrink-0" style={{ color: 'var(--warning)' }} />
+              <p className="text-[12px] leading-relaxed text-[var(--text-secondary)]">
+                <span className="font-semibold text-[var(--text-primary)]">{gradeLinked.label}</span> is the notched-linked component (basic salary)
+                — its value normally comes from the <span className="font-semibold text-[var(--text-primary)]">notch amount</span> in
+                Paygrades &amp; Notches. Assigning it here <span className="font-semibold text-[var(--text-primary)]">overrides</span> that for
+                everyone on this {targetType}.
+              </p>
+            </div>
+          )}
+          <div className="mb-4"><label className="label">No. of working days</label><input type="number" value={form.working_days} onChange={(e) => setForm((f: any) => ({ ...f, working_days: e.target.value }))} placeholder="e.g. 20" /></div>
+          <div className="mb-4"><label className="label">Amount</label><input type="number" value={form.amount} onChange={(e) => setForm((f: any) => ({ ...f, amount: e.target.value }))} placeholder="0.00" /></div>
+        </FormModal>
+      )}
+      <ConfirmAlert isOpen={!!pendingDelete} title="Remove Component" message={`Remove "${pendingDelete?.componentName}" from this ${targetType}?`} confirmText="Remove" onConfirm={confirmDelete} onCancel={() => setPendingDelete(null)} />
     </div>
   );
 }
@@ -244,7 +417,7 @@ export function Salary() {
   const [editingPg, setEditingPg] = useState<any>(null);
   const [editingNotch, setEditingNotch] = useState<any>(null);
   const [pgForm, setPgForm] = useState<any>({ name: '', currency: '', min_salary: '', max_salary: '' });
-  const [notchForm, setNotchForm] = useState<any>({ name: '', paygrade: '', currency: '', amount: '' });
+  const [notchForm, setNotchForm] = useState<any>({ name: '', paygradeId: '', paygradeName: '', currency: '', amount: '' });
   const [pgSaving, setPgSaving] = useState(false);
   const [notchSaving, setNotchSaving] = useState(false);
   const [pgDeleting, setPgDeleting] = useState<any>(null);
@@ -322,11 +495,14 @@ export function Salary() {
   useEffect(() => {
     if (activeTab === 'Paygrades & Notches') {
       loadPgNotch();
-    } else {
+    } else if (ENDPOINTS[activeTab]) {
+      // Generic CRUD tabs. Tabs with their own data handling (e.g. Component Assignment) are skipped.
       setRows([]);
       setSearchQuery('');
       setFilter({});
       loadRows(activeTab);
+    } else {
+      setRows([]);
     }
   }, [activeTab]);
 
@@ -360,12 +536,12 @@ export function Salary() {
   };
 
   // ── Notch handlers ───────────────────────────────────────
-  const openAddNotch = () => { setEditingNotch(null); setNotchForm({ name: '', paygrade: selectedPg?.name ?? '', currency: selectedPg?.currency ?? '', amount: '' }); setNotchModalOpen(true); };
-  const openEditNotch = (row: any) => { setEditingNotch(row); setNotchForm({ name: row.name ?? '', paygrade: row.paygrade ?? '', currency: row.currency ?? '', amount: row.amount ?? '' }); setNotchModalOpen(true); };
+  const openAddNotch = () => { setEditingNotch(null); setNotchForm({ name: '', paygradeId: selectedPg?.id ?? '', paygradeName: selectedPg?.name ?? '', currency: selectedPg?.currency ?? '', amount: '' }); setNotchModalOpen(true); };
+  const openEditNotch = (row: any) => { setEditingNotch(row); setNotchForm({ name: row.name ?? '', paygradeId: row.paygradeId ?? selectedPg?.id ?? '', paygradeName: row.paygrade_name ?? selectedPg?.name ?? '', currency: row.currency ?? '', amount: row.amount ?? '' }); setNotchModalOpen(true); };
 
   const handleSaveNotch = async () => {
     if (!notchForm.name?.trim()) return toast.error('Notch name is required');
-    if (!notchForm.paygrade?.trim()) return toast.error('Paygrade is required');
+    if (!notchForm.paygradeId) return toast.error('Paygrade is required');
     setNotchSaving(true);
     try {
       editingNotch ? await api.put(`/salary/notches/${editingNotch.id}`, notchForm) : await api.post('/salary/notches', notchForm);
@@ -399,7 +575,7 @@ export function Salary() {
   const paginatedPgs = filteredPgs.slice((pgPage - 1) * PG_PAGE_SIZE, pgPage * PG_PAGE_SIZE);
 
   const filteredNotches = useMemo(() => {
-    const base = selectedPg ? notchRows.filter((n: any) => n.paygrade === selectedPg.name) : [];
+    const base = selectedPg ? notchRows.filter((n: any) => String(n.paygradeId) === String(selectedPg.id)) : [];
     const q = notchSearch.trim().toLowerCase();
     if (!q) return base;
     return base.filter((n: any) => n.name.toLowerCase().includes(q) || String(n.amount ?? '').includes(q));
@@ -412,7 +588,7 @@ export function Salary() {
     let result = rows;
     const q = searchQuery.trim().toLowerCase();
     if (q) result = result.filter((row: any) => JSON.stringify(row).toLowerCase().includes(q));
-    if (activeTab === 'Employee Components') {
+    if (activeTab === 'Exceptions') {
       if (filter.employee) result = result.filter((row: any) => String(row.employee) === filter.employee);
       if (filter.component) result = result.filter((row: any) => String(row.component) === filter.component);
     }
@@ -426,8 +602,8 @@ export function Salary() {
   const openAdd = () => { setSelectedRow(null); setForm(blankForm(activeTab)); setIsModalOpen(true); };
   const openEdit = (row: any) => {
     setSelectedRow(row);
-    if (activeTab === 'Employee Components') {
-      setForm({ employees: [optionId(row.employee)], component: optionId(row.component), working_days: row.working_days ?? '', amount: row.amount ?? '' });
+    if (activeTab === 'Exceptions') {
+      setForm({ employees: [optionId(row.employee)], component: optionId(row.component), working_days: row.working_days ?? '', amount: row.amount ?? '', excluded: row.excluded === 1 || row.excluded === true });
     } else {
       setForm({ ...blankForm(activeTab), ...row });
     }
@@ -437,8 +613,8 @@ export function Salary() {
   const validate = () => {
     if (activeTab === 'Component Types' && (!form.code?.trim() || !form.name?.trim())) return 'Code and name are required';
     if (activeTab === 'Components' && !form.name?.trim()) return 'Component name is required';
-    if (activeTab === 'Employee Components' && (!form.employees?.length || !form.component)) return 'Employee and component are required';
-    if (activeTab === 'Employee Components') {
+    if (activeTab === 'Exceptions' && (!form.employees?.length || !form.component)) return 'Employee and component are required';
+    if (activeTab === 'Exceptions') {
       const duplicates = rows.filter((row: any) =>
         String(row.component) === String(form.component) &&
         form.employees.map(String).includes(String(row.employee)) &&
@@ -460,7 +636,7 @@ export function Salary() {
     setSaving(true);
     try {
       const endpoint = ENDPOINTS[activeTab];
-      if (activeTab === 'Employee Components') {
+      if (activeTab === 'Exceptions') {
         const { employees, ...rest } = form;
         if (selectedRow) {
           await api.put(`${endpoint}/${selectedRow.id}`, { ...rest, employee: employees[0] });
@@ -504,23 +680,29 @@ export function Salary() {
   const setF = (key: string, value: string) => setFilter((prev: any) => ({ ...prev, [key]: value }));
 
   const renderFilterBar = () => {
-    if (activeTab !== 'Employee Components') return null;
+    if (activeTab !== 'Exceptions') return null;
     const hasFilter = filter.employee || filter.component;
     return (
       <>
         <div className="flex items-center gap-2">
           <span className="text-xs text-[var(--text-secondary)] shrink-0">Employee</span>
-          <select value={filter.employee ?? ''} onChange={(e: any) => setF('employee', e.target.value)} className="text-sm !py-1 !h-auto">
-            <option value="">All</option>
-            {refs.employees?.map((e: any) => <option key={e.id} value={String(e.id)}>{e.label}</option>)}
-          </select>
+          <FilterSelect
+            value={filter.employee ?? ''}
+            onChange={v => setF('employee', v)}
+            placeholder="All"
+            minWidth={170}
+            options={[{ value: '', label: 'All' }, ...(refs.employees ?? []).map((e: any) => ({ value: String(e.id), label: e.label }))]}
+          />
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-[var(--text-secondary)] shrink-0">Component</span>
-          <select value={filter.component ?? ''} onChange={(e: any) => setF('component', e.target.value)} className="text-sm !py-1 !h-auto">
-            <option value="">All</option>
-            {refs.components?.map((c: any) => <option key={c.id} value={String(c.id)}>{c.label}</option>)}
-          </select>
+          <FilterSelect
+            value={filter.component ?? ''}
+            onChange={v => setF('component', v)}
+            placeholder="All"
+            minWidth={170}
+            options={[{ value: '', label: 'All' }, ...(refs.components ?? []).map((c: any) => ({ value: String(c.id), label: c.label }))]}
+          />
         </div>
         {hasFilter && <button onClick={() => setFilter({})} className="text-xs text-[var(--accent)] hover:underline shrink-0">Clear</button>}
       </>
@@ -555,7 +737,7 @@ export function Salary() {
                   disabled={otherIsLinked}
                   className="accent-[var(--accent)]"
                 />
-                <span className="text-[13px] text-[var(--text-primary)]">Link this component to the employee grade scale</span>
+                <span className="text-[13px] text-[var(--text-primary)]">Links this component to the employee's notches</span>
               </label>
               {otherIsLinked && (
                 <p className="text-[11px] text-[var(--text-muted)] mt-1">
@@ -566,13 +748,32 @@ export function Salary() {
           </>
         );
       }
-      case 'Employee Components':
+      case 'Exceptions':
         return (
           <>
+            <p className="mb-4 text-[12px] text-[var(--text-muted)] leading-relaxed">
+              Exceptions override the components an employee inherits from their paygrade/notch. Use them to
+              change an amount, exclude an inherited component, or add an extra one.
+            </p>
             <MultiSelectEmployeeField selected={form.employees} options={refs.employees ?? []} onChange={(employees: string[]) => setForm((p: any) => ({ ...p, employees }))} />
-            <div className="mb-4"><label className="label">Component <span className="text-[var(--danger)]">*</span></label><select value={form.component} onChange={(e) => set('component', e.target.value)}><option value="">Select component</option>{refs.components?.map((c: any) => <option key={c.id} value={c.id}>{c.label}</option>)}</select></div>
-            <div className="mb-4"><label className="label">No. of working days</label><input type="number" value={form.working_days} onChange={(e) => set('working_days', e.target.value)} placeholder="e.g. 20" /></div>
-            <div className="mb-4"><label className="label">Amount</label><input type="number" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="0.00" /></div>
+            <div className="mb-4">
+              <label className="label">Component <span className="text-[var(--danger)]">*</span></label>
+              <Combobox
+                options={(refs.components ?? []).map((c: any) => ({ id: String(c.id), label: c.label }))}
+                value={form.component ? String(form.component) : ''}
+                onChange={(id: string) => set('component', id)}
+                placeholder="Search component…"
+              />
+            </div>
+            <label className="mb-4 flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" className="accent-[var(--accent)]" checked={!!form.excluded}
+                onChange={(e) => set('excluded', e.target.checked)} />
+              <span className="text-[13px] text-[var(--text-primary)]">Exclude this component for the selected employee(s)</span>
+            </label>
+            {!form.excluded && <>
+              <div className="mb-4"><label className="label">No. of working days</label><input type="number" value={form.working_days} onChange={(e) => set('working_days', e.target.value)} placeholder="e.g. 20" /></div>
+              <div className="mb-4"><label className="label">Amount</label><input type="number" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="0.00" /></div>
+            </>}
           </>
         );
       case 'Payment Types':
@@ -616,7 +817,7 @@ export function Salary() {
   const renderHead = () => {
     if (activeTab === 'Component Types')     return ['Code', 'Name', 'Description'];
     if (activeTab === 'Components')          return ['Name', 'Details'];
-    if (activeTab === 'Employee Components') return ['Employee', 'Component', 'Working Days', 'Amount'];
+    if (activeTab === 'Exceptions') return ['Employee', 'Component', 'Working Days', 'Amount / Effect'];
     if (activeTab === 'Payment Types')       return ['Payment Type', 'Description'];
     return ['Date', 'Notch', 'Change'];
   };
@@ -630,7 +831,13 @@ export function Salary() {
       </span>,
       row.details ?? '-',
     ];
-    if (activeTab === 'Employee Components') return [row.employeeName ?? '-', row.componentName ?? '-', row.working_days ?? '-', fmtMoney(row.amount)];
+    if (activeTab === 'Exceptions') return [
+      row.employeeName ?? '-', row.componentName ?? '-',
+      (row.excluded === 1 || row.excluded === true) ? '-' : (row.working_days ?? '-'),
+      (row.excluded === 1 || row.excluded === true)
+        ? <span key="ex" className="pill text-[10px]" style={{ background: 'var(--danger-dim)', color: 'var(--danger)', border: '1px solid var(--danger)' }}>Excluded</span>
+        : fmtMoney(row.amount),
+    ];
     if (activeTab === 'Payment Types')       return [
       <span key="name" className="flex items-center gap-1.5">
         {row.name}
@@ -647,6 +854,11 @@ export function Salary() {
     id: c.code ?? c.label,
     label: c.code ? `${c.code} — ${c.label}` : c.label,
   }));
+
+  // ── Component Assignment — assign components to a paygrade/notch ──
+  if (activeTab === 'Component Assignment') {
+    return <ComponentAssignmentTab refs={refs} canManage={canManageTab()} activeTab={activeTab} setActiveTab={setActiveTab} />;
+  }
 
   // ── Paygrades & Notches — two-panel view ─────────────────
   if (activeTab === 'Paygrades & Notches') {
@@ -816,7 +1028,7 @@ export function Salary() {
             <div className="mb-4"><label className="label">Notch Name <span className="text-[var(--danger)]">*</span></label><input value={notchForm.name} onChange={(e) => setN('name', e.target.value)} placeholder="Enter notch name" /></div>
             <div className="mb-4">
               <label className="label">Paygrade</label>
-              <input value={notchForm.paygrade} readOnly style={{ opacity: 0.7, cursor: 'default' }} />
+              <input value={notchForm.paygradeName} readOnly style={{ opacity: 0.7, cursor: 'default' }} />
               {selectedPg?.currency && <p className="mt-1 text-xs text-[var(--text-muted)]">Currency: <span className="font-semibold text-[var(--text-secondary)]">{selectedPg.currency}</span></p>}
             </div>
             <div className="mb-4"><label className="label">Amount</label><input type="number" value={notchForm.amount} onChange={(e) => setN('amount', e.target.value)} placeholder="0.00" /></div>
@@ -850,7 +1062,7 @@ export function Salary() {
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
           searchPlaceholder={`Search ${activeTab.toLowerCase()}...`}
-          showFilters={activeTab === 'Employee Components'}
+          showFilters={activeTab === 'Exceptions'}
           filterBar={renderFilterBar()}
           actions={
             canManageTab() ? (
@@ -882,7 +1094,7 @@ export function Salary() {
                       <td className="td">
                         <div className="flex justify-end">
                           <RowActions actions={[
-                            { label: 'Salary History', icon: Clock, onClick: () => openHistory(row), hidden: activeTab !== 'Employee Components' },
+                            { label: 'Salary History', icon: Clock, onClick: () => openHistory(row), hidden: activeTab !== 'Exceptions' },
                             { label: 'Edit', icon: Edit, onClick: () => openEdit(row), hidden: !canManageTab() },
                             { label: 'Delete', icon: Trash2, danger: true, onClick: () => handleDelete(row), hidden: !canManageTab() },
                           ]} />

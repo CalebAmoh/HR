@@ -11,6 +11,7 @@ import api from '../../lib/api';
 import { toast } from 'sonner';
 import { getCurrentUser } from '../../lib/auth';
 import { PageHeader } from './ui/PageHeader';
+import { FilterSelect } from './ui/FilterSelect';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { FormModal } from './ui/FormModal';
@@ -447,14 +448,14 @@ function MyTeamTab() {
           }
           filterBar={showFilters ? (
             <div className="flex flex-wrap items-end gap-3">
-              <div className="flex flex-col gap-1 min-w-[160px]">
-                <label className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">Status</label>
-                <select className="text-[12px] h-8 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
-                  value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}>
-                  <option value="">All</option>
-                  {['Not Started', 'Self Assessment', 'Supervisor Review', 'HR Review', 'Completed'].map(s => <option key={s}>{s}</option>)}
-                </select>
-              </div>
+              <FilterSelect
+                label="Status"
+                value={statusFilter}
+                onChange={v => { setStatusFilter(v); setPage(1); }}
+                placeholder="All"
+                minWidth={160}
+                options={[{ value: '', label: 'All' }, ...['Not Started', 'Self Assessment', 'Supervisor Review', 'HR Review', 'Completed'].map(s => ({ value: s, label: s }))]}
+              />
               {activeFilterCount > 0 && (
                 <button onClick={() => setStatusFilter('')}
                   className="flex items-center gap-1 text-[12px] text-[var(--danger)] hover:underline h-8 self-end">
@@ -592,14 +593,14 @@ function MyGoalsTab({ employeeId }: { employeeId: string }) {
           }
           filterBar={showFilters ? (
             <div className="flex flex-wrap items-end gap-3">
-              <div className="flex flex-col gap-1 min-w-[150px]">
-                <label className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">Status</label>
-                <select className="text-[12px] h-8 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
-                  value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}>
-                  <option value="">All</option>
-                  {GOAL_STATUSES.map(s => <option key={s}>{s}</option>)}
-                </select>
-              </div>
+              <FilterSelect
+                label="Status"
+                value={statusFilter}
+                onChange={v => { setStatusFilter(v); setPage(1); }}
+                placeholder="All"
+                minWidth={150}
+                options={[{ value: '', label: 'All' }, ...GOAL_STATUSES.map(s => ({ value: s, label: s }))]}
+              />
               {activeFilterCount > 0 && (
                 <button onClick={() => setStatusFilter('')}
                   className="flex items-center gap-1 text-[12px] text-[var(--danger)] hover:underline h-8 self-end">

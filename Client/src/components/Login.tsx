@@ -139,7 +139,7 @@ export function Login({ onLogin }: LoginProps) {
                     onChange={(e) => setEmail(e.target.value)}
                     required
                     className="!pl-11 !py-3 font-medium text-[14px]"
-                    placeholder="admin@sisl.com or EMP-00004"
+                    placeholder="admin@usg.com or EMP-00004"
                   />
                 </div>
               </div>

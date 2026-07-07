@@ -1,5 +1,5 @@
-import React from 'react';
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronDown } from 'lucide-react';
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
@@ -52,15 +52,11 @@ export function TablePagination({
         {isInteractive && onPageSizeChange && (
           <div className="flex items-center gap-1.5">
             <span className="text-[11px] text-[var(--text-muted)] hidden sm:inline">Rows:</span>
-            <select
+            <RowsMenu
               value={pageSize}
-              onChange={(e) => { onPageSizeChange(Number(e.target.value)); go(1); }}
-              className="!w-auto !py-[4px] !px-2 !text-[12px] !rounded-[6px] font-medium"
-            >
-              {PAGE_SIZE_OPTIONS.map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
+              options={PAGE_SIZE_OPTIONS}
+              onChange={(s) => { onPageSizeChange(s); go(1); }}
+            />
           </div>
         )}
       </div>
@@ -112,6 +108,53 @@ export function TablePagination({
     </div>
   );
 }
+
+/* ── rows-per-page dropdown — custom (no native <select>) so it matches the theme ── */
+const RowsMenu: React.FC<{ value: number; options: number[]; onChange: (v: number) => void }> =
+function RowsMenu({ value, options, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1 h-[30px] pl-2.5 pr-1.5 rounded-[7px] border text-[12px] font-semibold transition-colors border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--accent)] hover:text-[var(--accent)] cursor-pointer"
+      >
+        {value}
+        <ChevronDown size={13} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute z-30 bottom-full mb-1.5 left-0 min-w-[64px] rounded-[8px] border border-[var(--border)] bg-[var(--surface)] shadow-lg py-1 overflow-hidden">
+          {options.map((o) => (
+            <button
+              key={o}
+              type="button"
+              onClick={() => { onChange(o); setOpen(false); }}
+              className={[
+                'w-full text-left px-3 py-1.5 text-[12px] transition-colors',
+                o === value
+                  ? 'bg-[var(--accent-dim)] text-[var(--accent)] font-semibold'
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]',
+              ].join(' ')}
+            >
+              {o}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 /* ── helpers ───────────────────────────────────────────────────────────── */
 

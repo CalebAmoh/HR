@@ -12,6 +12,7 @@ import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { RowActions } from './ui/RowActions';
+import { FilterSelect as UIFilterSelect } from './ui/FilterSelect';
 import api from '../../lib/api';
 import { useCan } from '@/hooks/useCan';
 
@@ -209,17 +210,14 @@ export function Employees() {
   const slOptions      = useMemo(() => uniq(employees.map((e: any) => e.staffLevel?.label)),        [employees]);
 
   const FilterSelect = ({ field, label, options }: { field: keyof typeof filters; label: string; options: string[] }) => (
-    <div className="flex flex-col gap-1 min-w-[140px]">
-      <label className="text-[10.5px] font-semibold text-[var(--text-muted)] uppercase tracking-wide">{label}</label>
-      <select
-        value={filters[field]}
-        onChange={e => setFilter(field, e.target.value)}
-        className="text-[12px] h-8 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
-      >
-        <option value="">All</option>
-        {options.map(o => <option key={o} value={o}>{o}</option>)}
-      </select>
-    </div>
+    <UIFilterSelect
+      label={label}
+      value={filters[field]}
+      onChange={v => setFilter(field, v)}
+      options={[{ value: '', label: 'All' }, ...options.map(o => ({ value: o, label: o }))]}
+      placeholder="All"
+      minWidth={140}
+    />
   );
 
   const filterBar = (

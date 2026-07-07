@@ -10,6 +10,7 @@ import { DocumentViewer } from './DocumentViewer';
 import { PageHeader } from './ui/PageHeader';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
+import { FilterSelect } from './ui/FilterSelect';
 import { RowActions } from './ui/RowActions';
 import api from '../../lib/api';
 import { toast } from 'sonner';
@@ -182,14 +183,20 @@ export function Documents() {
           filterBar={isEmployee ? (
             <div className="flex items-center gap-2">
               <label className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wide syne">Doc Type:</label>
-              <select value={docTypeFilter} onChange={e => setDocTypeFilter(e.target.value)} className="w-[140px] py-1 text-xs px-2 border rounded">
-                <option value="">All Types</option>
-                <option value="National ID">National ID</option>
-                <option value="Passport">Passport</option>
-                <option value="Driver's License">Driver's License</option>
-                <option value="Tax Certificate">Tax Certificate</option>
-                <option value="SSNIT Card">SSNIT Card</option>
-              </select>
+              <FilterSelect
+                value={docTypeFilter}
+                onChange={setDocTypeFilter}
+                placeholder="All Types"
+                minWidth={140}
+                options={[
+                  { value: '', label: 'All Types' },
+                  { value: 'National ID', label: 'National ID' },
+                  { value: 'Passport', label: 'Passport' },
+                  { value: "Driver's License", label: "Driver's License" },
+                  { value: 'Tax Certificate', label: 'Tax Certificate' },
+                  { value: 'SSNIT Card', label: 'SSNIT Card' },
+                ]}
+              />
               {docTypeFilter && (
                 <button onClick={() => setDocTypeFilter('')} className="text-[12px] font-bold text-[var(--accent)] hover:text-blue-800 flex items-center gap-1">
                   <X className="w-3 h-3" /> Clear

@@ -44,9 +44,8 @@ interface PayrollCol {
   id: string; name: string; function_type: string; enabled: string; editable: string;
   colorder: number | null; default_value: string | null; payment_deduction: string | null;
   salarycomponent_gl: string | null; posting_column: string | null; posting_branch: string | null;
-  calculation_hook: string | null;
-  deduction_group: string | null; salary_components: string | null; calculation_columns: string | null;
-  add_columns: string | null; sub_columns: string | null; calculation_function: string | null;
+  deduction_groups?: string[]; component_ids?: string[];
+  add_column_ids?: string[]; sub_column_ids?: string[]; calculation_function: string | null;
   calculation_rule: string | null; visible: number; include_in_net: number;
   payslip_label: string | null;
 }
@@ -181,8 +180,9 @@ function PayslipTemplatePreview({ template, paymentCols, deductionCols }: {
 const BLANK_PC = {
   name: '', function_type: 'Simple', enabled: 'Yes', editable: 'Yes', colorder: '',
   default_value: '', payment_deduction: '', salarycomponent_gl: '', posting_column: 'Yes', posting_branch: '',
-  calculation_hook: '', deduction_group: '', salary_components: '', calculation_columns: '',
-  add_columns: '', sub_columns: '', calculation_function: '', calculation_rule: '', visible: '1', include_in_net: '1',
+  deduction_groups: [] as string[], component_ids: [] as string[],
+  add_column_ids: [] as string[], sub_column_ids: [] as string[],
+  calculation_function: '', calculation_rule: '', visible: '1', include_in_net: '1',
   payslip_label: '',
 };
 
@@ -450,6 +450,13 @@ function PayslipSlideOver({
   runName: string; runPeriod: string; colLabelMap: Map<string, string>;
   settings: any | null; onClose: () => void;
 }) {
+  // The company logo/name come from the report template if set, otherwise fall back to the
+  // global App Setup (Settings → System → App Setup), so an uploaded company logo shows by default.
+  const [appSetup, setAppSetup] = useState<{ company_name?: string; company_logo?: string } | null>(null);
+  useEffect(() => {
+    api.get('/settings/app-setup').then(r => setAppSetup(r.data?.data ?? r.data)).catch(() => {});
+  }, []);
+
   const cells = gridData.filter(c => c.employee === empId);
   const visible = cells.filter(c => !hiddenColIds.has(String(c.payroll_item)))
     .sort((a, b) => (a.colorder ?? 99999) - (b.colorder ?? 99999));
@@ -462,9 +469,12 @@ function PayslipSlideOver({
     .reduce((s, c) => s + (c.payment_deduction === 'Deduction' ? -1 : 1) * (parseFloat(c.amount ?? '0') || 0), 0);
 
   const accent  = settings?.accent_color || '#3B82F6';
-  const company = settings?.company_name || '';
+  const company = settings?.company_name || appSetup?.company_name || '';
   const address = settings?.company_address || '';
-  const logo    = settings?.company_logo_url || '';
+  const rawLogo = settings?.company_logo_url || appSetup?.company_logo || '';
+  const logo    = rawLogo
+    ? (/^(https?:|data:|blob:)/.test(rawLogo) ? rawLogo : `${api.defaults.baseURL}/documents/${rawLogo}`)
+    : '';
   const headerNote = settings?.header_note || '';
   const footerNote = settings?.footer_note || '';
 
@@ -885,7 +895,7 @@ function PayrollGrid({
                 <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${s.bg} ${s.color}`}>{s.icon}</div>
                 <span className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wide syne">{s.label}</span>
               </div>
-              <div className={`syne text-[22px] font-extrabold ${s.color}`}>{s.value}</div>
+              <div className={`syne text-[22px] font-bold tracking-tight ${s.color}`}>{s.value}</div>
             </div>
           ))}
         </div>
@@ -1436,9 +1446,9 @@ export function Payroll() {
     setPsLogoUploading(true);
     try {
       const res = await api.post('/employees/documents/upload', fd, { headers: { 'Content-Type': undefined } });
-      const hash = res.data?.data?.hash ?? res.data?.hash;
-      if (hash) setPsForm((f: any) => ({ ...f, company_logo_url: hash }));
-      else toast.error('Upload succeeded but no hash returned');
+      const filename = res.data?.data?.filename ?? res.data?.filename;
+      if (filename) setPsForm((f: any) => ({ ...f, company_logo_url: filename }));
+      else toast.error('Upload succeeded but no file reference returned');
     } catch { toast.error('Logo upload failed'); }
     finally { setPsLogoUploading(false); }
   }
@@ -1996,10 +2006,9 @@ export function Payroll() {
       default_value: pc.default_value ?? '', payment_deduction: pc.payment_deduction ?? '',
       salarycomponent_gl: pc.salarycomponent_gl ?? '', posting_column: pc.posting_column ?? 'Yes',
       posting_branch: pc.posting_branch ?? '',
-      calculation_hook: pc.calculation_hook ?? '',
-      deduction_group: pc.deduction_group ? String(pc.deduction_group) : '',
-      salary_components: pc.salary_components ?? '', calculation_columns: pc.calculation_columns ?? '',
-      add_columns: pc.add_columns ?? '', sub_columns: pc.sub_columns ?? '',
+      deduction_groups: (pc.deduction_groups ?? []).map(String),
+      component_ids: (pc.component_ids ?? []).map(String),
+      add_column_ids: (pc.add_column_ids ?? []).map(String), sub_column_ids: (pc.sub_column_ids ?? []).map(String),
       calculation_function: pc.calculation_function ?? '',
       calculation_rule: pc.calculation_rule ? String(pc.calculation_rule) : '',
       visible: pc.visible ? '1' : '0',
@@ -2016,10 +2025,9 @@ export function Payroll() {
       default_value: pc.default_value ?? '', payment_deduction: pc.payment_deduction ?? '',
       salarycomponent_gl: pc.salarycomponent_gl ?? '', posting_column: pc.posting_column ?? 'Yes',
       posting_branch: pc.posting_branch ?? '',
-      calculation_hook: pc.calculation_hook ?? '',
-      deduction_group: pc.deduction_group ? String(pc.deduction_group) : '',
-      salary_components: pc.salary_components ?? '', calculation_columns: pc.calculation_columns ?? '',
-      add_columns: pc.add_columns ?? '', sub_columns: pc.sub_columns ?? '',
+      deduction_groups: (pc.deduction_groups ?? []).map(String),
+      component_ids: (pc.component_ids ?? []).map(String),
+      add_column_ids: (pc.add_column_ids ?? []).map(String), sub_column_ids: (pc.sub_column_ids ?? []).map(String),
       calculation_function: pc.calculation_function ?? '',
       calculation_rule: pc.calculation_rule ? String(pc.calculation_rule) : '',
       visible: pc.visible ? '1' : '0',
@@ -2052,16 +2060,13 @@ export function Payroll() {
         toast.success('Created');
       }
       setPcModalOpen(false);
-      // Warn if any referenced column runs after this one (would evaluate to 0)
-      const refNames = [
-        ...pcForm.add_columns.split(','),
-        ...pcForm.sub_columns.split(','),
-      ].map(s => s.trim()).filter(Boolean);
-      if (refNames.length && saved.colorder != null) {
-        const lateRefs = refNames.filter(refName => {
-          const ref = pcRows.find((c: PayrollCol) => c.name.toLowerCase() === refName.toLowerCase() && c.id !== saved.id);
-          return ref && ref.colorder != null && ref.colorder > saved.colorder!;
-        });
+      // Warn if any referenced (add/subtract) column runs after this one (would evaluate to 0)
+      const refIds = [...pcForm.add_column_ids, ...pcForm.sub_column_ids].map(String).filter(Boolean);
+      if (refIds.length && saved.colorder != null) {
+        const lateRefs = refIds
+          .map(rid => pcRows.find((c: PayrollCol) => String(c.id) === rid && c.id !== saved.id))
+          .filter((ref): ref is PayrollCol => !!ref && ref.colorder != null && ref.colorder > saved.colorder!)
+          .map(ref => ref.name);
         if (lateRefs.length) {
           toast.warning(
             `Column order warning: ${lateRefs.join(', ')} run${lateRefs.length === 1 ? 's' : ''} after "${saved.name}" and may evaluate to 0. Reorder to fix.`,
@@ -3711,12 +3716,7 @@ export function Payroll() {
                   <FormField label="Formula">
                     <FormulaInput
                       value={pcForm.calculation_function}
-                      onChange={v => {
-                        const safe = (n: string) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                        const mentioned = components.map(c => c.name)
-                          .filter(name => new RegExp(`\\b${safe(name)}\\b`, 'i').test(v));
-                        setPcForm(f => ({ ...f, calculation_function: v, calculation_columns: mentioned.join(',') }));
-                      }}
+                      onChange={v => setPcForm(f => ({ ...f, calculation_function: v }))}
                       variables={components.map(c => ({ name: c.name }))}
                       colVariables={pcRows
                         .filter((pc: PayrollCol) => !editingPc || pc.id !== editingPc.id)
@@ -3732,17 +3732,17 @@ export function Payroll() {
                   <div className="grid grid-cols-2 gap-4">
                     <FormField label="Add Columns">
                       <SearchableCheckList
-                        options={pcRows.filter(pc => !editingPc || pc.id !== editingPc.id).map(pc => ({ id: pc.name, label: pc.name }))}
-                        selected={pcForm.add_columns.split(',').filter(Boolean)}
-                        onChange={ids => setPcForm(f => ({ ...f, add_columns: ids.join(',') }))}
+                        options={pcRows.filter(pc => !editingPc || pc.id !== editingPc.id).map(pc => ({ id: String(pc.id), label: pc.name }))}
+                        selected={pcForm.add_column_ids}
+                        onChange={ids => setPcForm(f => ({ ...f, add_column_ids: ids }))}
                         placeholder="Search columns…"
                       />
                     </FormField>
                     <FormField label="Subtract Columns">
                       <SearchableCheckList
-                        options={pcRows.filter(pc => !editingPc || pc.id !== editingPc.id).map(pc => ({ id: pc.name, label: pc.name }))}
-                        selected={pcForm.sub_columns.split(',').filter(Boolean)}
-                        onChange={ids => setPcForm(f => ({ ...f, sub_columns: ids.join(',') }))}
+                        options={pcRows.filter(pc => !editingPc || pc.id !== editingPc.id).map(pc => ({ id: String(pc.id), label: pc.name }))}
+                        selected={pcForm.sub_column_ids}
+                        onChange={ids => setPcForm(f => ({ ...f, sub_column_ids: ids }))}
                         placeholder="Search columns…"
                       />
                     </FormField>
@@ -3787,21 +3787,21 @@ export function Payroll() {
                       placeholder="Search calculation rules…"
                     />
                   </FormField>
-                  <FormField label="Calculation Group">
-                    <Combobox
-                      options={[{ id: '', label: 'None' }, ...cgRows.map(cg => ({ id: String(cg.id), label: cg.name }))]}
-                      value={pcForm.deduction_group}
-                      onChange={id => setPcForm(f => ({ ...f, deduction_group: id }))}
-                      placeholder="Search group…"
+                  <FormField label="Calculation Groups">
+                    <SearchableCheckList
+                      options={cgRows.map(cg => ({ id: String(cg.id), label: cg.name }))}
+                      selected={pcForm.deduction_groups}
+                      onChange={ids => setPcForm(f => ({ ...f, deduction_groups: ids }))}
+                      placeholder="Search groups… (none = applies to all)"
                     />
                   </FormField>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <FormField label="Salary Components">
                     <SearchableCheckList
-                      options={components.map(c => ({ id: c.name, label: c.name }))}
-                      selected={pcForm.salary_components.split(',').filter(Boolean)}
-                      onChange={ids => setPcForm(f => ({ ...f, salary_components: ids.join(',') }))}
+                      options={components.map(c => ({ id: String(c.id), label: c.name }))}
+                      selected={pcForm.component_ids}
+                      onChange={ids => setPcForm(f => ({ ...f, component_ids: ids }))}
                       placeholder="Search components…"
                     />
                   </FormField>

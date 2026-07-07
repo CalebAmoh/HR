@@ -3,7 +3,9 @@ import { UserPlus, X, UploadCloud, FileCheck, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { getSettings } from '../../lib/settings';
+import { formatEmployeeId } from '../../lib/employeeIdFormat';
 import { Combobox } from './EmployeeTabs';
+import { EMPLOYEE_FORM_FIELDS, EMPLOYEE_FORM_FIELDS_BY_KEY } from '../config/employeeFormFields';
 
 interface Props {
   onClose: () => void;
@@ -227,12 +229,11 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
   const units       = useMemo(() => structures.filter(s => s.typeLabel === 'Unit'),   [structures]);
   const outlets     = useMemo(() => structures.filter(s => s.typeLabel === 'Outlet'), [structures]);
 
-  const selectedPaygrade   = useMemo(() => paygrades.find(p => p.id === form.paygradeId), [paygrades, form.paygradeId]);
   const filteredNotches    = useMemo(() =>
-    form.paygradeId && selectedPaygrade
-      ? notches.filter(n => n.paygrade === selectedPaygrade.name)
+    form.paygradeId
+      ? notches.filter(n => String(n.paygradeId) === String(form.paygradeId))
       : [],
-  [notches, form.paygradeId, selectedPaygrade]);
+  [notches, form.paygradeId]);
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   const set = (name: string, value: string) => setForm((p: any) => ({ ...p, [name]: value }));
@@ -241,80 +242,89 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
 
   const clSelect = (name: string, options: any[], placeholder: string, required?: boolean, label?: string) => (
     <Field label={label ?? placeholder} required={required}>
-      <select name={name} value={form[name]} onChange={handleChange}>
-        <option value="">— {placeholder} —</option>
-        {options.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
-      </select>
+      <Combobox
+        options={options.map(o => ({ id: String(o.id), label: o.label }))}
+        value={form[name] != null ? String(form[name]) : ''}
+        onChange={v => set(name, v)}
+        placeholder={placeholder}
+      />
     </Field>
   );
 
   const structSelect = (name: string, list: any[], placeholder: string, required?: boolean, label?: string) => (
     <Field label={label ?? placeholder} required={required}>
-      <select name={name} value={form[name]} onChange={handleChange}>
-        <option value="">— {placeholder} —</option>
-        {list.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
-      </select>
+      <Combobox
+        options={list.map(s => ({ id: String(s.id), label: s.title }))}
+        value={form[name] != null ? String(form[name]) : ''}
+        onChange={v => set(name, v)}
+        placeholder={placeholder}
+      />
     </Field>
   );
 
-  // ── Per-step validation ────────────────────────────────────────────────────
-  const validateStep = (s: number): string | null => {
-    switch (s) {
-      case 0:
-        if (!form.firstName?.trim())    return 'First name is required';
-        if (!form.lastName?.trim())     return 'Last name is required';
-        if (!form.genderId)             return 'Gender is required';
-        if (!form.dateOfBirth)          return 'Date of birth is required';
-        if (!form.marital_status)       return 'Marital status is required';
-        if (!form.work_email?.trim())   return 'Work email is required';
-        if (!form.mobilePhone?.trim())  return 'Mobile phone is required';
-        if (!form.address1?.trim())     return 'Address is required';
-        return null;
-      case 1:
-        if (!isEdit && !autoGenEmpNum && !form.employee_id?.trim())
-          return 'Employee number is required when auto-generate is off';
-        if (!form.employmentStatusId)   return 'Employment status is required';
-        if (!form.jobTitleId)           return 'Job title is required';
-        if (!form.staff_level)          return 'Staff level is required';
-        if (!form.staff_role)           return 'Staff role is required';
-        if (!form.supervisorId)         return 'Supervisor is required';
-        if (!form.ssn_num?.trim())      return 'SSN is required';
-        if (!form.hireDate)             return 'Hire date is required';
-        if (!form.confirmationDate)     return 'Confirmation date is required';
-        return null;
-      case 2:
-        if (!form.nxt_kin_fname?.trim())   return 'Next of kin full name is required';
-        if (!form.nxt_kin_phone?.trim())   return 'Next of kin phone number is required';
-        if (!form.nxt_kin_address?.trim()) return 'Next of kin address is required';
-        return null;
-      case 3:
-        if (!form.bankAccount?.trim()) return 'Bank account number is required';
-        if (!form.paygradeId)          return 'Pay grade is required';
-        if (!form.notcheId)            return 'Salary notch is required';
-        return null;
-      case 4:
-        if (form.nationalIdNumber && !form.nationalIdExpiry)
-          return 'National ID expiry date is required when an ID number is provided';
-        if (form.nationalIdExpiry && !form.nationalIdNumber)
-          return 'National ID number is required when an expiry date is provided';
-        if (form.passportNumber && !form.passportExpiry)
-          return 'Passport expiry date is required when a passport number is provided';
-        if (form.passportExpiry && !form.passportNumber)
-          return 'Passport number is required when an expiry date is provided';
-        if (form.driverLicenseNum && !form.driverLicenseExp)
-          return "Driver's license expiry date is required when a license number is provided";
-        if (form.driverLicenseExp && !form.driverLicenseNum)
-          return "Driver's license number is required when an expiry date is provided";
-        return null;
-      default:
-        return null;
+  // ── Configurable visibility / required (Settings → Controls → Employee Form) ──
+  // Read once per open; defaults mirror the form's original behaviour.
+  const fieldsCfg = useMemo(() => getSettings().employeeForm.fields, []);
+  const fcfg = (key: string) =>
+    fieldsCfg[key] ?? {
+      visible:  EMPLOYEE_FORM_FIELDS_BY_KEY[key]?.defaultVisible ?? true,
+      required: EMPLOYEE_FORM_FIELDS_BY_KEY[key]?.defaultRequired ?? false,
+    };
+  const isLocked   = (key: string) => !!EMPLOYEE_FORM_FIELDS_BY_KEY[key]?.locked;
+  const isRequired = (key: string) => isLocked(key) || (fcfg(key).visible && fcfg(key).required);
+  // A field shows when config-visible (locked always) — plus the spouse-name marriage rule.
+  const fieldShown = (key: string) => {
+    if (!(isLocked(key) || fcfg(key).visible)) return false;
+    if (key === 'spouse_name') return form.marital_status === 'Married';
+    return true;
+  };
+  const sectionShown = (keys: string[]) => keys.some(k => fieldShown(k));
+  // Steps with no visible fields are skipped (Employment always keeps the Employee ID field).
+  const stepHasContent = (stepId: string) =>
+    stepId === 'employment' ||
+    EMPLOYEE_FORM_FIELDS.some(f => f.step === stepId && fieldShown(f.key));
+  const visibleSteps = STEPS.filter(s => stepHasContent(s.id));
+  const currentId = visibleSteps[Math.min(step, visibleSteps.length - 1)]?.id ?? 'personal';
+
+  // ── Per-step validation (config-driven) ──────────────────────────────────────
+  const validateStep = (stepId: string): string | null => {
+    // Employee ID is a special case (auto-generate logic, not in the field registry).
+    if (stepId === 'employment' && !isEdit && !autoGenEmpNum && !form.employee_id?.trim())
+      return 'Employee number is required when auto-generate is off';
+
+    for (const f of EMPLOYEE_FORM_FIELDS) {
+      if (f.step !== stepId || !fieldShown(f.key) || !isRequired(f.key)) continue;
+      if (String(form[f.key] ?? '').trim() === '') return `${f.label} is required`;
     }
+
+    // Identity documents: a number and its expiry must come as a pair (when both fields are shown).
+    if (stepId === 'documents') {
+      const pair = (numK: string, expK: string, numMsg: string, expMsg: string): string | null => {
+        if (!fieldShown(numK) || !fieldShown(expK)) return null;
+        if (form[numK] && !form[expK]) return expMsg;
+        if (form[expK] && !form[numK]) return numMsg;
+        return null;
+      };
+      return pair('nationalIdNumber', 'nationalIdExpiry',
+          'National ID number is required when an expiry date is provided',
+          'National ID expiry date is required when an ID number is provided')
+        ?? pair('passportNumber', 'passportExpiry',
+          'Passport number is required when an expiry date is provided',
+          'Passport expiry date is required when a passport number is provided')
+        ?? pair('driverLicenseNum', 'driverLicenseExp',
+          "Driver's license number is required when an expiry date is provided",
+          "Driver's license expiry date is required when a license number is provided");
+    }
+    return null;
   };
 
   // ── Submit ─────────────────────────────────────────────────────────────────
   const handleFinish = () => {
-    const err = validateStep(4);
-    if (err) { toast.error(err); return; }
+    // Validate every visible step; jump to the first one with an error.
+    for (let i = 0; i < visibleSteps.length; i++) {
+      const err = validateStep(visibleSteps[i].id);
+      if (err) { setStep(i); toast.error(err); return; }
+    }
 
     const payload: any = { ...form };
     ['titleId', 'genderId', 'nationalityId', 'religionId', 'staff_level', 'staff_role',
@@ -331,97 +341,117 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
 
   // ── Step navigation ────────────────────────────────────────────────────────
   const goNext = () => {
-    const err = validateStep(step);
+    const err = validateStep(currentId);
     if (err) { toast.error(err); return; }
-    if (step === STEPS.length - 1) handleFinish();
+    if (step >= visibleSteps.length - 1) handleFinish();
     else setStep(s => s + 1);
   };
   const goPrev = () => setStep(s => Math.max(0, s - 1));
 
   // ── Step content ───────────────────────────────────────────────────────────
   const renderStep = () => {
-    switch (step) {
-      case 0: return (
+    switch (currentId) {
+      case 'personal': return (
         <div className="space-y-8">
+          {sectionShown(['titleId','firstName','middleName','lastName','genderId','dateOfBirth','place_of_birth','nationalityId','religionId','marital_status','spouse_name','father_name','mother_name']) && (
           <div>
             <SectionHeader title="Personal Information" />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-              {clSelect('titleId', cl.titles, 'Select Title', false, 'Title')}
-              <Field label="First Name" required>
+              {fieldShown('titleId') && clSelect('titleId', cl.titles, 'Select Title', isRequired('titleId'), 'Title')}
+              {fieldShown('firstName') && (
+              <Field label="First Name" required={isRequired('firstName')}>
                 <input name="firstName" value={form.firstName} onChange={handleChange} placeholder="First name" />
-              </Field>
-              <Field label="Middle Name">
+              </Field>)}
+              {fieldShown('middleName') && (
+              <Field label="Middle Name" required={isRequired('middleName')}>
                 <input name="middleName" value={form.middleName} onChange={handleChange} placeholder="Middle name (optional)" />
-              </Field>
-              <Field label="Last Name" required>
+              </Field>)}
+              {fieldShown('lastName') && (
+              <Field label="Last Name" required={isRequired('lastName')}>
                 <input name="lastName" value={form.lastName} onChange={handleChange} placeholder="Last name" />
-              </Field>
-              {clSelect('genderId', cl.genders, 'Select Gender', true, 'Gender')}
-              <Field label="Date of Birth" required>
+              </Field>)}
+              {fieldShown('genderId') && clSelect('genderId', cl.genders, 'Select Gender', isRequired('genderId'), 'Gender')}
+              {fieldShown('dateOfBirth') && (
+              <Field label="Date of Birth" required={isRequired('dateOfBirth')}>
                 <input type="date" name="dateOfBirth" value={form.dateOfBirth} onChange={handleChange} />
-              </Field>
-              <Field label="Place of Birth">
+              </Field>)}
+              {fieldShown('place_of_birth') && (
+              <Field label="Place of Birth" required={isRequired('place_of_birth')}>
                 <input name="place_of_birth" value={form.place_of_birth} onChange={handleChange} placeholder="City or town of birth" />
-              </Field>
-              {clSelect('nationalityId', cl.nationalities, 'Select Nationality', false, 'Nationality')}
-              {clSelect('religionId', cl.religions, 'Select Religion', false, 'Religion')}
-              <Field label="Marital Status" required>
-                <select name="marital_status" value={form.marital_status} onChange={handleChange}>
-                  <option value="">— Select —</option>
-                  {MARITAL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </Field>
-              {form.marital_status === 'Married' && (
-                <Field label="Spouse Name">
+              </Field>)}
+              {fieldShown('nationalityId') && clSelect('nationalityId', cl.nationalities, 'Select Nationality', isRequired('nationalityId'), 'Nationality')}
+              {fieldShown('religionId') && clSelect('religionId', cl.religions, 'Select Religion', isRequired('religionId'), 'Religion')}
+              {fieldShown('marital_status') && (
+              <Field label="Marital Status" required={isRequired('marital_status')}>
+                <Combobox
+                  options={MARITAL_STATUSES.map(s => ({ id: s, label: s }))}
+                  value={form.marital_status || ''}
+                  onChange={v => set('marital_status', v)}
+                  placeholder="Select status"
+                />
+              </Field>)}
+              {fieldShown('spouse_name') && (
+                <Field label="Spouse Name" required={isRequired('spouse_name')}>
                   <input name="spouse_name" value={form.spouse_name} onChange={handleChange} placeholder="Spouse full name" />
                 </Field>
               )}
-              <Field label="Father's Name">
+              {fieldShown('father_name') && (
+              <Field label="Father's Name" required={isRequired('father_name')}>
                 <input name="father_name" value={form.father_name} onChange={handleChange} placeholder="Father's full name" />
-              </Field>
-              <Field label="Mother's Name">
+              </Field>)}
+              {fieldShown('mother_name') && (
+              <Field label="Mother's Name" required={isRequired('mother_name')}>
                 <input name="mother_name" value={form.mother_name} onChange={handleChange} placeholder="Mother's full name" />
-              </Field>
+              </Field>)}
             </div>
-          </div>
+          </div>)}
 
+          {sectionShown(['work_email','personal_email','mobilePhone','address1','city','country']) && (
           <div>
             <SectionHeader title="Contact & Address" />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-              <Field label="Work Email" required>
+              {fieldShown('work_email') && (
+              <Field label="Work Email" required={isRequired('work_email')}>
                 <input type="email" name="work_email" value={form.work_email} onChange={handleChange} placeholder="Company email address" />
-              </Field>
-              <Field label="Personal Email">
+              </Field>)}
+              {fieldShown('personal_email') && (
+              <Field label="Personal Email" required={isRequired('personal_email')}>
                 <input type="email" name="personal_email" value={form.personal_email} onChange={handleChange} placeholder="Personal email address" />
-              </Field>
-              <Field label="Mobile Phone" required>
+              </Field>)}
+              {fieldShown('mobilePhone') && (
+              <Field label="Mobile Phone" required={isRequired('mobilePhone')}>
                 <input type="tel" name="mobilePhone" value={form.mobilePhone} onChange={handleChange} placeholder="Mobile number" />
-              </Field>
-              <Field label="Address" required className="md:col-span-2">
+              </Field>)}
+              {fieldShown('address1') && (
+              <Field label="Address" required={isRequired('address1')} className="md:col-span-2">
                 <input name="address1" value={form.address1} onChange={handleChange} placeholder="Street address" />
-              </Field>
-              <Field label="City">
+              </Field>)}
+              {fieldShown('city') && (
+              <Field label="City" required={isRequired('city')}>
                 <input name="city" value={form.city} onChange={handleChange} placeholder="City" />
-              </Field>
-              <Field label="Country">
-                <select name="country" value={form.country} onChange={handleChange}>
-                  <option value="">— Select Country —</option>
-                  {cl.countries.map(o => <option key={o.id} value={o.label}>{o.label}</option>)}
-                </select>
-              </Field>
+              </Field>)}
+              {fieldShown('country') && (
+              <Field label="Country" required={isRequired('country')}>
+                <Combobox
+                  options={cl.countries.map(o => ({ id: o.label, label: o.label }))}
+                  value={form.country || ''}
+                  onChange={v => set('country', v)}
+                  placeholder="Select country"
+                />
+              </Field>)}
             </div>
-          </div>
+          </div>)}
         </div>
       );
 
-      case 1: return (
+      case 'employment': return (
         <div>
           <SectionHeader title="Employment Details" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
             {/* Employee ID — editable when auto-gen is off, read-only when on */}
             {autoGenEmpNum && !isEdit ? (
               <Field label="Employee ID">
-                <input value="" disabled placeholder="Auto-generated on save" />
+                <input value="" disabled placeholder={`Auto-generated • ${formatEmployeeId(getSettings().employees.idFormat, '0001')}`} />
               </Field>
             ) : (
               <Field label="Employee ID" required={!isEdit && !autoGenEmpNum}>
@@ -434,15 +464,16 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
                 />
               </Field>
             )}
-            {clSelect('employmentStatusId', cl.empStatuses, 'Select Status', true, 'Employment Status')}
-            {clSelect('jobTitleId', cl.jobTitles, 'Select Job Title', true, 'Job Title')}
-            {clSelect('staff_level', cl.staffLevels, 'Select Staff Level', true, 'Staff Level')}
-            {clSelect('staff_role', cl.staffRoles, 'Select Staff Role', true, 'Staff Role')}
-            {structSelect('branchId', branches, 'Select Branch', false, 'Branch')}
-            {structSelect('departmentId', departments, 'Select Department', false, 'Department')}
-            {structSelect('unitId', units, 'Select Unit', false, 'Unit')}
-            {structSelect('outletId', outlets, 'Select Outlet', false, 'Outlet')}
-            <Field label="Supervisor" required>
+            {fieldShown('employmentStatusId') && clSelect('employmentStatusId', cl.empStatuses, 'Select Status', isRequired('employmentStatusId'), 'Employment Status')}
+            {fieldShown('jobTitleId') && clSelect('jobTitleId', cl.jobTitles, 'Select Job Title', isRequired('jobTitleId'), 'Job Title')}
+            {fieldShown('staff_level') && clSelect('staff_level', cl.staffLevels, 'Select Staff Level', isRequired('staff_level'), 'Staff Level')}
+            {fieldShown('staff_role') && clSelect('staff_role', cl.staffRoles, 'Select Staff Role', isRequired('staff_role'), 'Staff Role')}
+            {fieldShown('branchId') && structSelect('branchId', branches, 'Select Branch', isRequired('branchId'), 'Branch')}
+            {fieldShown('departmentId') && structSelect('departmentId', departments, 'Select Department', isRequired('departmentId'), 'Department')}
+            {fieldShown('unitId') && structSelect('unitId', units, 'Select Unit', isRequired('unitId'), 'Unit')}
+            {fieldShown('outletId') && structSelect('outletId', outlets, 'Select Outlet', isRequired('outletId'), 'Outlet')}
+            {fieldShown('supervisorId') && (
+            <Field label="Supervisor" required={isRequired('supervisorId')}>
               <Combobox
                 options={supervisors
                   .filter(s => !initialData || s.id !== initialData.id?.toString())
@@ -451,48 +482,57 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
                 onChange={id => set('supervisorId', id)}
                 placeholder="Search supervisor..."
               />
-            </Field>
-            <Field label="SSN" required>
+            </Field>)}
+            {fieldShown('ssn_num') && (
+            <Field label="SSN" required={isRequired('ssn_num')}>
               <input name="ssn_num" value={form.ssn_num} onChange={handleChange} placeholder="Social security number" />
-            </Field>
-            <Field label="Hire Date" required>
+            </Field>)}
+            {fieldShown('hireDate') && (
+            <Field label="Hire Date" required={isRequired('hireDate')}>
               <input type="date" name="hireDate" value={form.hireDate} onChange={handleChange} />
-            </Field>
-            <Field label="Confirmation Date" required>
+            </Field>)}
+            {fieldShown('confirmationDate') && (
+            <Field label="Confirmation Date" required={isRequired('confirmationDate')}>
               <input type="date" name="confirmationDate" value={form.confirmationDate} onChange={handleChange} />
-            </Field>
+            </Field>)}
           </div>
         </div>
       );
 
-      case 2: return (
+      case 'nextofkin': return (
         <div>
           <SectionHeader title="Next of Kin" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-            <Field label="Full Name" required>
+            {fieldShown('nxt_kin_fname') && (
+            <Field label="Full Name" required={isRequired('nxt_kin_fname')}>
               <input name="nxt_kin_fname" value={form.nxt_kin_fname} onChange={handleChange} placeholder="Next of kin full name" />
-            </Field>
-            <Field label="Phone Number" required>
+            </Field>)}
+            {fieldShown('nxt_kin_phone') && (
+            <Field label="Phone Number" required={isRequired('nxt_kin_phone')}>
               <input type="tel" name="nxt_kin_phone" value={form.nxt_kin_phone} onChange={handleChange} placeholder="Phone number" />
-            </Field>
-            <Field label="Email Address">
+            </Field>)}
+            {fieldShown('nxt_kin_email') && (
+            <Field label="Email Address" required={isRequired('nxt_kin_email')}>
               <input type="email" name="nxt_kin_email" value={form.nxt_kin_email} onChange={handleChange} placeholder="Email address" />
-            </Field>
-            <Field label="Address" required className="md:col-span-2">
+            </Field>)}
+            {fieldShown('nxt_kin_address') && (
+            <Field label="Address" required={isRequired('nxt_kin_address')} className="md:col-span-2">
               <input name="nxt_kin_address" value={form.nxt_kin_address} onChange={handleChange} placeholder="Residential address" />
-            </Field>
+            </Field>)}
           </div>
         </div>
       );
 
-      case 3: return (
+      case 'financial': return (
         <div>
           <SectionHeader title="Financial Information" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-            <Field label="Bank Account Number" required className="md:col-span-2">
+            {fieldShown('bankAccount') && (
+            <Field label="Bank Account Number" required={isRequired('bankAccount')} className="md:col-span-2">
               <input name="bankAccount" value={form.bankAccount} onChange={handleChange} placeholder="Bank account number" />
-            </Field>
-            <Field label="Pay Grade" required>
+            </Field>)}
+            {fieldShown('paygradeId') && (
+            <Field label="Pay Grade" required={isRequired('paygradeId')}>
               <Combobox
                 options={paygrades.map(p => ({
                   id: String(p.id),
@@ -502,8 +542,9 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
                 onChange={id => { set('paygradeId', id); set('notcheId', ''); }}
                 placeholder="Search paygrade..."
               />
-            </Field>
-            <Field label="Salary Notch" required>
+            </Field>)}
+            {fieldShown('notcheId') && (
+            <Field label="Salary Notch" required={isRequired('notcheId')}>
               <Combobox
                 options={filteredNotches.map(n => ({
                   id: String(n.id),
@@ -513,41 +554,49 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
                 onChange={id => set('notcheId', id)}
                 placeholder={form.paygradeId ? 'Search notch...' : 'Select a paygrade first...'}
               />
-            </Field>
+            </Field>)}
           </div>
         </div>
       );
 
-      case 4: return (
+      case 'documents': return (
         <div className="space-y-8">
+          {sectionShown(['nationalIdNumber','nationalIdExpiry','passportNumber','passportExpiry','driverLicenseNum','driverLicenseExp']) && (
           <div>
             <SectionHeader title="Identity Documents" />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-              <Field label="National ID Number">
+              {fieldShown('nationalIdNumber') && (
+              <Field label="National ID Number" required={isRequired('nationalIdNumber')}>
                 <input name="nationalIdNumber" value={form.nationalIdNumber} onChange={handleChange} placeholder="NIN / National ID" />
-              </Field>
-              <Field label="National ID Expiry">
+              </Field>)}
+              {fieldShown('nationalIdExpiry') && (
+              <Field label="National ID Expiry" required={isRequired('nationalIdExpiry')}>
                 <input type="date" name="nationalIdExpiry" value={form.nationalIdExpiry} onChange={handleChange} />
-              </Field>
-              <Field label="Passport Number">
+              </Field>)}
+              {fieldShown('passportNumber') && (
+              <Field label="Passport Number" required={isRequired('passportNumber')}>
                 <input name="passportNumber" value={form.passportNumber} onChange={handleChange} placeholder="Passport number" />
-              </Field>
-              <Field label="Passport Expiry">
+              </Field>)}
+              {fieldShown('passportExpiry') && (
+              <Field label="Passport Expiry" required={isRequired('passportExpiry')}>
                 <input type="date" name="passportExpiry" value={form.passportExpiry} onChange={handleChange} />
-              </Field>
-              <Field label="Driver's License Number">
+              </Field>)}
+              {fieldShown('driverLicenseNum') && (
+              <Field label="Driver's License Number" required={isRequired('driverLicenseNum')}>
                 <input name="driverLicenseNum" value={form.driverLicenseNum} onChange={handleChange} placeholder="License number" />
-              </Field>
-              <Field label="Driver's License Expiry">
+              </Field>)}
+              {fieldShown('driverLicenseExp') && (
+              <Field label="Driver's License Expiry" required={isRequired('driverLicenseExp')}>
                 <input type="date" name="driverLicenseExp" value={form.driverLicenseExp} onChange={handleChange} />
-              </Field>
+              </Field>)}
             </div>
-          </div>
+          </div>)}
 
+          {sectionShown(['fit_and_proper','policeClearance','medicalClearance']) && (
           <div>
             <SectionHeader title="Clearance Documents" />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-              {(['fit_and_proper', 'policeClearance', 'medicalClearance'] as const).map(field => {
+              {(['fit_and_proper', 'policeClearance', 'medicalClearance'] as const).filter(field => fieldShown(field)).map(field => {
                 const labels: Record<string, string> = {
                   fit_and_proper:   'Fit & Proper Form',
                   policeClearance:  'Police Clearance',
@@ -599,7 +648,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
                 );
               })}
             </div>
-          </div>
+          </div>)}
 
         </div>
       );
@@ -635,11 +684,11 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
 
         {/* Stepper */}
         <div className="px-6 py-4 flex items-center justify-between shrink-0 border-b border-[var(--border)] overflow-x-auto">
-          {STEPS.map((s, i) => {
+          {visibleSteps.map((s, i) => {
             const active    = i === step;
             const completed = i < step;
             return (
-              <div key={s.id} className={`flex items-center ${i < STEPS.length - 1 ? 'flex-1' : ''}`}>
+              <div key={s.id} className={`flex items-center ${i < visibleSteps.length - 1 ? 'flex-1' : ''}`}>
                 <button
                   onClick={() => i <= step && setStep(i)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold transition-colors shrink-0 ${
@@ -655,7 +704,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
                   }`}>{i + 1}</span>
                   <span className="hidden sm:inline whitespace-nowrap">{s.label}</span>
                 </button>
-                {i < STEPS.length - 1 && (
+                {i < visibleSteps.length - 1 && (
                   <div className={`h-[2px] mx-2 flex-1 min-w-[12px] ${completed ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`} />
                 )}
               </div>
@@ -682,7 +731,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
             >
               {Object.values(docUploading).some(Boolean)
                 ? 'Uploading…'
-                : step < STEPS.length - 1 ? 'Next' : (isEdit ? 'Save Changes' : 'Create Employee')}
+                : step < visibleSteps.length - 1 ? 'Next' : (isEdit ? 'Save Changes' : 'Create Employee')}
             </button>
           </div>
         </div>

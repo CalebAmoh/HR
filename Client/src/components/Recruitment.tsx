@@ -7,6 +7,7 @@ import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { RowActions } from './ui/RowActions';
 import { FormField, inputClass } from './ui/FormField';
+import { SearchSelect } from './ui/SearchSelect';
 import { CountedTextarea } from './ui/CountedTextarea';
 import { DetailSlideOver } from './ui/DetailSlideOver';
 import { JobForm } from './JobForm';
@@ -273,21 +274,20 @@ function InterviewDetails({ interview, candidate, job, pipeline, canManage = tru
           <div className="rounded-xl border border-[var(--border)] p-4 flex flex-col gap-4">
             <SectionLabel>Record Outcome</SectionLabel>
             <FormField label="Interview Status">
-              <select value={status} onChange={e => { setStatus(e.target.value); setOutcomeSaved(null); }} className={inputClass}>
-                <option value="Scheduled">Scheduled</option>
-                <option value="Completed">Completed</option>
-                <option value="Cancelled">Cancelled</option>
-                <option value="No Show">No Show</option>
-              </select>
+              <SearchSelect
+                value={status}
+                onChange={v => { setStatus(v); setOutcomeSaved(null); }}
+                options={['Scheduled', 'Completed', 'Cancelled', 'No Show'].map(s => ({ id: s, label: s }))}
+              />
             </FormField>
             {status === 'Completed' && (
               <FormField label="Outcome">
-                <select value={outcome} onChange={e => { setOutcome(e.target.value); setOutcomeSaved(null); }} className={inputClass}>
-                  <option value="">— Select —</option>
-                  <option value="Passed">Passed</option>
-                  <option value="Failed">Failed</option>
-                  <option value="Pending">Pending Decision</option>
-                </select>
+                <SearchSelect
+                  value={outcome}
+                  onChange={v => { setOutcome(v); setOutcomeSaved(null); }}
+                  options={[{ id: 'Passed', label: 'Passed' }, { id: 'Failed', label: 'Failed' }, { id: 'Pending', label: 'Pending Decision' }]}
+                  placeholder="Select…"
+                />
               </FormField>
             )}
             <FormField label="Feedback / Notes">

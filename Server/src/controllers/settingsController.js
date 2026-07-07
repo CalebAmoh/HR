@@ -147,10 +147,14 @@ const sendTestEmail = asyncHandler(async (req, res) => {
 
 const CONTROL_KEYS = [
   'company_auto_generate_code', 'employee_auto_generate_number', 'recruitment_auto_generate_code',
-  'approval_employee', 'approval_employee_self',
+  'approval_employee', 'approval_employee_self', 'approval_employee_update',
   'approval_payroll', 'approval_payroll_self',
   'approval_medical', 'approval_medical_self',
   'general_currency',
+  'employee_form_fields', // JSON: per-field {visible,required} config for the employee-creation form
+  'employee_id_format',   // template for auto-generated employee IDs, e.g. EMP-{YYYY}-{SEQ4}
+  // Master payment/GL-posting switches per module. '0' = record-only (skip all GL postings).
+  'leave_payments_enabled', 'medical_payments_enabled', 'payroll_payments_enabled',
 ];
 
 // GET /settings/controls — flat map of saved keys (client merges over its defaults)

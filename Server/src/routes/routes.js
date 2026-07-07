@@ -275,6 +275,14 @@ router.get   ('/salary/history/:employeeId',          salary.getEmployeeSalaryHi
 router.post  ('/salary/employee-components',          permissionGuard('manage_employee_salary_components'), salary.createEmployeeSalaryComponent);
 router.put   ('/salary/employee-components/:id',      permissionGuard('manage_employee_salary_components'), salary.updateEmployeeSalaryComponent);
 router.delete('/salary/employee-components/:id',      permissionGuard('manage_employee_salary_components'), salary.deleteEmployeeSalaryComponent);
+router.get   ('/salary/paygrade-components',          salary.getPaygradeComponents);
+router.post  ('/salary/paygrade-components',          permissionGuard('manage_notch_setup'),                salary.createPaygradeComponent);
+router.put   ('/salary/paygrade-components/:id',      permissionGuard('manage_notch_setup'),                salary.updatePaygradeComponent);
+router.delete('/salary/paygrade-components/:id',      permissionGuard('manage_notch_setup'),                salary.deletePaygradeComponent);
+router.get   ('/salary/notch-components',             salary.getNotchComponents);
+router.post  ('/salary/notch-components',             permissionGuard('manage_notch_setup'),                salary.createNotchComponent);
+router.put   ('/salary/notch-components/:id',         permissionGuard('manage_notch_setup'),                salary.updateNotchComponent);
+router.delete('/salary/notch-components/:id',         permissionGuard('manage_notch_setup'),                salary.deleteNotchComponent);
 router.get   ('/salary/notches',                      salary.getNotches);
 router.post  ('/salary/notches',                      permissionGuard('manage_notch_setup'),                salary.createNotch);
 router.put   ('/salary/notches/:id',                  permissionGuard('manage_notch_setup'),                salary.updateNotch);
@@ -600,6 +608,23 @@ router.post  ('/training/nominations/:id/supervisor-reject',   training.supervis
 const dashboard = require('../controllers/dashboardController');
 router.get('/dashboard/summary', dashboard.getDashboardSummary);
 router.get('/dashboard/module-stats', dashboard.getModuleStats);
+
+// ── Offline AI assistant ──────────────────────────────────────
+const ai = require('../controllers/aiController');
+router.get ('/ai/health',               ai.health);
+router.get ('/ai/config',               permissionGuard.any('manage_app_settings', 'view_app_settings'), ai.getConfig);
+router.put ('/ai/config',               permissionGuard('manage_app_settings'), ai.updateConfig);
+router.post('/ai/reindex',              permissionGuard('manage_app_settings'), ai.reindex);
+router.get   ('/ai/knowledge',          permissionGuard('manage_app_settings'), ai.listKnowledge);
+router.post  ('/ai/knowledge',          permissionGuard('manage_app_settings'), ai.createKnowledge);
+router.put   ('/ai/knowledge/:id',      permissionGuard('manage_app_settings'), ai.updateKnowledge);
+router.delete('/ai/knowledge/:id',      permissionGuard('manage_app_settings'), ai.deleteKnowledge);
+router.post('/ai/chat',                 permissionGuard('use_ai_assistant'), ai.chat);
+// In-form AI aids: available to any authenticated user editing the form; the controller still
+// gates on the master AI enable + per-feature toggle (drafting / ocr).
+router.post('/ai/draft',                ai.draft);
+router.post('/ai/ocr',                  upload.single('file'), ai.ocr);
+router.get ('/ai/insights/attrition',   permissionGuard('view_ai_insights'), ai.attritionInsights);
 
 const report = require('../controllers/reportController');
 router.post('/reports/table.pdf', report.tablePdf);

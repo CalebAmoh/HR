@@ -235,6 +235,17 @@ const ALLOW_DEFAULTS = {
   leave_allow_tax_rate:      '0.3',
 };
 
+/** Read an app-control toggle from the settings table. Returns `defaultOn` when never saved. */
+async function readControlSetting(name, defaultOn) {
+  const [row] = await prisma.$queryRawUnsafe(
+    `SELECT value FROM settings WHERE name=? AND category='app_controls' LIMIT 1`, name
+  ).catch(() => []);
+  return row ? row.value === '1' : defaultOn;
+}
+
+/** Whether leave allowances are paid/posted. Off ⇒ record-only (skip all GL postings). */
+const leavePaymentsEnabled = () => readControlSetting('leave_payments_enabled', true);
+
 async function getAllowanceSettings() {
   const rows = await prisma.$queryRawUnsafe(
     `SELECT name, value FROM settings WHERE category='leave_allowance'`
@@ -271,8 +282,10 @@ async function calcLeaveAllowance(employeeId, settings) {
   return { amount: Math.round(net * 100) / 100, leave_tax: Math.round(tax * 100) / 100 };
 }
 
-// Internal: posts GL unconditionally (called from processLeaveAllowance and approveAllowanceLeave)
+// Internal: posts GL (called from processLeaveAllowance and approveAllowanceLeave).
+// No-op when leave payments are switched off — leave is recorded only, never paid/posted.
 async function postLeaveGL(leaveId) {
+  if (!(await leavePaymentsEnabled())) return;
   const s = await getAllowanceSettings();
   const rows = await prisma.$queryRawUnsafe(
     `SELECT el.*, e.bankAccount AS emp_bank_acc
@@ -306,6 +319,8 @@ async function postLeaveGL(leaveId) {
 
 async function processLeaveAllowance(leaveId) {
   try {
+    // Record-only mode — skip allowance scheduling/payment entirely; the leave itself is still saved.
+    if (!(await leavePaymentsEnabled())) return;
     const s = await getAllowanceSettings();
     if (s.leave_allow_enabled !== 'Yes') return;
 
@@ -1919,17 +1934,33 @@ exports.submitLeave = asyncHandler(async (req, res) => {
 
   const flow      = await getApprovalFlowSettings();
   const supOn     = flow.leave_supervisor_approval === 'Yes';
-  const newStatus = supOn ? 'Pending Approval' : 'Pending HR Approval';
-  const logMsg    = supOn ? 'Submitted for approval' : 'Submitted — skipping supervisor tier (supervisor approval disabled)';
+
+  // Only route to the supervisor tier when supervisor approval is on AND the employee actually
+  // has a supervisor. Otherwise the request would sit in a queue no one can see — so skip the
+  // supervisor step and send it straight to HR (advancing approval_level past the supervisor tier
+  // so HR's approval finalises it).
+  let hasSupervisor = false;
+  if (supOn) {
+    const empRows = await prisma.$queryRawUnsafe(
+      `SELECT e.supervisorId AS sup FROM employeeleaves el JOIN employee e ON e.id = el.employee WHERE el.id = ? LIMIT 1`, id
+    ).catch(() => []);
+    hasSupervisor = !!empRows?.[0]?.sup;
+  }
+  const toSupervisor = supOn && hasSupervisor;
+  const newStatus    = toSupervisor ? 'Pending Approval' : 'Pending HR Approval';
+  const newLevel     = (supOn && !hasSupervisor) ? 1 : 0;  // skipped supervisor tier ⇒ HR is final
+  const logMsg       = toSupervisor ? 'Submitted for approval'
+    : supOn ? 'Submitted — no supervisor assigned, sent directly to HR approval'
+    : 'Submitted — skipping supervisor tier (supervisor approval disabled)';
 
   await prisma.$executeRawUnsafe(
-    `UPDATE employeeleaves SET status=?, submitted_by=? WHERE id=?`,
-    newStatus, toBigInt(req.user.id), id
+    `UPDATE employeeleaves SET status=?, submitted_by=?, approval_level=? WHERE id=?`,
+    newStatus, toBigInt(req.user.id), newLevel, id
   );
   await writeLog(id, req.user.id, logMsg, current.status, newStatus);
   notifyLeaveAction(id, 'submitted');
   notifyLeaveInApp(id, 'submitted');
-  respond.ok(res, supOn ? 'Leave submitted for approval' : 'Leave submitted — sent directly to HR approval');
+  respond.ok(res, toSupervisor ? 'Leave submitted for approval' : 'Leave submitted — sent directly to HR approval');
 });
 
 // POST /leave/:id/approve — two-tier approval: supervisor (level 0 → Pending HR Approval) then HR (final → Approved).

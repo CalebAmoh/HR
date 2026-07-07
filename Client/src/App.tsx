@@ -32,6 +32,7 @@ import { StaffOrganogram } from './components/StaffOrganogram';
 import { Help } from './components/Help';
 import { Recruitment } from './components/Recruitment';
 import { ManagePerformance } from './components/ManagePerformance';
+import { AiInsights } from './components/AiInsights';
 import { PersonalPerformance } from './components/PersonalPerformance';
 import { CareersPortal } from './components/CareersPortal';
 import { SchedulingPortal } from './components/SchedulingPortal';
@@ -171,6 +172,7 @@ export default function App() {
       case 'Recruitment':        return <ProtectedRoute user={currentUser} navKey="Recruitment"><Recruitment onNavigate={navigate} /></ProtectedRoute>;
       case 'ManagePerformance':  return <ProtectedRoute user={currentUser} navKey="ManagePerformance"><ManagePerformance /></ProtectedRoute>;
       case 'PersonalPerformance': return <ProtectedRoute user={currentUser} navKey="PersonalPerformance"><PersonalPerformance /></ProtectedRoute>;
+      case 'AiInsights':         return <ProtectedRoute user={currentUser} navKey="AiInsights"><AiInsights /></ProtectedRoute>;
       default: return <ProtectedRoute user={currentUser} navKey="Dashboard"><Dashboard /></ProtectedRoute>;
     }
   };

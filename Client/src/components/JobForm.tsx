@@ -6,6 +6,7 @@ import { FormModal } from './ui/FormModal';
 import { FormField, inputClass } from './ui/FormField';
 import { CountedTextarea } from './ui/CountedTextarea';
 import { SearchSelect } from './ui/SearchSelect';
+import { DraftWithAI } from './ai/DraftWithAI';
 import api from '../../lib/api';
 import { getSettings } from '../../lib/settings';
 
@@ -234,11 +235,11 @@ export function JobForm({ onClose, initialData, onSave, isDuplicate = false }: a
             </FormField>
 
             <FormField label="Status" required>
-              <select name="status" value={formData.status} onChange={handleChange} className={inputClass}>
-                <option value="Active">Active</option>
-                <option value="On Hold">On Hold</option>
-                <option value="Closed">Closed</option>
-              </select>
+              <SearchSelect
+                value={formData.status}
+                onChange={v => set('status', v)}
+                options={['Active', 'On Hold', 'Closed'].map(s => ({ id: s, label: s }))}
+              />
             </FormField>
 
             <FormField label="Department">
@@ -303,17 +304,21 @@ export function JobForm({ onClose, initialData, onSave, isDuplicate = false }: a
             </FormField>
 
             <FormField label="Experience Level">
-              <select name="experienceLevel" value={formData.experienceLevel} onChange={handleChange} className={inputClass}>
-                <option value="">Select level</option>
-                {EXPERIENCE_LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
-              </select>
+              <SearchSelect
+                value={formData.experienceLevel}
+                onChange={v => set('experienceLevel', v)}
+                options={EXPERIENCE_LEVELS.map(l => ({ id: l, label: l }))}
+                placeholder="Select level"
+              />
             </FormField>
 
             <FormField label="Education Level">
-              <select name="educationLevel" value={formData.educationLevel} onChange={handleChange} className={inputClass}>
-                <option value="">Select education</option>
-                {EDUCATION_LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
-              </select>
+              <SearchSelect
+                value={formData.educationLevel}
+                onChange={v => set('educationLevel', v)}
+                options={EDUCATION_LEVELS.map(l => ({ id: l, label: l }))}
+                placeholder="Select education"
+              />
             </FormField>
 
             <FormField label="Keywords" hint="Comma-separated skills or terms.">
@@ -338,10 +343,11 @@ export function JobForm({ onClose, initialData, onSave, isDuplicate = false }: a
             </FormField>
 
             <FormField label="Show Salary on Listing">
-              <select name="showSalary" value={formData.showSalary} onChange={handleChange} className={inputClass}>
-                <option value="Yes">Yes</option>
-                <option value="No">No</option>
-              </select>
+              <SearchSelect
+                value={formData.showSalary}
+                onChange={v => set('showSalary', v)}
+                options={['Yes', 'No'].map(s => ({ id: s, label: s }))}
+              />
             </FormField>
 
             <FormField label="Salary Min">
@@ -370,10 +376,11 @@ export function JobForm({ onClose, initialData, onSave, isDuplicate = false }: a
             </FormField>
 
             <FormField label="Show Hiring Manager Name">
-              <select name="showHiringManager" value={formData.showHiringManager} onChange={handleChange} className={inputClass}>
-                <option value="Yes">Yes</option>
-                <option value="No">No</option>
-              </select>
+              <SearchSelect
+                value={formData.showHiringManager}
+                onChange={v => set('showHiringManager', v)}
+                options={['Yes', 'No'].map(s => ({ id: s, label: s }))}
+              />
             </FormField>
           </div>
         </div>
@@ -386,6 +393,14 @@ export function JobForm({ onClose, initialData, onSave, isDuplicate = false }: a
               <CountedTextarea name="shortDescription" value={formData.shortDescription} onChange={handleChange} rows={2} maxChars={300} className={inputClass} />
             </FormField>
             <FormField label="Full Description">
+              <div className="flex justify-end mb-1.5">
+                <DraftWithAI
+                  kind="job_description"
+                  maxChars={5000}
+                  getContext={() => [formData.title, formData.department, formData.experienceLevel].filter(Boolean).join(', ')}
+                  onText={(t) => handleChange({ target: { name: 'description', value: t } } as any)}
+                />
+              </div>
               <CountedTextarea name="description" value={formData.description} onChange={handleChange} rows={5} maxChars={5000} className={inputClass} />
             </FormField>
             <FormField label="Requirements">

@@ -6,6 +6,8 @@ const { logActivity, fromReq } = require('./auditController');
 const { getApiConfig } = require('./apiIntegrationController');
 const { sendEmployeeLifecycleEmail } = require('../helpers/emailHelper');
 const { notifyEmployee, notifyUsersWithPermission } = require('../helpers/notificationHelper');
+const { reassignPendingSupervisorWork } = require('../helpers/supervisorHelper');
+const { effectiveRequiredFields } = require('../config/employeeFormFields');
 
 // ─── Lifecycle constants ───────────────────────────────────────────────────────
 const LIFECYCLE = {
@@ -35,7 +37,30 @@ async function readControlSetting(name, defaultOn) {
   return row ? row.value === '1' : defaultOn;
 }
 
+/** Load the admin-configured employee-form field config (Settings → Controls → Employee Form).
+ *  Returns the parsed `{ key: { visible, required } }` map, or `{}` when never saved. */
+async function loadEmployeeFieldConfig() {
+  const [row] = await prisma.$queryRawUnsafe(
+    `SELECT value FROM settings WHERE name='employee_form_fields' AND category='app_controls' LIMIT 1`
+  ).catch(() => []);
+  if (!row || !row.value) return {};
+  try { return JSON.parse(row.value); } catch { return {}; }
+}
+
 /** Push employee data to the external HR system and record the result. */
+// Map our internal lifecycle status to the external system's `staffStatus` value:
+//   SUSPENDED → DEACTIVATED, TERMINATED/RESIGNED → TERMINATED, ACTIVE/PENDING → ACTIVE.
+function externalStaffStatus(lifecycle) {
+  switch (lifecycle) {
+    case LIFECYCLE.SUSPENDED:  return 'DEACTIVATED';
+    case LIFECYCLE.TERMINATED:
+    case LIFECYCLE.RESIGNED:   return 'TERMINATED';
+    case LIFECYCLE.ACTIVE:
+    case LIFECYCLE.PENDING:    return 'ACTIVE';
+    default:                   return lifecycle || '';
+  }
+}
+
 async function pushEmployeeToExternalSystem(e) {
   const apiCfg = await getApiConfig();
   const url    = apiCfg.employee_sync_url;
@@ -85,7 +110,7 @@ async function pushEmployeeToExternalSystem(e) {
     ssn:               e.ssn_num                  || '',
     staffCat:          e.staffLevel?.label        || '',
     staffGrade:        e.paygradeId               || '',
-    staffStatus:       e.lifecycleStatus          || '',
+    staffStatus:       externalStaffStatus(e.lifecycleStatus),
     supervisorID:      e.supervisor?.employee_id  || '',
     unit:              e.unit?.comp_code           || '',
     workEmail:         e.work_email               || '',
@@ -132,10 +157,34 @@ async function pushEmployeeToExternalSystem(e) {
   }
 }
 
-/** Auto-generate employee ID from the BigInt primary key */
-function makeEmployeeId(id) {
-  const year = new Date().getFullYear();
-  return `EMP-${year}-${String(id).padStart(4, '0')}`;
+const DEFAULT_EMPLOYEE_ID_PATTERN = 'EMP-{YYYY}-{SEQ4}';
+const EMPLOYEE_ID_MAX_LENGTH = 20; // employee_id VARCHAR(20)
+
+/** Read the admin-configured employee-ID structure (Settings → Controls → General).
+ *  Returns the stored template, or the default when never saved. */
+async function loadEmployeeIdFormat() {
+  const [row] = await prisma.$queryRawUnsafe(
+    `SELECT value FROM settings WHERE name='employee_id_format' AND category='app_controls' LIMIT 1`
+  ).catch(() => []);
+  const val = row && typeof row.value === 'string' ? row.value.trim() : '';
+  return val || DEFAULT_EMPLOYEE_ID_PATTERN;
+}
+
+/** Auto-generate an employee ID by rendering `pattern` against the row's primary key (continuous,
+ *  never-reset sequence) and current date. Falls back to the default if the pattern lacks {SEQ}. */
+function makeEmployeeId(id, pattern) {
+  const tpl = pattern && /\{SEQ\d*\}/i.test(pattern) ? pattern : DEFAULT_EMPLOYEE_ID_PATTERN;
+  const now = new Date();
+  const seq = String(id);
+  const pad = (n) => String(n).padStart(2, '0');
+  const out = tpl
+    .replace(/\{SEQ(\d+)\}/gi, (_m, n) => seq.padStart(Number(n), '0'))
+    .replace(/\{SEQ\}/gi, seq)
+    .replace(/\{YYYY\}/gi, String(now.getFullYear()))
+    .replace(/\{YY\}/gi, String(now.getFullYear()).slice(-2))
+    .replace(/\{MM\}/gi, pad(now.getMonth() + 1))
+    .replace(/\{DD\}/gi, pad(now.getDate()));
+  return out.slice(0, EMPLOYEE_ID_MAX_LENGTH); // defensive: never exceed the column width
 }
 
 /**
@@ -290,7 +339,7 @@ const getActiveEmployees = asyncHandler(async (req, res) => {
       jobTitleId: true, departmentId: true,
     },
     orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
-    take: 100,
+    take: 2000, // searchable picker filters client-side — must return the full active roster
   });
 
   // Resolve job titles
@@ -377,12 +426,14 @@ const getEmployeeById = asyncHandler(async (req, res) => {
 const createEmployee = asyncHandler(async (req, res) => {
   const d = req.body;
 
-  // Required
-  if (!d.firstName?.trim())      return respond.badReq(res, 'First name is required');
-  if (!d.lastName?.trim())       return respond.badReq(res, 'Last name is required');
-  if (!d.work_email?.trim())     return respond.badReq(res, 'Work email is required');
-  if (!d.jobTitleId)             return respond.badReq(res, 'Job title is required');
-  if (!d.employmentStatusId)     return respond.badReq(res, 'Employment status is required');
+  // Required fields are driven by the admin Controls config (Settings → Controls → Employee Form),
+  // with the locked core (first/last name, work email) always enforced. Keeps the API in sync with
+  // the form instead of hardcoding the list here.
+  const fieldCfg = await loadEmployeeFieldConfig();
+  for (const f of effectiveRequiredFields(fieldCfg)) {
+    const v = d[f.key];
+    if (v == null || String(v).trim() === '') return respond.badReq(res, `${f.label} is required`);
+  }
 
   const workEmail = d.work_email.trim().toLowerCase();
 
@@ -482,7 +533,8 @@ const createEmployee = asyncHandler(async (req, res) => {
   });
 
   // Step 2 — set employee_id + document filenames (short references, not blobs)
-  const employeeId = d.employee_id?.trim() || makeEmployeeId(employee.id);
+  const idFormat = await loadEmployeeIdFormat();
+  const employeeId = d.employee_id?.trim() || makeEmployeeId(employee.id, idFormat);
   await prisma.employee.update({
     where: { id: employee.id },
     data: {
@@ -601,38 +653,49 @@ const updateEmployee = asyncHandler(async (req, res) => {
 
   if ('personal_email' in d) {
     const pe = d.personal_email?.trim().toLowerCase() || null;
-    if (pe && pe !== existing.personal_email) {
-      const dupe = await prisma.employee.findUnique({ where: { personal_email: pe } });
+    // Compare case-insensitively (emails match case-insensitively in the DB) and exclude THIS
+    // employee, so re-submitting the record's own personal email never self-collides.
+    if (pe && pe !== (existing.personal_email || '').toLowerCase()) {
+      const dupe = await prisma.employee.findFirst({ where: { personal_email: pe, NOT: { id } } });
       if (dupe) return respond.conflict(res, 'Personal email already in use by another employee');
     }
     updateData.personal_email = pe;
   }
 
-  // With the approval workflow ON, every edit sends the record back to the pending
-  // queue. With it OFF, edits stay Approved/Active and re-sync straight away.
-  const approvalRequired = await readControlSetting('approval_employee', true);
+  // Editing approval is governed by its own control, 'approval_employee_update':
+  //  • ON  → the edit is sent back through approval before it syncs (just like creating an employee).
+  //  • OFF → the employee keeps its current status and the edit syncs immediately.
+  // When the control has never been set it follows the master employee-approval workflow, so existing
+  // behaviour is preserved until an admin chooses.
+  const masterApproval = await readControlSetting('approval_employee', true);
+  const updateNeedsApproval = await readControlSetting('approval_employee_update', masterApproval);
   updateData.actionReason = null;
-  if (approvalRequired) {
+  if (updateNeedsApproval) {
     updateData.approvalStatus  = APPROVAL.PENDING;
     updateData.lifecycleStatus = LIFECYCLE.PENDING;
-  } else {
-    updateData.approvalStatus  = APPROVAL.APPROVED;
-    updateData.lifecycleStatus = LIFECYCLE.ACTIVE;
-    updateData.approved_by     = toBigInt(req.user?.id);
-    updateData.approved_date   = new Date();
   }
+  // else: leave approvalStatus / lifecycleStatus untouched (keep the employee's current status).
 
   await prisma.employee.update({ where: { id }, data: updateData });
   await prisma.$executeRawUnsafe(
     `UPDATE employee SET sync_status=NULL, sync_error=NULL WHERE id=?`, id
   );
 
+  // If the supervisor changed, move any pending supervisor-routed work to the new supervisor so
+  // nothing stays stuck with the old one. Centralised in supervisorHelper (live queues like leave,
+  // training and attendance re-route automatically; only stored snapshots are handled there).
+  if ('supervisorId' in d) {
+    const oldSup = existing.supervisorId != null ? String(existing.supervisorId) : null;
+    const newSup = updateData.supervisorId != null ? String(updateData.supervisorId) : null;
+    if (oldSup !== newSup) await reassignPendingSupervisorWork(id, updateData.supervisorId ?? null);
+  }
+
   const refreshed = await prisma.employee.findUnique({ where: { id } });
   const [enriched] = await enrichEmployees([refreshed]);
   logActivity({ module: 'Employees', action: 'update', entityId: String(id), entityName: `${existing.firstName} ${existing.lastName}`, ...fromReq(req) });
 
-  // Approval workflow off → push the updated record to the external system immediately.
-  if (!approvalRequired) {
+  // Edit approval off → push the updated record to the external system immediately.
+  if (!updateNeedsApproval) {
     const syncResult = await pushEmployeeToExternalSystem(enriched);
     return res.status(200).json({ status: '200', message: 'Employee updated and synced', data: enriched, syncResult });
   }
@@ -688,20 +751,21 @@ const approveEmployee = asyncHandler(async (req, res) => {
         ? new Date(emp.termination_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
         : null,
     }).catch(e => console.error('[LifecycleEmail]', e.message));
+    // Sync the status change to the external system (DEACTIVATED for suspend, TERMINATED for
+    // terminate/resign — mapped in pushEmployeeToExternalSystem).
+    await pushEmployeeToExternalSystem(enriched);
     return respond.ok(res, `${action.charAt(0) + action.slice(1).toLowerCase()} approved`, enriched);
   }
 
-  // Standard new-employee approval — validate required fields
+  // Standard new-employee approval — validate required fields against the same admin config
+  // used at creation (Settings → Controls → Employee Form), so approval never demands a field
+  // that was made optional/hidden there.
+  const approvalCfg = await loadEmployeeFieldConfig();
   const missing = [];
-  if (!emp.firstName?.trim())                        missing.push('First name');
-  if (!emp.lastName?.trim())                         missing.push('Last name');
-  if (!emp.work_email?.trim() && !emp.email?.trim()) missing.push('Work email');
-  if (!emp.hireDate)                                 missing.push('Hire date');
-  if (!emp.departmentId)                             missing.push('Department');
-  if (!emp.jobTitleId)                               missing.push('Job title');
-  if (!emp.genderId)                                 missing.push('Gender');
-  if (!emp.dateOfBirth)                              missing.push('Date of birth');
-  if (!emp.employmentStatusId)                       missing.push('Employment status');
+  for (const f of effectiveRequiredFields(approvalCfg)) {
+    const val = f.key === 'work_email' ? (emp.work_email || emp.email) : emp[f.key];
+    if (val == null || String(val).trim() === '') missing.push(f.label);
+  }
   if (missing.length > 0) {
     return respond.badReq(res, `Cannot approve: the following required fields are missing — ${missing.join(', ')}.`);
   }
@@ -763,6 +827,8 @@ const changeEmployeeStatus = asyncHandler(async (req, res) => {
       name: `${emp.firstName} ${emp.lastName}`.trim(),
       action: 'REINSTATED',
     }).catch(e => console.error('[LifecycleEmail]', e.message));
+    // Re-sync the full record to the external system with staffStatus = ACTIVE.
+    await pushEmployeeToExternalSystem(enriched);
     return respond.ok(res, 'Employee reinstated', enriched);
   }
 
@@ -835,7 +901,7 @@ const getAllPaygrades = asyncHandler(async (req, res) => {
 // GET /notches
 const getAllNotches = asyncHandler(async (req, res) => {
   const rows = await prisma.notches.findMany({
-    select: { id: true, name: true, paygrade: true, currency: true, amount: true },
+    select: { id: true, name: true, paygradeId: true, currency: true, amount: true },
     orderBy: { name: 'asc' },
   });
   respond.ok(res, 'Notches retrieved', rows.map(r => ({

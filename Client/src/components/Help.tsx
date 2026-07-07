@@ -758,7 +758,9 @@ const MODULES: HelpModule[] = [
             headers: ['Area', 'What it covers'],
             rows: [
               ['Salary → Components', 'Define earnings and deductions (allowances, PAYE, pension, etc.) that appear on every payslip'],
-              ['Salary → Pay Grades & Notches', 'Set salary bands and the specific pay point (notch) assigned to each employee'],
+              ['Salary → Pay Grades & Notches', 'Set salary bands and the pay point (notch); the notch amount is the employee\'s basic pay'],
+              ['Salary → Component Assignment', 'Assign components to a paygrade or notch — every employee on it automatically inherits them'],
+              ['Salary → Exceptions', 'Per-employee overrides — change an amount, exclude a component, or add an extra one'],
               ['Payroll → Payroll Runs', 'Create, review, and submit payroll batches; also Payroll Employees, Payroll Columns, Deduction Groups, Calculation Rules, and Report Templates tabs'],
               ['Payslips', 'Generated automatically when a run is approved — open the run to download per-employee, or employees download their own under User Reports → My Payslips'],
             ],
@@ -798,11 +800,48 @@ const MODULES: HelpModule[] = [
               { label: 'Go to Salary from the sidebar.' },
               { label: 'Open the "Components" tab and click "Add Component".' },
               { label: 'Enter the name, type (Earning or Deduction), and whether it is taxable.' },
-              { label: 'Set the calculation method: fixed amount, percentage of basic, or formula.' },
-              { label: 'Save. The component can now be assigned to employee salary structures.' },
+              { label: 'Save. The component can then be assigned to a paygrade or notch in the Component Assignment tab.' },
             ],
           },
+          { type: 'tip', body: 'One component can be marked "Grade-Linked" (Basic Salary). It automatically receives each employee\'s notch amount as their basic pay — you never assign it manually.' },
           { type: 'tip', body: 'Taxable earnings are included in the PAYE calculation. Non-taxable earnings (e.g. transport allowance up to a threshold) are excluded.' },
+        ],
+      },
+      {
+        id: 'component-assignment',
+        title: 'Assigning Components (Paygrades, Notches & Exceptions)',
+        summary: 'Assign components at the paygrade or notch level; employees inherit them automatically, with per-employee exceptions.',
+        icon: ListChecks,
+        content: [
+          { type: 'text', body: 'Components are no longer attached to employees one by one. Instead you assign them to a paygrade or a notch, and every employee on that paygrade/notch inherits them automatically. This keeps pay structures consistent and easy to maintain.' },
+          {
+            type: 'steps', heading: 'Assigning a component to a paygrade or notch',
+            steps: [
+              { label: 'Go to Salary → Component Assignment.' },
+              { label: 'Choose the target type — Paygrade or Notch — then pick the specific paygrade/notch.' },
+              { label: 'Click "Assign Component", select the component, and enter the amount (and working days if used).' },
+              { label: 'Save. Every employee on that paygrade/notch now inherits this component.' },
+            ],
+          },
+          {
+            type: 'table',
+            headers: ['Rule', 'How it works'],
+            rows: [
+              ['Inheritance',   'An employee gets the union of their paygrade\'s components and their notch\'s components'],
+              ['Notch wins',    'If the same component is set on both the paygrade and the notch, the notch\'s amount applies'],
+              ['Basic pay',     'Comes from the notch amount via the Grade-Linked component — you do not assign it here'],
+            ],
+          },
+          {
+            type: 'steps', heading: 'Per-employee exceptions',
+            steps: [
+              { label: 'Go to Salary → Exceptions and choose the employee(s) and the component.' },
+              { label: 'Override the amount (a different value for this employee only), or…' },
+              { label: 'Tick "Exclude this component" to remove an inherited component for that employee, or…' },
+              { label: 'Add a component the employee\'s grade/notch does not include.' },
+            ],
+          },
+          { type: 'tip', body: 'Exceptions always win over inherited paygrade/notch values. Use them sparingly — for genuine one-off deviations.' },
         ],
       },
       {

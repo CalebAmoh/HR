@@ -4,6 +4,8 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond      = require('../helpers/respondHelper');
 const axios        = require('axios');
 const fs           = require('fs');
+const path         = require('path');
+const { UPLOAD_DIR } = require('../middleware/upload');
 
 const { serialize } = require('../helpers/controllerHelpers');
 
@@ -47,6 +49,10 @@ async function loadLogoBuffer(src) {
     }
 
     if (fs.existsSync(value)) return fs.readFileSync(value);
+
+    // Stored value is usually just an uploaded filename — resolve it under the documents dir.
+    const docPath = path.join(UPLOAD_DIR, path.basename(value));
+    if (fs.existsSync(docPath)) return fs.readFileSync(docPath);
   } catch {
     return null;
   }
@@ -159,6 +165,13 @@ const downloadPayslip = asyncHandler(async (req, res) => {
         .reduce((sum, r) => sum + (parseFloat(r.amount || '0') || 0) * (r.payment_deduction === 'Deduction' ? -1 : 1), 0)
     : (netRow ? parseFloat(netRow.amount || '0') : (totalEarnings - totalDeductions));
 
+  // Company branding: template first, then global App Setup (Settings → System → App Setup).
+  const setupRows = await query(`SELECT name, value FROM settings WHERE category='app_setup'`).catch(() => []);
+  const setup = {};
+  setupRows.forEach(r => { setup[r.name] = r.value; });
+  const companyName = s.company_name || setup.company_name || 'Payslip';
+  const logoBuf = await loadLogoBuffer(s.company_logo_url || setup.company_logo || '');
+
   const [acR, acG, acB] = hexToRgb(s.accent_color);
   const empName = `${emp.firstName || ''} ${emp.lastName || ''}`.trim();
   const period  = run.date_start
@@ -175,10 +188,17 @@ const downloadPayslip = asyncHandler(async (req, res) => {
 
   // Header banner
   doc.rect(50, 50, pageW, 60).fill([acR, acG, acB]);
+
+  // Company logo (left of the name) — drawn only if it decoded to a usable image.
+  let textX = 70;
+  if (logoBuf) {
+    try { doc.image(logoBuf, 62, 62, { fit: [36, 36] }); textX = 108; } catch { /* unsupported image — skip */ }
+  }
+
   doc.fillColor('white').font('Helvetica-Bold').fontSize(16)
-    .text(s.company_name || 'Payslip', 70, 65);
+    .text(companyName, textX, 65, { width: doc.page.width - 130 - textX });
   if (s.company_address) {
-    doc.fillColor('white').font('Helvetica').fontSize(8).text(s.company_address, 70, 85, { width: pageW - 80 });
+    doc.fillColor('white').font('Helvetica').fontSize(8).text(s.company_address, textX, 85, { width: doc.page.width - 130 - textX });
   }
   doc.fillColor('white').font('Helvetica').fontSize(9)
     .text('PAYSLIP', doc.page.width - 130, 72, { align: 'right', width: 80 })

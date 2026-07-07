@@ -695,9 +695,9 @@ const updateGoal = asyncHandler(async (req, res) => {
   const [ex] = await query(`SELECT * FROM performance_goal WHERE id = ? LIMIT 1`, id);
   if (!ex) return respond.notFound(res, 'Goal not found');
 
-  const { title, description, weight, target, actual_result, progress_note, status, due_date, achievement, employee_score, supervisor_score, hr_score, comment, document_ref } = req.body;
+  const { title, description, weight, target, actual_result, progress_note, status, due_date, achievement, employee_score, supervisor_score, hr_score, comment, supervisor_comment, hr_comment, document_ref } = req.body;
   await exec(
-    `UPDATE performance_goal SET title=?, description=?, weight=?, target=?, actual_result=?, progress_note=?, status=?, due_date=?, achievement=?, employee_score=?, supervisor_score=?, hr_score=?, comment=?, document_ref=?, updated_at=? WHERE id=?`,
+    `UPDATE performance_goal SET title=?, description=?, weight=?, target=?, actual_result=?, progress_note=?, status=?, due_date=?, achievement=?, employee_score=?, supervisor_score=?, hr_score=?, comment=?, supervisor_comment=?, hr_comment=?, document_ref=?, updated_at=? WHERE id=?`,
     title?.trim()         ?? ex.title,
     description?.trim()   != null ? (description?.trim() || null) : ex.description,
     weight                != null ? weight : ex.weight,
@@ -711,6 +711,8 @@ const updateGoal = asyncHandler(async (req, res) => {
     supervisor_score      != null ? supervisor_score : ex.supervisor_score,
     hr_score              != null ? hr_score : ex.hr_score,
     comment               != null ? (comment?.trim() || null) : ex.comment,
+    supervisor_comment    != null ? (supervisor_comment?.trim() || null) : ex.supervisor_comment,
+    hr_comment            != null ? (hr_comment?.trim() || null) : ex.hr_comment,
     document_ref          != null ? (document_ref?.trim() || null) : ex.document_ref,
     now(), id
   );

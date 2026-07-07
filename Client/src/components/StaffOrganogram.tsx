@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Network, Users, Building2, ChevronDown, ChevronRight,
-  AlignLeft, Search, X,
+  AlignLeft, Search, X, ZoomIn, ZoomOut, Maximize2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { SearchSelect } from './ui/SearchSelect';
@@ -163,8 +163,9 @@ function TreeNode({ emp, childrenMap, level, seen, highlight }: {
   emp: StaffNode; childrenMap: Map<string, StaffNode[]>; level: number; seen: Set<string>;
   highlight: Set<string> | null;
 }) {
-  // While filtering, the tree is pruned to matches — keep every branch open
-  const [expanded, setExpanded] = useState(highlight !== null || level < 2);
+  // Start collapsed to just the top level (no-supervisor staff); the user expands from there.
+  // While filtering, the tree is pruned to matches — keep every branch open.
+  const [expanded, setExpanded] = useState(highlight !== null);
   // Guard against bad data cycles (an employee appearing in its own chain)
   const children = (childrenMap.get(emp.id) ?? []).filter(c => !seen.has(c.id));
   const hasChildren = children.length > 0;
@@ -238,7 +239,7 @@ function ListNode({ emp, childrenMap, level, seen, highlight }: {
   emp: StaffNode; childrenMap: Map<string, StaffNode[]>; level: number; seen: Set<string>;
   highlight: Set<string> | null;
 }) {
-  const [expanded, setExpanded] = useState(highlight !== null || level < 1);
+  const [expanded, setExpanded] = useState(highlight !== null);
   const children = (childrenMap.get(emp.id) ?? []).filter(c => !seen.has(c.id));
   const hasChildren = children.length > 0;
   const c = deptCfg(emp.department);
@@ -422,6 +423,33 @@ export function StaffOrganogram() {
     { label: 'Top Level',   value: roots.length,       Icon: Network   },
   ];
 
+  // ── Tree zoom-to-fit ──────────────────────────────────────────────────────
+  // A wide org overflows horizontally; zooming lets the whole structure be seen
+  // at a glance. We use CSS `zoom` (reflows, so scrollbars stay correct).
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const treeRef   = useRef<HTMLDivElement | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const zoomRef = useRef(1);
+  zoomRef.current = zoom;
+  const ZMIN = 0.3, ZMAX = 1.3;
+  const clampZoom = (z: number) => Math.round(Math.max(ZMIN, Math.min(ZMAX, z)) * 100) / 100;
+
+  const fitToWidth = useCallback(() => {
+    const c = canvasRef.current, t = treeRef.current;
+    if (!c || !t) return;
+    const natural = t.scrollWidth / (zoomRef.current || 1); // scrollWidth scales with zoom
+    if (!natural) return;
+    const avail = c.clientWidth - 48; // leave a little breathing room
+    setZoom(clampZoom(avail / natural));
+  }, []);
+
+  // Auto-fit whenever the tree content changes (load, filter, view switch).
+  useEffect(() => {
+    if (view !== 'tree' || loading) return;
+    const id = setTimeout(fitToWidth, 80);
+    return () => clearTimeout(id);
+  }, [view, loading, search, dept, staff.length, fitToWidth]);
+
   return (
     <div className="flex-1 w-full relative h-full flex flex-col">
       <div className="w-full px-3 sm:px-6 md:px-8 py-6 sm:py-8 flex-1 flex flex-col max-w-full">
@@ -465,6 +493,32 @@ export function StaffOrganogram() {
                   </div>
                 ))}
               </div>
+
+              {view === 'tree' && (
+                <div className="flex items-center bg-slate-100 p-1 rounded-xl shrink-0">
+                  <button
+                    onClick={() => setZoom(z => clampZoom(z - 0.1))}
+                    title="Zoom out"
+                    className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-800 hover:bg-white transition-all"
+                  >
+                    <ZoomOut size={13} />
+                  </button>
+                  <button
+                    onClick={fitToWidth}
+                    title="Fit to screen"
+                    className="px-1.5 h-7 flex items-center gap-1 rounded-lg text-[11px] font-bold text-slate-600 hover:text-[var(--accent)] hover:bg-white transition-all tabular-nums"
+                  >
+                    <Maximize2 size={11} /> {Math.round(zoom * 100)}%
+                  </button>
+                  <button
+                    onClick={() => setZoom(z => clampZoom(z + 0.1))}
+                    title="Zoom in"
+                    className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-800 hover:bg-white transition-all"
+                  >
+                    <ZoomIn size={13} />
+                  </button>
+                </div>
+              )}
 
               <div className="flex bg-slate-100 p-1 rounded-xl shrink-0">
                 <button
@@ -513,6 +567,7 @@ export function StaffOrganogram() {
 
           {/* Canvas */}
           <div
+            ref={canvasRef}
             className={`flex-1 overflow-auto min-h-[320px] sm:min-h-[480px] ${
               view === 'list'
                 ? 'p-3 sm:p-5 bg-[var(--bg)]'
@@ -536,8 +591,10 @@ export function StaffOrganogram() {
               </div>
             ) : view === 'tree' ? (
               <div
+                ref={treeRef}
                 key={`tree-${search}-${dept}`}
-                className="flex flex-col items-center gap-6 sm:gap-10 pb-8 sm:pb-12 pt-2 w-full"
+                style={{ zoom }}
+                className="flex flex-col items-center gap-6 sm:gap-10 pb-8 sm:pb-12 pt-2 w-max min-w-full mx-auto"
               >
                 {effRoots.map(emp => (
                   <TreeNode key={emp.id} emp={emp} childrenMap={effChildrenMap} level={0} seen={new Set()} highlight={matchIds} />
