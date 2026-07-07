@@ -100,7 +100,8 @@ async function migrate(conn) {
   `);
 
   // Second pass: resolve reporting line. Legacy `supervisor` is the OLD employee id; map it to
-  // the newly-inserted employee via the supervisor's employee_id.
+  // the newly-inserted employee via the supervisor's employee_id. Only fills employees whose
+  // supervisor is still unset — never overwrites reporting lines curated in the app.
   const [sup] = await conn.query(`
     UPDATE employee e
       JOIN employees s   ON s.employee_id  = e.employee_id
@@ -108,6 +109,7 @@ async function migrate(conn) {
       JOIN employee esup ON esup.employee_id = sup.employee_id
     SET e.supervisorId = esup.id
     WHERE s.supervisor IS NOT NULL
+      AND e.supervisorId IS NULL
   `);
 
   const [[after]] = await conn.query('SELECT COUNT(*) n FROM employee');
