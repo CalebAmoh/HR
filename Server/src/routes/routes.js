@@ -327,6 +327,9 @@ router.get ('/settings/controls',          appCfg.getControlSettings);
 router.put ('/settings/controls',          permissionGuard('manage_settings'), appCfg.saveControlSettings);
 router.get ('/settings/notifications',     appCfg.getNotificationSettings);
 router.put ('/settings/notifications',     permissionGuard('manage_settings'), appCfg.saveNotificationSettings);
+router.get   ('/settings/messages',        appCfg.getMessages);
+router.put   ('/settings/messages',        permissionGuard('manage_settings'), appCfg.saveMessage);
+router.delete('/settings/messages',        permissionGuard('manage_settings'), appCfg.resetMessage);
 
 // In-app notifications (bell) — each user sees only their own; no permission guard
 const notif = require('../controllers/notificationController');

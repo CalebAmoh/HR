@@ -3,6 +3,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 
 const { serialize, toBigInt } = require('../helpers/controllerHelpers');
+const { tmsg } = require('../helpers/messageStore');
 
 function toInt(val) {
   if (val === undefined || val === null || val === '') return null;
@@ -396,16 +397,16 @@ function makeGradeComponentHandlers(table, fkCol, label) {
       LEFT JOIN salarycomponent sc ON sc.id = gc.component_id
       ${where}
       ORDER BY sc.name ASC`, ...params);
-    respond.ok(res, `${label} components retrieved`, rows.map(r => ({ ...r, componentName: r.component_name ?? null })));
+    respond.ok(res, tmsg('salary.components_retrieved', { label }), rows.map(r => ({ ...r, componentName: r.component_name ?? null })));
   });
 
   const create = asyncHandler(async (req, res) => {
     const targetId = toBigInt(req.body.target_id);
     const componentId = toBigInt(req.body.component);
-    if (!targetId) return respond.badReq(res, `${label} is required`);
+    if (!targetId) return respond.badReq(res, tmsg('salary.target_required', { label }));
     if (!componentId) return respond.badReq(res, 'Component is required');
     const dup = await query(`SELECT id FROM ${table} WHERE ${fkCol} = ? AND component_id = ? LIMIT 1`, targetId, componentId);
-    if (dup.length) return respond.conflict(res, `This component is already assigned to the ${label.toLowerCase()}`);
+    if (dup.length) return respond.conflict(res, tmsg('salary.component_already_assigned', { target: label.toLowerCase() }));
     const amountValue = toDecimalString(req.body.amount);
     await exec(`INSERT INTO ${table} (${fkCol}, component_id, amount, working_days) VALUES (?, ?, ?, ?)`,
       targetId, componentId, amountValue, toInt(req.body.working_days));
@@ -413,27 +414,27 @@ function makeGradeComponentHandlers(table, fkCol, label) {
       SELECT gc.id, gc.${fkCol} AS target_id, gc.component_id, gc.working_days, CAST(gc.amount AS CHAR) AS amount,
              sc.name AS component_name FROM ${table} gc LEFT JOIN salarycomponent sc ON sc.id = gc.component_id
       WHERE gc.${fkCol} = ? AND gc.component_id = ?`, targetId, componentId);
-    respond.created(res, `${label} component assigned`, { ...created, componentName: created?.component_name ?? null });
+    respond.created(res, tmsg('salary.component_assigned', { label }), { ...created, componentName: created?.component_name ?? null });
   });
 
   const update = asyncHandler(async (req, res) => {
     const id = toBigInt(req.params.id);
     if (!id) return respond.badReq(res, 'Invalid ID');
     const [existing] = await query(`SELECT id FROM ${table} WHERE id = ? LIMIT 1`, id);
-    if (!existing) return respond.notFound(res, `${label} component not found`);
+    if (!existing) return respond.notFound(res, tmsg('salary.component_not_found', { label }));
     const amountValue = toDecimalString(req.body.amount);
     await exec(`UPDATE ${table} SET amount = ?, working_days = ? WHERE id = ?`, amountValue, toInt(req.body.working_days), id);
     const [updated] = await query(`
       SELECT gc.id, gc.${fkCol} AS target_id, gc.component_id, gc.working_days, CAST(gc.amount AS CHAR) AS amount,
              sc.name AS component_name FROM ${table} gc LEFT JOIN salarycomponent sc ON sc.id = gc.component_id WHERE gc.id = ?`, id);
-    respond.ok(res, `${label} component updated`, { ...updated, componentName: updated?.component_name ?? null });
+    respond.ok(res, tmsg('salary.component_updated', { label }), { ...updated, componentName: updated?.component_name ?? null });
   });
 
   const remove = asyncHandler(async (req, res) => {
     const id = toBigInt(req.params.id);
     if (!id) return respond.badReq(res, 'Invalid ID');
     await exec(`DELETE FROM ${table} WHERE id = ?`, id);
-    respond.ok(res, `${label} component removed`, null);
+    respond.ok(res, tmsg('salary.component_removed', { label }), null);
   });
 
   return { list, create, update, remove };
@@ -474,7 +475,7 @@ const createNotch = asyncHandler(async (req, res) => {
       const min = Number(pg.min_salary);
       const max = Number(pg.max_salary);
       if (amt < min || amt > max) {
-        return respond.badReq(res, `Amount must be between ${min.toLocaleString()} and ${max.toLocaleString()} for paygrade "${pg.name}"`);
+        return respond.badReq(res, tmsg('salary.amount_out_of_band', { min: min.toLocaleString(), max: max.toLocaleString(), paygrade: pg.name }));
       }
     }
   }
@@ -509,7 +510,7 @@ const updateNotch = asyncHandler(async (req, res) => {
       const min = Number(pg.min_salary);
       const max = Number(pg.max_salary);
       if (amt < min || amt > max) {
-        return respond.badReq(res, `Amount must be between ${min.toLocaleString()} and ${max.toLocaleString()} for paygrade "${pg.name}"`);
+        return respond.badReq(res, tmsg('salary.amount_out_of_band', { min: min.toLocaleString(), max: max.toLocaleString(), paygrade: pg.name }));
       }
     }
   }
@@ -597,7 +598,7 @@ const deletePaygrade = asyncHandler(async (req, res) => {
   // Block deletion when notches reference this paygrade
   const notchCount = await prisma.notches.count({ where: { paygradeId: id } });
   if (notchCount > 0) {
-    return respond.badReq(res, `Cannot delete: ${notchCount} notch${notchCount > 1 ? 'es are' : ' is'} assigned to this paygrade`);
+    return respond.badReq(res, tmsg('salary.paygrade_notches_assigned', { count: notchCount }));
   }
 
   await prisma.paygrades.delete({ where: { id } });

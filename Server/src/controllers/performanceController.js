@@ -1,6 +1,7 @@
 const { prisma } = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
+const { tmsg } = require('../helpers/messageStore');
 const { sendPerformanceEmail } = require('../helpers/emailHelper');
 const { logActivity, fromReq } = require('./auditController');
 const { notifyEmployee, notifyUsersWithPermission } = require('../helpers/notificationHelper');
@@ -228,7 +229,7 @@ const addEmployeesToCycle = asyncHandler(async (req, res) => {
       added++;
     } catch { /* duplicate — skip */ }
   }
-  respond.ok(res, `${added} employee(s) added to cycle`);
+  respond.ok(res, tmsg('performance.added_to_cycle', { count: added }));
 });
 
 // DELETE /performance/cycles/:id/employees/:employeeId — remove an employee's review from a Draft cycle.

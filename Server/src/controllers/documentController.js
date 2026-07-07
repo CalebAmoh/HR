@@ -1,6 +1,7 @@
 const path         = require('path');
 const fs           = require('fs');
 const respond      = require('../helpers/respondHelper');
+const { tmsg }     = require('../helpers/messageStore');
 const asyncHandler = require('../middleware/asyncHandler');
 const { UPLOAD_DIR } = require('../middleware/upload');
 const { prisma }   = require('../helpers/dbQueryHelper');
@@ -291,7 +292,7 @@ const notifyExpiredDocs = asyncHandler(async (req, res) => {
     ).catch(() => {});
   }
 
-  respond.ok(res, `Notified ${sent} of ${expired.length} expired document(s)`, { notified: sent, total: expired.length });
+  respond.ok(res, tmsg('document.notified_expired', { sent, total: expired.length }), { notified: sent, total: expired.length });
 });
 
 module.exports = {

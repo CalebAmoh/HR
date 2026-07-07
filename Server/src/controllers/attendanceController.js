@@ -2,6 +2,7 @@ const crypto        = require('crypto');
 const { prisma }    = require('../helpers/dbQueryHelper');
 const asyncHandler  = require('../middleware/asyncHandler');
 const respond       = require('../helpers/respondHelper');
+const { tmsg }      = require('../helpers/messageStore');
 const { toBigInt, s, safeAlter } = require('../helpers/controllerHelpers');
 const { logActivity, fromReq }   = require('./auditController');
 
@@ -1022,7 +1023,7 @@ exports.recompute = asyncHandler(async (req, res) => {
     updated++;
   }
   logActivity({ module: 'Attendance', action: 'recompute', details: `${from} → ${to}, ${updated} records`, ...fromReq(req) });
-  respond.ok(res, `Recomputed ${updated} records`, { updated });
+  respond.ok(res, tmsg('attendance.recomputed', { count: updated }), { updated });
 });
 
 // Cron: mark absentees for a date (default today). Skips weekends, holidays, approved leave.
@@ -1131,7 +1132,7 @@ exports.addNightShift = asyncHandler(async (req, res) => {
   }
   invalidateNightCache();
   logActivity({ module: 'Attendance', action: 'night_shift_add', details: `${added} employee(s) added to night shift`, ...fromReq(req) });
-  respond.ok(res, `${added} employee(s) added to the night shift`, { added });
+  respond.ok(res, tmsg('attendance.night_shift_added', { count: added }), { added });
 });
 
 // DELETE /attendance/night-shift/:employee — remove one employee from the night shift

@@ -30,6 +30,19 @@ BigInt.prototype.toJSON = function () {
   return this.toString();
 };
 
+// Admin-editable response messages: swap any static message for its override on the way out. This
+// wraps res.json so it covers respond.*, inline res.json, and the error middleware alike.
+const messageStore = require('./helpers/messageStore');
+messageStore.reload();  // load overrides into memory at boot
+app.use((req, res, next) => {
+  const orig = res.json.bind(res);
+  res.json = (body) => {
+    if (body && typeof body.message === 'string') body.message = messageStore.applyOverride(body.message);
+    return orig(body);
+  };
+  next();
+});
+
 //base route for the app
 app.use("/v1/api/hr", require("./routes/routes"));
 

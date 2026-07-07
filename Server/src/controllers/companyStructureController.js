@@ -1,6 +1,7 @@
 const { prisma } = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
+const { tmsg } = require('../helpers/messageStore');
 const { logActivity, fromReq } = require('./auditController');
 
 const { serialize } = require('../helpers/controllerHelpers');
@@ -96,7 +97,7 @@ const createCompanyStructure = asyncHandler(async (req, res) => {
 
   if (comp_code?.trim()) {
     const conflict = await prisma.companystructures.findUnique({ where: { comp_code: comp_code.trim() } });
-    if (conflict) return respond.conflict(res, `Code "${comp_code.trim()}" is already in use`);
+    if (conflict) return respond.conflict(res, tmsg('company.code_in_use', { code: comp_code.trim() }));
   }
 
   const parentId = parent2 ? BigInt(parent2) : null;
@@ -133,7 +134,7 @@ const updateCompanyStructure = asyncHandler(async (req, res) => {
 
   if (comp_code?.trim() && comp_code.trim() !== existing.comp_code) {
     const conflict = await prisma.companystructures.findUnique({ where: { comp_code: comp_code.trim() } });
-    if (conflict) return respond.conflict(res, `Code "${comp_code.trim()}" is already in use`);
+    if (conflict) return respond.conflict(res, tmsg('company.code_in_use', { code: comp_code.trim() }));
   }
 
   const parentId = parent2 ? BigInt(parent2) : null;
@@ -173,7 +174,7 @@ const deleteCompanyStructure = asyncHandler(async (req, res) => {
 
   const childCount = await prisma.companystructures.count({ where: { parent2: id } });
   if (childCount > 0)
-    return respond.badReq(res, `Cannot delete — this structure has ${childCount} child structure(s). Reassign or remove them first.`);
+    return respond.badReq(res, tmsg('company.structure_has_children', { count: childCount }));
 
   await prisma.companystructures.delete({ where: { id } });
   logActivity({ module: 'Company', action: 'delete', entityId: String(id), entityName: existing.title, ...fromReq(req) });

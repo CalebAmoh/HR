@@ -8,6 +8,7 @@ const { sendEmployeeLifecycleEmail } = require('../helpers/emailHelper');
 const { notifyEmployee, notifyUsersWithPermission } = require('../helpers/notificationHelper');
 const { reassignPendingSupervisorWork } = require('../helpers/supervisorHelper');
 const { effectiveRequiredFields } = require('../config/employeeFormFields');
+const { tmsg } = require('../helpers/messageStore');
 
 // ─── Lifecycle constants ───────────────────────────────────────────────────────
 const LIFECYCLE = {
@@ -432,7 +433,7 @@ const createEmployee = asyncHandler(async (req, res) => {
   const fieldCfg = await loadEmployeeFieldConfig();
   for (const f of effectiveRequiredFields(fieldCfg)) {
     const v = d[f.key];
-    if (v == null || String(v).trim() === '') return respond.badReq(res, `${f.label} is required`);
+    if (v == null || String(v).trim() === '') return respond.badReq(res, tmsg('employee.field_required', { field: f.label }));
   }
 
   const workEmail = d.work_email.trim().toLowerCase();
@@ -710,7 +711,7 @@ const approveEmployee = asyncHandler(async (req, res) => {
   const emp = await prisma.employee.findUnique({ where: { id } });
   if (!emp) return respond.notFound(res, 'Employee not found');
   if (emp.approvalStatus !== APPROVAL.PENDING)
-    return respond.badReq(res, `Employee is already ${emp.approvalStatus.toLowerCase()}`);
+    return respond.badReq(res, tmsg('employee.already_status', { status: emp.approvalStatus.toLowerCase() }));
 
   // Self-approval guard: the originator may approve their own record only when the
   // "Allow Self-Approval" control is on (defaults off).
@@ -754,7 +755,7 @@ const approveEmployee = asyncHandler(async (req, res) => {
     // Sync the status change to the external system (DEACTIVATED for suspend, TERMINATED for
     // terminate/resign — mapped in pushEmployeeToExternalSystem).
     await pushEmployeeToExternalSystem(enriched);
-    return respond.ok(res, `${action.charAt(0) + action.slice(1).toLowerCase()} approved`, enriched);
+    return respond.ok(res, tmsg('employee.action_approved', { action: action.charAt(0) + action.slice(1).toLowerCase() }), enriched);
   }
 
   // Standard new-employee approval — validate required fields against the same admin config
@@ -767,7 +768,7 @@ const approveEmployee = asyncHandler(async (req, res) => {
     if (val == null || String(val).trim() === '') missing.push(f.label);
   }
   if (missing.length > 0) {
-    return respond.badReq(res, `Cannot approve: the following required fields are missing — ${missing.join(', ')}.`);
+    return respond.badReq(res, tmsg('employee.approve_missing_fields', { fields: missing.join(', ') }));
   }
 
   await prisma.employee.update({
@@ -797,10 +798,10 @@ const changeEmployeeStatus = asyncHandler(async (req, res) => {
   const { status, reason } = req.body;
   const validStatuses = [LIFECYCLE.ACTIVE, LIFECYCLE.SUSPENDED, LIFECYCLE.TERMINATED];
   if (!validStatuses.includes(status))
-    return respond.badReq(res, `Status must be one of: ${validStatuses.join(', ')}`);
+    return respond.badReq(res, tmsg('employee.invalid_status', { statuses: validStatuses.join(', ') }));
 
   if ([LIFECYCLE.SUSPENDED, LIFECYCLE.TERMINATED].includes(status) && !reason?.trim())
-    return respond.badReq(res, `A reason is required when setting status to ${status}`);
+    return respond.badReq(res, tmsg('employee.status_reason_required', { status }));
 
   const emp = await prisma.employee.findUnique({ where: { id } });
   if (!emp) return respond.notFound(res, 'Employee not found');
@@ -850,7 +851,7 @@ const changeEmployeeStatus = asyncHandler(async (req, res) => {
     message: `${emp.firstName} ${emp.lastName}: ${status.toLowerCase()} request awaits approval`,
     action: 'CentralApproval', type: 'employees', fromUser: req.user?.id, employee: id,
   }, req.user?.id);
-  respond.ok(res, `${status.charAt(0) + status.slice(1).toLowerCase()} request submitted for approval`, enriched);
+  respond.ok(res, tmsg('employee.request_submitted', { status: status.charAt(0) + status.slice(1).toLowerCase() }), enriched);
 });
 
 // POST /employees/:id/resign
@@ -918,7 +919,7 @@ const rejectEmployee = asyncHandler(async (req, res) => {
   const emp = await prisma.employee.findUnique({ where: { id } });
   if (!emp) return respond.notFound(res, 'Employee not found');
   if (emp.approvalStatus !== APPROVAL.PENDING)
-    return respond.badReq(res, `Employee is already ${emp.approvalStatus.toLowerCase()}`);
+    return respond.badReq(res, tmsg('employee.already_status', { status: emp.approvalStatus.toLowerCase() }));
 
   const { reason } = req.body;
 
@@ -934,7 +935,7 @@ const rejectEmployee = asyncHandler(async (req, res) => {
       },
     });
     logActivity({ module: 'Employees', action: 'reject_lifecycle', entityId: String(id), entityName: `${emp.firstName} ${emp.lastName}`, details: { action: emp.pending_lifecycle_action, reason }, ...fromReq(req) });
-    return respond.ok(res, `${emp.pending_lifecycle_action.toLowerCase()} request rejected`);
+    return respond.ok(res, tmsg('employee.request_rejected', { action: emp.pending_lifecycle_action.toLowerCase() }));
   }
 
   // Standard new-employee rejection
@@ -1055,7 +1056,7 @@ const syncEmployee = asyncHandler(async (req, res) => {
 
   const updated = await prisma.employee.findUnique({ where: { id } });
   if (updated?.sync_status === 'failed')
-    return respond.badReq(res, `Sync failed: ${updated.sync_error || 'Unknown error'}`);
+    return respond.badReq(res, tmsg('employee.sync_failed', { error: updated.sync_error || 'Unknown error' }));
 
   respond.ok(res, 'Employee synced successfully');
 });

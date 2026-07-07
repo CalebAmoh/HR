@@ -1,6 +1,7 @@
 const { prisma }   = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond      = require('../helpers/respondHelper');
+const { tmsg }     = require('../helpers/messageStore');
 
 function validateListCode(code) {
     if (!code?.trim()) return 'Code is required';
@@ -23,14 +24,14 @@ const getActiveValuesByCode = asyncHandler(async (req, res) => {
         const list = await prisma.CodeList.findFirst({
             where: { code, isActive: true },
         });
-        if (!list) return respond.notFound(res, `No active code list found for code "${code}"`);
+        if (!list) return respond.notFound(res, tmsg('system.codelist_not_found', { code }));
 
         const values = await prisma.CodeListValue.findMany({
             where:   { codeListId: list.id, isActive: true },
             orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
             select:  { id: true, label: true, code: true, description: true, sortOrder: true, isActive: true },
         });
-        return respond.ok(res, `Values for ${code} retrieved successfully`, values);
+        return respond.ok(res, tmsg('system.values_retrieved', { code }), values);
     } catch (err) {
         return respond.error(res, 'Failed to fetch values', err);
     }
@@ -78,7 +79,7 @@ const createCodeListValue = asyncHandler(async (req, res) => {
 
     const list = await prisma.CodeList.findUnique({ where: { code: codeVal } });
     if (!list)          return respond.notFound(res, 'Code list not found');
-    if (!list.isActive) return respond.badReq(res, `Cannot add values to an inactive code list ("${list.name}")`);
+    if (!list.isActive) return respond.badReq(res, tmsg('system.codelist_inactive', { name: list.name }));
 
     // If a value code is provided, validate its format and uniqueness within the list
     const upperCode = code?.trim().toUpperCase() || null;
@@ -89,14 +90,14 @@ const createCodeListValue = asyncHandler(async (req, res) => {
         const codeClash = await prisma.CodeListValue.findFirst({
             where: { codeListId: list.id, code: upperCode },
         });
-        if (codeClash) return respond.badReq(res, `Code "${upperCode}" already exists in this list`);
+        if (codeClash) return respond.badReq(res, tmsg('system.code_exists', { code: upperCode }));
     }
 
     // Duplicate label check within the same list
     const labelClash = await prisma.CodeListValue.findFirst({
         where: { codeListId: list.id, label: { equals: label.trim() } },
     });
-    if (labelClash) return respond.badReq(res, `"${label.trim()}" already exists in this code list`);
+    if (labelClash) return respond.badReq(res, tmsg('system.label_exists', { label: label.trim() }));
 
     // Default sort order: append after the last existing value
     let resolvedSortOrder = sortOrder !== undefined ? Number(sortOrder) : null;
@@ -154,7 +155,7 @@ const updateCodeListValue = asyncHandler(async (req, res) => {
         const clash = await prisma.CodeListValue.findFirst({
             where: { codeListId, label: label.trim(), id: { not: id } },
         });
-        if (clash) return respond.badReq(res, `"${label.trim()}" already exists in this code list`);
+        if (clash) return respond.badReq(res, tmsg('system.label_exists', { label: label.trim() }));
         data.label = label.trim();
     }
 
@@ -166,7 +167,7 @@ const updateCodeListValue = asyncHandler(async (req, res) => {
             const clash = await prisma.CodeListValue.findFirst({
                 where: { codeListId, code: upperCode, id: { not: id } },
             });
-            if (clash) return respond.badReq(res, `Code "${upperCode}" already exists in this list`);
+            if (clash) return respond.badReq(res, tmsg('system.code_exists', { code: upperCode }));
         }
         data.code = upperCode;
     }
@@ -207,14 +208,14 @@ const deactivateCodeListValue = asyncHandler(async (req, res) => {
     const value = await prisma.CodeListValue.findUnique({ where: { id: valueId } });
     if (!value)                  return respond.notFound(res, 'Value not found');
     if (value.codeListId !== id) return respond.badReq(res, 'Value does not belong to this code list');
-    if (!value.isActive)         return respond.badReq(res, `"${value.label}" is already inactive`);
+    if (!value.isActive)         return respond.badReq(res, tmsg('system.already_inactive', { label: value.label }));
 
     try {
         const updated = await prisma.CodeListValue.update({
             where: { id: valueId },
             data:  { isActive: false },
         });
-        return respond.ok(res, `"${value.label}" has been deactivated`, updated);
+        return respond.ok(res, tmsg('system.deactivated', { label: value.label }), updated);
     } catch (err) {
         return respond.error(res, 'Failed to deactivate value', err);
     }
@@ -284,8 +285,8 @@ const createCodeList = asyncHandler(async (req, res) => {
         prisma.CodeList.findFirst({ where: { code: upperCode } }),
     ]);
 
-    if (nameTaken) return respond.badReq(res, `A code list named "${name.trim()}" already exists`);
-    if (codeTaken) return respond.badReq(res, `Code "${upperCode}" is already used by "${codeTaken.name}"`);
+    if (nameTaken) return respond.badReq(res, tmsg('system.codelist_name_exists', { name: name.trim() }));
+    if (codeTaken) return respond.badReq(res, tmsg('system.code_used_by', { code: upperCode, name: codeTaken.name }));
 
     try {
         const list = await prisma.CodeList.create({
@@ -327,7 +328,7 @@ const updateCodeList = asyncHandler(async (req, res) => {
         const clash = await prisma.CodeList.findFirst({
             where: { name: name.trim(), id: { not: id } },
         });
-        if (clash) return respond.badReq(res, `A code list named "${name.trim()}" already exists`);
+        if (clash) return respond.badReq(res, tmsg('system.codelist_name_exists', { name: name.trim() }));
         data.name = name.trim();
     }
 
@@ -361,14 +362,14 @@ const activateCodeListValue = asyncHandler(async (req, res) => {
     const value = await prisma.CodeListValue.findUnique({ where: { id: valueId } });
     if (!value)                  return respond.notFound(res, 'Value not found');
     if (value.codeListId !== id) return respond.badReq(res, 'Value does not belong to this code list');
-    if (value.isActive)         return respond.badReq(res, `"${value.label}" is already active`);
+    if (value.isActive)         return respond.badReq(res, tmsg('system.already_active', { label: value.label }));
 
     try {
         const updated = await prisma.CodeListValue.update({
             where: { id: valueId },
             data:  { isActive: true },
         });
-        return respond.ok(res, `"${value.label}" has been activated`, updated);
+        return respond.ok(res, tmsg('system.activated', { label: value.label }), updated);
     } catch (err) {
         return respond.error(res, 'Failed to activate value', err);
     }

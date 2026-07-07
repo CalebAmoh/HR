@@ -1,6 +1,7 @@
 const { prisma }               = require('../helpers/dbQueryHelper');
 const asyncHandler             = require('../middleware/asyncHandler');
 const respond                  = require('../helpers/respondHelper');
+const { tmsg }                 = require('../helpers/messageStore');
 const { logActivity, fromReq } = require('./auditController');
 const crypto                   = require('crypto');
 const { sendSchedulingInvite, sendInterviewConfirmation, buildIcs, sendCandidateStageEmail } = require('../helpers/emailHelper');
@@ -546,7 +547,7 @@ const hireCandidate = asyncHandler(async (req, res) => {
       where: { OR: [{ email: candidate.email }, { work_email: candidate.email }, { personal_email: candidate.email }] },
     });
     if (conflict) {
-      return respond.conflict(res, `An employee record already exists with the email address "${candidate.email}". This candidate may have already been converted.`);
+      return respond.conflict(res, tmsg('recruitment.employee_email_exists', { email: candidate.email }));
     }
   }
 

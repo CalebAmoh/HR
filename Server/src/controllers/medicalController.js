@@ -1,6 +1,7 @@
 const { prisma }    = require('../helpers/dbQueryHelper');
 const asyncHandler  = require('../middleware/asyncHandler');
 const respond       = require('../helpers/respondHelper');
+const { tmsg }      = require('../helpers/messageStore');
 const { postToGL } = require('../helpers/glHelper');
 const { toBigInt, s } = require('../helpers/controllerHelpers');
 const { notifyEmployee, notifyUser, notifyUsersWithPermission } = require('../helpers/notificationHelper');
@@ -1691,7 +1692,7 @@ exports.resetMedicalUtilization = asyncHandler(async (req, res) => {
     `SELECT COUNT(*) AS n FROM medicalutilizationhistory WHERE period_label = ?`, periodLabel
   ).catch(() => [{ n: 0 }]);
   if (Number(dup?.[0]?.n ?? 0) > 0) {
-    return respond.badReq(res, `Medical year "${periodLabel}" has already been closed`);
+    return respond.badReq(res, tmsg('medical.year_closed', { period: periodLabel }));
   }
 
   // Compute current utilization for every active employee (same logic as getMedicalEnquiry).
@@ -1768,7 +1769,7 @@ exports.resetMedicalUtilization = asyncHandler(async (req, res) => {
     details: { period_label: periodLabel, employees: count }, ...fromReq(req),
   });
 
-  respond.ok(res, `New medical year started — utilization reset for ${count} employee(s)`, {
+  respond.ok(res, tmsg('medical.year_started', { count }), {
     period_label: periodLabel, employees: count,
   });
 });

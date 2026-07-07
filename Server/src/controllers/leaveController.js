@@ -1,6 +1,7 @@
 const { prisma }        = require('../helpers/dbQueryHelper');
 const asyncHandler      = require('../middleware/asyncHandler');
 const respond           = require('../helpers/respondHelper');
+const { tmsg }          = require('../helpers/messageStore');
 const { sendLeaveEmail } = require('../helpers/emailHelper');
 const { logActivity, fromReq } = require('./auditController');
 const { toBigInt, s } = require('../helpers/controllerHelpers');
@@ -1680,7 +1681,7 @@ exports.applyLeave = asyncHandler(async (req, res) => {
   const typeGender = (typeRow.gender ?? 'All');
   if (typeGender !== 'All' && emp.gender_code !== typeGender) {
     const label = typeGender === 'M' ? 'male' : 'female';
-    return respond.badReq(res, `This leave type is restricted to ${label} employees`);
+    return respond.badReq(res, tmsg('leave.type_restricted', { label }));
   }
 
   // ── Match leave rule ──────────────────────────────────────────────────────
@@ -1803,7 +1804,7 @@ exports.applyLeave = asyncHandler(async (req, res) => {
     const bal = await calcBalance(employee, leave_type, leave_period, emp);
     if (days.length > bal.balance)
       return respond.badReq(res,
-        `Insufficient leave balance. Requested ${days.length} day(s), available ${bal.balance} day(s)`
+        tmsg('leave.insufficient_balance', { requested: days.length, available: bal.balance })
       );
   }
 

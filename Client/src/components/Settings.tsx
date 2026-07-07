@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -6,6 +6,7 @@ import {
   Building2, Users, ShieldCheck, Stethoscope, Banknote, Network, CalendarClock, FileText, Briefcase,
   Mail, Server, AtSign, Eye, EyeOff, Send, Loader2, GraduationCap,
   Clock, MapPin, Tablet, KeyRound, Copy, RefreshCw, Lock, Sparkles, CheckCircle2, XCircle, Plus, Trash2, Pencil,
+  MessageSquare, RotateCcw, Search, Check,
 } from 'lucide-react';
 import { Modules } from './Modules';
 import {
@@ -13,6 +14,7 @@ import {
   aiListKnowledge, aiSaveKnowledge, aiSetKnowledgeEnabled, aiDeleteKnowledge, type KnowledgeEntry,
 } from '../../lib/aiClient';
 import { getSettings, saveSetting } from '../../lib/settings';
+import { listMessages, saveMessage, resetMessage, type MessageEntry } from '../../lib/messagesClient';
 import {
   EMPLOYEE_FORM_FIELDS, EMPLOYEE_FORM_STEPS, EMPLOYEE_FORM_FIELDS_BY_KEY,
   defaultFieldConfig, type EmployeeFieldConfig, type FieldFlags,
@@ -28,7 +30,8 @@ const ONBOARDING_FIELD_KEYS = new Set(ONBOARDING_FIELDS.map(f => f.key));
 import { useCan } from '@/hooks/useCan';
 import { inputClass } from './ui/FormField';
 import { CountedTextarea } from './ui/CountedTextarea';
-import { MultiSearchSelect } from './ui/SearchSelect';
+import { MultiSearchSelect, SearchSelect } from './ui/SearchSelect';
+import { TablePagination } from './ui/TablePagination';
 import api from '../../lib/api';
 import { toast } from 'sonner';
 import { PageHeader } from './ui/PageHeader';
@@ -1910,7 +1913,174 @@ function KnowledgeManager() {
   );
 }
 
-const TABS = ['Modules', 'Notification Settings', 'Controls', 'Email Setup', 'AI'] as const;
+// Settings → Messages: edit the wording of any system response message without touching code.
+function MessagesTab() {
+  const [items, setItems] = useState<MessageEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [category, setCategory] = useState('');
+  const [customisedOnly, setCustomisedOnly] = useState(false);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+
+  const refresh = () => { setLoading(true); listMessages().then(setItems).catch(() => toast.error('Failed to load messages')).finally(() => setLoading(false)); };
+  useEffect(() => { refresh(); }, []);
+  // Reset to the first page whenever the filters change.
+  useEffect(() => { setPage(1); }, [search, category, customisedOnly, pageSize]);
+
+  const categoryOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const i of items) counts.set(i.category, (counts.get(i.category) ?? 0) + 1);
+    return [{ id: '', label: `All categories (${items.length})` },
+      ...[...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([c, n]) => ({ id: c, label: `${c} (${n})` }))];
+  }, [items]);
+
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return items.filter(i =>
+      (!category || i.category === category) &&
+      (!customisedOnly || i.override != null) &&
+      (!q || i.default.toLowerCase().includes(q) || (i.override ?? '').toLowerCase().includes(q) || i.key.toLowerCase().includes(q))
+    );
+  }, [items, search, category, customisedOnly]);
+
+  const startEdit = (m: MessageEntry) => { setEditingKey(m.key); setDraft(m.override ?? m.default); };
+  const save = async (m: MessageEntry) => {
+    if (!draft.trim()) return toast.error('Message text is required');
+    setBusyKey(m.key);
+    try { await saveMessage(m.key, draft, true); toast.success('Message updated'); setEditingKey(null); refresh(); }
+    catch (e: any) { toast.error(e?.response?.data?.message || 'Save failed'); }
+    finally { setBusyKey(null); }
+  };
+  const reset = async (m: MessageEntry) => {
+    setBusyKey(m.key);
+    try { await resetMessage(m.key); toast.success('Reset to default'); refresh(); }
+    catch (e: any) { toast.error(e?.response?.data?.message || 'Reset failed'); }
+    finally { setBusyKey(null); }
+  };
+
+  const overriddenCount = items.filter(i => i.override != null).length;
+  const paged = useMemo(() => visible.slice((page - 1) * pageSize, page * pageSize), [visible, page, pageSize]);
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="px-5 pt-4 pb-3 border-b border-[var(--border)] shrink-0">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="min-w-0">
+            <h3 className="text-[15px] font-bold syne tracking-tight text-[var(--text-primary)]">Response Messages</h3>
+            <p className="text-[12.5px] text-[var(--text-muted)] leading-relaxed mt-0.5 max-w-2xl">
+              Edit the wording of any system message. Changes apply instantly. Keep any
+              <code className="font-mono text-[11px] px-1 mx-0.5 rounded bg-[var(--surface-hover)] text-[var(--accent)]">{'{token}'}</code>
+              — they insert live values.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="pill pill-neutral text-[11px]">{items.length} total</span>
+            <span className="pill pill-accent text-[11px]">{overriddenCount} customised</span>
+          </div>
+        </div>
+
+        {/* Toolbar */}
+        <div className="flex flex-wrap items-center gap-2.5 mt-3">
+          <div className="relative flex-1 min-w-[220px] max-w-md">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search messages…"
+              className={`${inputClass} w-full !pl-9`} />
+          </div>
+          <div className="w-56 shrink-0">
+            <SearchSelect value={category} onChange={setCategory} options={categoryOptions} placeholder="All categories" />
+          </div>
+          <button onClick={() => setCustomisedOnly(v => !v)}
+            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12.5px] font-medium border transition-colors ${customisedOnly ? 'bg-[var(--accent-dim)] text-[var(--accent)] border-[var(--accent)]' : 'text-[var(--text-muted)] border-[var(--border)] hover:bg-[var(--surface-hover)]'}`}>
+            <Check size={13} className={customisedOnly ? '' : 'opacity-30'} /> Customised only
+          </button>
+        </div>
+      </div>
+
+      {/* List */}
+      <div className="overflow-y-auto flex-1">
+        {loading ? (
+          <div className="p-10 text-center text-[var(--text-muted)] text-sm">Loading…</div>
+        ) : visible.length === 0 ? (
+          <div className="p-10 text-center text-[var(--text-muted)] text-sm">No messages match your filters.</div>
+        ) : (
+          <div className="px-2 py-1">
+            {paged.map(m => {
+              const editing = editingKey === m.key;
+              const overridden = m.override != null;
+              return (
+                <div key={m.key}
+                  className={`group rounded-xl px-3.5 py-3 mb-1 border transition-colors ${editing ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-transparent hover:border-[var(--border)] hover:bg-[var(--surface-hover)]'}`}>
+                  <div className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap mb-1.5">
+                        <span className="pill pill-neutral text-[10px]">{m.category}</span>
+                        {m.kind === 'template' && <span className="pill pill-accent text-[10px]">template</span>}
+                        {overridden && <span className="pill pill-warning text-[10px]">customised</span>}
+                      </div>
+
+                      {editing ? (
+                        <>
+                          <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={2} autoFocus
+                            className={`${inputClass} w-full resize-y`} />
+                          {m.placeholders.length > 0 && (
+                            <p className="mt-1.5 text-[11px] text-[var(--text-muted)] flex items-center gap-1 flex-wrap">
+                              <span>Placeholders:</span>
+                              {m.placeholders.map(p => <code key={p} className="font-mono px-1 rounded bg-[var(--surface-hover)] text-[var(--accent)]">{`{${p}}`}</code>)}
+                            </p>
+                          )}
+                          <p className="mt-1.5 text-[11px] text-[var(--text-muted)]">Default: {m.default}</p>
+                          <div className="flex items-center gap-2 mt-2.5">
+                            <button className="primary-btn !py-1.5 !px-4 !text-xs" disabled={busyKey === m.key} onClick={() => save(m)}>
+                              {busyKey === m.key ? 'Saving…' : 'Save'}
+                            </button>
+                            <button className="secondary-btn !py-1.5 !px-4 !text-xs" onClick={() => setEditingKey(null)}>Cancel</button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-[13px] text-[var(--text-primary)] leading-snug break-words">{m.override ?? m.default}</p>
+                          {overridden && (
+                            <p className="text-[11.5px] text-[var(--text-muted)] mt-1 leading-snug break-words">
+                              <span className="opacity-70">Default:</span> {m.default}
+                            </p>
+                          )}
+                        </>
+                      )}
+                    </div>
+
+                    {!editing && (
+                      <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                        <button title="Edit message" onClick={() => startEdit(m)} className="action-btn"><Pencil size={14} /></button>
+                        {overridden && (
+                          <button title="Reset to default" disabled={busyKey === m.key} onClick={() => reset(m)} className="action-btn"><RotateCcw size={14} /></button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Pagination */}
+      {!loading && visible.length > 0 && (
+        <div className="shrink-0">
+          <TablePagination total={items.length} filtered={visible.length} page={page} pageSize={pageSize}
+            onPageChange={setPage} onPageSizeChange={setPageSize} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+const TABS = ['Modules', 'Notification Settings', 'Controls', 'Email Setup', 'AI', 'Messages'] as const;
 type Tab = (typeof TABS)[number];
 
 export function Settings() {
@@ -1949,6 +2119,7 @@ export function Settings() {
             {tab === 'Controls'              && <SlidersHorizontal   size={13} />}
             {tab === 'Email Setup'           && <Mail                size={13} />}
             {tab === 'AI'                    && <Sparkles            size={13} />}
+            {tab === 'Messages'              && <MessageSquare       size={13} />}
             {tab}
           </button>
         ))}
@@ -1987,6 +2158,9 @@ export function Settings() {
                 )}
                 {activeTab === 'AI'                    && (
                   <fieldset disabled={!canManage} className={`border-0 m-0 p-0 h-full ${!canManage ? 'readonly-section' : ''}`}><AiSettingsTab /></fieldset>
+                )}
+                {activeTab === 'Messages'              && (
+                  <fieldset disabled={!canManage} className={`border-0 m-0 p-0 h-full ${!canManage ? 'readonly-section' : ''}`}><MessagesTab /></fieldset>
                 )}
               </div>
             )}

@@ -2,6 +2,7 @@ const { prisma }   = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond      = require('../helpers/respondHelper');
 const nodemailer   = require('nodemailer');
+const messageStore = require('../helpers/messageStore');
 
 function escapeHtml(value = '') {
   return String(value)
@@ -306,4 +307,35 @@ const saveAppSetup = asyncHandler(async (req, res) => {
   return respond.ok(res, 'App setup saved');
 });
 
-module.exports = { getEmailSettings, updateEmailSettings, sendTestEmail, getModuleSettings, saveModuleSettings, getControlSettings, saveControlSettings, getAppSetup, saveAppSetup, getNotificationSettings, saveNotificationSettings };
+// ── Editable response messages ──────────────────────────────────────────────
+// GET /settings/messages — the message catalog (defaults) merged with saved overrides.
+const getMessages = asyncHandler(async (_req, res) => {
+  respond.ok(res, 'Messages', messageStore.catalog());
+});
+
+// PUT /settings/messages — upsert one override { message_key, override_text, enabled }.
+const saveMessage = asyncHandler(async (req, res) => {
+  const key = String(req.body.message_key ?? '').trim();
+  const text = String(req.body.override_text ?? '');
+  const enabled = req.body.enabled === false || req.body.enabled === 0 || req.body.enabled === '0' ? 0 : 1;
+  if (!key) return respond.badReq(res, 'message_key is required');
+  if (!text.trim()) return respond.badReq(res, 'Override text is required');
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO message_overrides (message_key, override_text, enabled) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE override_text = VALUES(override_text), enabled = VALUES(enabled)`,
+    key, text, enabled
+  );
+  await messageStore.reload();
+  respond.ok(res, 'Message saved');
+});
+
+// DELETE /settings/messages — reset a message to its code default (message_key in the body).
+const resetMessage = asyncHandler(async (req, res) => {
+  const key = String(req.body.message_key ?? '').trim();
+  if (!key) return respond.badReq(res, 'message_key is required');
+  await prisma.$executeRawUnsafe(`DELETE FROM message_overrides WHERE message_key = ?`, key);
+  await messageStore.reload();
+  respond.ok(res, 'Message reset to default');
+});
+
+module.exports = { getEmailSettings, updateEmailSettings, sendTestEmail, getModuleSettings, saveModuleSettings, getControlSettings, saveControlSettings, getAppSetup, saveAppSetup, getNotificationSettings, saveNotificationSettings, getMessages, saveMessage, resetMessage };

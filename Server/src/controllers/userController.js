@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
+const { tmsg } = require('../helpers/messageStore');
 const { sendWelcomeEmail } = require('../helpers/emailHelper');
 const { logActivity, fromReq } = require('./auditController');
 
@@ -872,7 +873,7 @@ const updateUserStatus = asyncHandler(async (req, res) => {
   }
 
   const statusText = status === '1' ? 'activated' : 'deactivated';
-  res.status(200).json({ status: '200', message: `User ${statusText} successfully`, data: result.data });
+  res.status(200).json({ status: '200', message: tmsg('user.status_changed', { status: statusText }), data: result.data });
 });
 
 

@@ -1,5 +1,6 @@
 const helper = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
+const { tmsg } = require('../helpers/messageStore');
 
 // Resolve a mixed array of permission names and/or numeric IDs to a deduped list of
 // numeric permission ID strings. The client sends permission NAMES (e.g. 'manage_roles'),
@@ -523,7 +524,7 @@ const updateRoleStatus = asyncHandler(async (req, res) => {
   }
 
   const statusText = status === '1' ? 'activated' : 'deactivated';
-  res.status(200).json({ status: '200', message: `Role ${statusText} successfully`, data: result.data });
+  res.status(200).json({ status: '200', message: tmsg('role.status_changed', { status: statusText }), data: result.data });
 });
 
 

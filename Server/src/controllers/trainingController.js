@@ -1,6 +1,7 @@
 const { prisma }    = require('../helpers/dbQueryHelper');
 const asyncHandler  = require('../middleware/asyncHandler');
 const respond       = require('../helpers/respondHelper');
+const { tmsg }      = require('../helpers/messageStore');
 const { toBigInt, s, safeAlter } = require('../helpers/controllerHelpers');
 
 // Schema patches — per-slot seat cap; wider currency for CUR code-list labels (no-ops once applied)
@@ -504,7 +505,7 @@ exports.approveNomination = asyncHandler(async (req, res) => {
   if (existing.status !== 'Pending HR Approval') return respond.badReq(res, 'Only Pending HR Approval nominations can be approved');
 
   const seatErr = await seatLimitViolation(existing.training_catalog_id, existing.start_date);
-  if (seatErr) return respond.badReq(res, `Cannot approve — ${seatErr.charAt(0).toLowerCase()}${seatErr.slice(1)}`);
+  if (seatErr) return respond.badReq(res, tmsg('training.approve_seat_error', { reason: seatErr.charAt(0).toLowerCase() + seatErr.slice(1) }));
 
   await prisma.$executeRawUnsafe(
     `UPDATE trainingnomination SET status = ?, approved_by = ?, approved_at = NOW(), updated_at = NOW() WHERE id = ?`,
