@@ -6,10 +6,11 @@
  * so generation only ever *formats* that id — uniqueness is guaranteed by the DB.
  */
 
-export const DEFAULT_EMPLOYEE_ID_PATTERN = 'EMP-{YYYY}-{SEQ4}';
+export const DEFAULT_EMPLOYEE_ID_PATTERN = 'EP-{YY}-{SEQ4}';
 
-/** Max length of the employee_id column (employee_id VARCHAR(20)). */
-export const EMPLOYEE_ID_MAX_LENGTH = 20;
+/** Hard cap on staff ID length — applies to both auto-generated and manually-entered IDs.
+ *  (The employee_id column is VARCHAR(20); the business rule caps usage at 10.) */
+export const EMPLOYEE_ID_MAX_LENGTH = 10;
 
 export const EMPLOYEE_ID_TOKENS: { token: string; label: string }[] = [
   { token: '{YYYY}', label: '4-digit year (2026)' },

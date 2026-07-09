@@ -3,7 +3,7 @@ import { UserPlus, X, UploadCloud, FileCheck, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { getSettings } from '../../lib/settings';
-import { formatEmployeeId } from '../../lib/employeeIdFormat';
+import { formatEmployeeId, EMPLOYEE_ID_MAX_LENGTH } from '../../lib/employeeIdFormat';
 import { Combobox } from './EmployeeTabs';
 import { EMPLOYEE_FORM_FIELDS, EMPLOYEE_FORM_FIELDS_BY_KEY } from '../config/employeeFormFields';
 
@@ -291,6 +291,8 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
     // Employee ID is a special case (auto-generate logic, not in the field registry).
     if (stepId === 'employment' && !isEdit && !autoGenEmpNum && !form.employee_id?.trim())
       return 'Employee number is required when auto-generate is off';
+    if (stepId === 'employment' && form.employee_id?.trim().length > EMPLOYEE_ID_MAX_LENGTH)
+      return `Staff ID cannot exceed ${EMPLOYEE_ID_MAX_LENGTH} characters`;
 
     for (const f of EMPLOYEE_FORM_FIELDS) {
       if (f.step !== stepId || !fieldShown(f.key) || !isRequired(f.key)) continue;
@@ -459,7 +461,8 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
                   name="employee_id"
                   value={form.employee_id}
                   onChange={handleChange}
-                  placeholder="e.g. EMP-2026-0001"
+                  placeholder="e.g. EP-26-0001"
+                  maxLength={EMPLOYEE_ID_MAX_LENGTH}
                   disabled={autoGenEmpNum && isEdit}
                 />
               </Field>

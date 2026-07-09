@@ -158,8 +158,8 @@ async function pushEmployeeToExternalSystem(e) {
   }
 }
 
-const DEFAULT_EMPLOYEE_ID_PATTERN = 'EMP-{YYYY}-{SEQ4}';
-const EMPLOYEE_ID_MAX_LENGTH = 20; // employee_id VARCHAR(20)
+const DEFAULT_EMPLOYEE_ID_PATTERN = 'EP-{YY}-{SEQ4}';
+const EMPLOYEE_ID_MAX_LENGTH = 10; // hard cap on staff ID (auto-generated OR manually entered)
 
 /** Read the admin-configured employee-ID structure (Settings → Controls → General).
  *  Returns the stored template, or the default when never saved. */
@@ -436,6 +436,12 @@ const createEmployee = asyncHandler(async (req, res) => {
     if (v == null || String(v).trim() === '') return respond.badReq(res, tmsg('employee.field_required', { field: f.label }));
   }
 
+  // A manually-entered staff ID must respect the hard length cap (auto-generated IDs are bounded
+  // by makeEmployeeId). Checked before the insert so no orphan row is created on rejection.
+  if (d.employee_id?.trim() && d.employee_id.trim().length > EMPLOYEE_ID_MAX_LENGTH) {
+    return respond.badReq(res, tmsg('employee.id_too_long', { max: EMPLOYEE_ID_MAX_LENGTH }));
+  }
+
   const workEmail = d.work_email.trim().toLowerCase();
 
   // Email uniqueness (work_email is stored in both email and work_email columns)
@@ -600,6 +606,7 @@ const updateEmployee = asyncHandler(async (req, res) => {
   // Employment ID (only update when explicitly provided and non-empty)
   if ('employee_id' in d && d.employee_id?.trim()) {
     const empId = d.employee_id.trim();
+    if (empId.length > EMPLOYEE_ID_MAX_LENGTH) return respond.badReq(res, tmsg('employee.id_too_long', { max: EMPLOYEE_ID_MAX_LENGTH }));
     if (empId !== existing.employee_id) {
       const dupe = await prisma.employee.findFirst({ where: { employee_id: empId, NOT: { id } } });
       if (dupe) return respond.conflict(res, 'Employee ID is already in use by another employee');

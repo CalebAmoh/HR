@@ -82,6 +82,10 @@ function EmployeeIdFormatEditor({ value, onChange }: { value: string; onChange: 
   const commit = () => {
     const next = draft.trim();
     if (!next || next === value) { setDraft(value); return; }
+    // Refuse to persist a template that would break the rules (missing sequence token or a rendered
+    // ID longer than the cap). The red warnings below explain why; the draft is kept so the admin
+    // can fix it, but the saved setting is left untouched.
+    if (!patternIsValid(next) || formatEmployeeId(next, 1234).length > EMPLOYEE_ID_MAX_LENGTH) return;
     onChange(next);
     saveSetting('employees', { idFormat: next });
   };
@@ -99,7 +103,7 @@ function EmployeeIdFormatEditor({ value, onChange }: { value: string; onChange: 
         onBlur={commit}
         onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
         spellCheck={false}
-        placeholder="EMP-{YYYY}-{SEQ4}"
+        placeholder="EP-{YY}-{SEQ4}"
         className="mt-1.5 w-full px-3 py-2 rounded-[8px] border border-[var(--border)] bg-[var(--surface)] text-[13px] font-mono text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
       />
       <div className="mt-2 flex items-center gap-2 text-[12px]">

@@ -5,6 +5,7 @@
   { "key": "company.structure_has_children", "category": "Company", "kind": "template", "default": "Cannot delete — this structure has {count} child structure(s). Reassign or remove them first.", "placeholders": ["count"] },
   { "key": "document.notified_expired", "category": "Document", "kind": "template", "default": "Notified {sent} of {total} expired document(s)", "placeholders": ["sent", "total"] },
   { "key": "employee.field_required", "category": "Employee", "kind": "template", "default": "{field} is required", "placeholders": ["field"] },
+  { "key": "employee.id_too_long", "category": "Employee", "kind": "template", "default": "Staff ID cannot exceed {max} characters", "placeholders": ["max"] },
   { "key": "employee.already_status", "category": "Employee", "kind": "template", "default": "Employee is already {status}", "placeholders": ["status"] },
   { "key": "employee.action_approved", "category": "Employee", "kind": "template", "default": "{action} approved", "placeholders": ["action"] },
   { "key": "employee.approve_missing_fields", "category": "Employee", "kind": "template", "default": "Cannot approve: the following required fields are missing — {fields}.", "placeholders": ["fields"] },

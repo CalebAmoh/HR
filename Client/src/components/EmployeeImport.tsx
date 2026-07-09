@@ -6,6 +6,7 @@ import { Download, Upload, Loader2, X, CheckCircle2, AlertTriangle, FileSpreadsh
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { getSettings } from '../../lib/settings';
+import { EMPLOYEE_ID_MAX_LENGTH } from '../../lib/employeeIdFormat';
 
 interface Props {
   onClose: () => void;
@@ -400,6 +401,10 @@ export function EmployeeImport({ onClose, onImported }: Props) {
       // Employee ID is required only when auto-generate is off (matches the form)
       if (!autoGenEmpNum && !norm(payload.employee_id)) {
         rowErrors.push(`Row ${rowNum}: Employee ID is required (auto-generate is off)`);
+      }
+      // Staff ID length cap applies to any provided value
+      if (norm(payload.employee_id).length > EMPLOYEE_ID_MAX_LENGTH) {
+        rowErrors.push(`Row ${rowNum}: Employee ID cannot exceed ${EMPLOYEE_ID_MAX_LENGTH} characters`);
       }
       // Identity document number ↔ expiry must be supplied together
       for (const p of DOC_PAIRS) {
