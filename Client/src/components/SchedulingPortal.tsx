@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { CalendarClock, CheckCircle2, Loader2, Clock } from 'lucide-react';
 import { publicApi } from '@/lib/publicApi';
+import { appPath } from '@/lib/basePath';
 
 function getToken(): string | null {
-  const match = window.location.pathname.match(/^\/schedule\/(.+)$/);
+  const match = appPath().match(/^\/schedule\/(.+)$/);
   return match ? match[1] : null;
 }
 

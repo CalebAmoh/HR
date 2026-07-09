@@ -65,6 +65,8 @@ export function SelfOnboarding() {
     const base = isLocal && serverIp
       ? `${protocol}//${host}${port ? `:${port}` : ''}`
       : origin;
+    // Public portal lives at the root path (not under the app's /xhrm base), so new hires get a
+    // clean link that works without authentication.
     return `${base}/onboarding/${token}`;
   }, [token, serverIp]);
 

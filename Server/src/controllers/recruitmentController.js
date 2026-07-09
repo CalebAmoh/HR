@@ -731,8 +731,13 @@ const sendScheduleLink = asyncHandler(async (req, res) => {
     data: { schedule_token: token, schedule_expires: expires },
   });
 
+  // Public portals (interview scheduling) live at the ROOT path, not under the app's /xhrm base,
+  // so candidates get a clean link that works without authentication. Strip any sub-path from
+  // FRONTEND_URL down to the origin.
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3002';
-  const link     = `${frontendUrl}/schedule/${token}`;
+  let origin = frontendUrl;
+  try { origin = new URL(frontendUrl).origin; } catch { /* keep as-is if not a full URL */ }
+  const link     = `${origin}/schedule/${token}`;
   const rawSlots = JSON.parse(interview.schedule_options || '[]');
   // Normalize to start strings for the email list
   const slots = rawSlots.map(s => (typeof s === 'string' ? s : s.start)).filter(Boolean);

@@ -4,6 +4,7 @@ import {
   ONBOARDING_FIELDS, ONBOARDING_GROUPS, type OnboardingField,
 } from '@/lib/onboardingFields';
 import { publicApi, BRAND_BLUE as BLUE, resolveLogoUrl } from '@/lib/publicApi';
+import { appPath } from '@/lib/basePath';
 
 interface Branding { company_name?: string; company_logo_url?: string; accent_color?: string }
 interface FormConfig {
@@ -16,7 +17,7 @@ interface FormConfig {
 
 export function OnboardingPortal() {
   const token = useMemo(() => {
-    const m = window.location.pathname.match(/^\/onboarding\/(.+)$/);
+    const m = appPath().match(/^\/onboarding\/(.+)$/);
     return m ? m[1] : '';
   }, []);
 

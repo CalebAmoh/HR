@@ -46,6 +46,7 @@ import { moduleStore } from '@/lib/moduleState';
 import { initControlSettings } from '@/lib/settings';
 import { applyTheme } from '@/lib/theme';
 import api from '@/lib/api';
+import { appPath } from '@/lib/basePath';
 
 function loadCurrentUser(): AppUser | null {
   try {
@@ -78,16 +79,19 @@ function loadActiveView(user: AppUser | null): string {
 }
 
 export default function App() {
-  if (window.location.pathname.startsWith('/careers')) {
+  // Public portals are matched on the base-stripped path, so they work under any VITE_BASE_PATH
+  // (e.g. "/xhrm/careers" resolves the same as "/careers").
+  const portalPath = appPath();
+  if (portalPath.startsWith('/careers')) {
     return <CareersPortal />;
   }
-  if (window.location.pathname.startsWith('/schedule')) {
+  if (portalPath.startsWith('/schedule')) {
     return <SchedulingPortal />;
   }
-  if (window.location.pathname.startsWith('/kiosk')) {
+  if (portalPath.startsWith('/kiosk')) {
     return <AttendanceKiosk />;
   }
-  if (window.location.pathname.startsWith('/onboarding')) {
+  if (portalPath.startsWith('/onboarding')) {
     return <OnboardingPortal />;
   }
   const [currentUser, setCurrentUser] = useState<AppUser | null>(loadCurrentUser);

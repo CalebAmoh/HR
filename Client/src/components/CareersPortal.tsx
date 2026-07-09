@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { CareersHome } from './CareersHome';
 import { CareersJob } from './CareersJob';
+import { appPath, withBase } from '@/lib/basePath';
 
-function getPath() { return window.location.pathname; }
+function getPath() { return appPath(); }
 
 export function CareersPortal() {
   const [path, setPath] = useState(getPath);
@@ -14,7 +15,7 @@ export function CareersPortal() {
   }, []);
 
   const navigate = (to: string) => {
-    window.history.pushState(null, '', to);
+    window.history.pushState(null, '', withBase(to));
     setPath(to);
   };
 

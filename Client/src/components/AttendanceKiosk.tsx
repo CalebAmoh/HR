@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Clock, Delete, LogIn, CheckCircle2, XCircle, Loader2, Camera } from 'lucide-react';
 import { publicApi } from '@/lib/publicApi';
+import { appPath } from '@/lib/basePath';
 
 function getToken(): string | null {
-  const match = window.location.pathname.match(/^\/kiosk\/(.+)$/);
+  const match = appPath().match(/^\/kiosk\/(.+)$/);
   return match ? match[1] : null;
 }
 
