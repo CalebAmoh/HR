@@ -3,30 +3,31 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 const { serialize } = require('../helpers/controllerHelpers');
 
-async function query(sql, ...params) {
-  const rows = await prisma.$queryRawUnsafe(sql, ...params);
-  return serialize(rows);
+function startOfDate(value) {
+  return new Date(`${value}T00:00:00.000Z`);
 }
 
-async function exec(sql, ...params) {
-  return prisma.$executeRawUnsafe(sql, ...params);
+function dayAfter(value) {
+  const d = startOfDate(value);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d;
 }
 
 // ── Log helper (fire-and-forget, safe to call without await) ──────────────────
 async function logActivity({ module, action, entityId = null, entityName = null, userId = null, userName = null, ip = null, details = null } = {}) {
   try {
-    await exec(
-      `INSERT INTO auditlogs (module, action, entity_id, entity_name, user_id, user_name, ip_address, details)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      String(module),
-      String(action),
-      entityId != null ? String(entityId) : null,
-      entityName != null ? String(entityName) : null,
-      userId != null ? BigInt(userId) : null,
-      userName != null ? String(userName) : null,
-      ip != null ? String(ip) : null,
-      details != null ? JSON.stringify(details) : null
-    );
+    await prisma.auditlogs.create({
+      data: {
+        module: String(module),
+        action: String(action),
+        entity_id: entityId != null ? String(entityId) : null,
+        entity_name: entityName != null ? String(entityName) : null,
+        user_id: userId != null ? BigInt(userId) : null,
+        user_name: userName != null ? String(userName) : null,
+        ip_address: ip != null ? String(ip) : null,
+        details: details != null ? JSON.stringify(details) : null,
+      },
+    });
   } catch (e) {
     console.error('[audit log]', e.message);
   }
@@ -45,37 +46,60 @@ function fromReq(req) {
 const getAuditLogs = asyncHandler(async (req, res) => {
   const { module, user_id, date_from, date_to, search, page = '1', limit = '50' } = req.query;
 
-  const conditions = [];
-  const params = [];
-
-  if (module)    { conditions.push('module = ?');              params.push(String(module)); }
-  if (user_id)   { conditions.push('user_id = ?');             params.push(BigInt(user_id)); }
-  if (date_from) { conditions.push('DATE(created_at) >= ?');   params.push(String(date_from)); }
-  if (date_to)   { conditions.push('DATE(created_at) <= ?');   params.push(String(date_to)); }
-  if (search)    {
-    conditions.push('(entity_name LIKE ? OR user_name LIKE ? OR action LIKE ? OR module LIKE ?)');
-    const like = `%${search}%`;
-    params.push(like, like, like, like);
+  const AND = [];
+  if (module) AND.push({ module: String(module) });
+  if (user_id) AND.push({ user_id: BigInt(user_id) });
+  if (date_from) AND.push({ created_at: { gte: startOfDate(String(date_from)) } });
+  if (date_to) AND.push({ created_at: { lt: dayAfter(String(date_to)) } });
+  if (search) {
+    const contains = String(search);
+    AND.push({
+      OR: [
+        { entity_name: { contains } },
+        { user_name: { contains } },
+        { action: { contains } },
+        { module: { contains } },
+      ],
+    });
   }
-
-  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const where = AND.length ? { AND } : {};
   const pageNum  = Math.max(1, parseInt(page));
   const pageSize = Math.min(200, Math.max(1, parseInt(limit)));
-  const offset   = (pageNum - 1) * pageSize;
+  const skip = (pageNum - 1) * pageSize;
 
-  const [{ total }] = await query(`SELECT COUNT(*) AS total FROM auditlogs ${where}`, ...params);
-  const logs = await query(
-    `SELECT id, module, action, entity_id, entity_name, user_id, user_name, ip_address, details, created_at
-     FROM auditlogs ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-    ...params, pageSize, offset
-  );
+  const [total, rows] = await Promise.all([
+    prisma.auditlogs.count({ where }),
+    prisma.auditlogs.findMany({
+      where,
+      orderBy: { created_at: 'desc' },
+      take: pageSize,
+      skip,
+      select: {
+        id: true,
+        module: true,
+        action: true,
+        entity_id: true,
+        entity_name: true,
+        user_id: true,
+        user_name: true,
+        ip_address: true,
+        details: true,
+        created_at: true,
+      },
+    }),
+  ]);
+  const logs = serialize(rows);
 
   respond.ok(res, 'Audit logs retrieved', { logs, total: Number(total), page: pageNum, limit: pageSize });
 });
 
 // ── Distinct modules list (for filter dropdown) ───────────────────────────────
 const getAuditModules = asyncHandler(async (_req, res) => {
-  const rows = await query(`SELECT DISTINCT module FROM auditlogs ORDER BY module`);
+  const rows = await prisma.auditlogs.findMany({
+    distinct: ['module'],
+    orderBy: { module: 'asc' },
+    select: { module: true },
+  });
   respond.ok(res, 'Modules', rows.map(r => r.module));
 });
 

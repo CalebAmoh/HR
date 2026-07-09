@@ -29,10 +29,11 @@ async function resolveEmail(nameOrEmail) {
   if (!nameOrEmail) return null;
   if (nameOrEmail.includes('@')) return nameOrEmail;
   try {
-    const rows = await prisma.$queryRawUnsafe(
-      `SELECT work_email, email FROM employee WHERE CONCAT(firstName, ' ', lastName) = ? LIMIT 1`,
-      nameOrEmail
-    );
+    // Full-name match needs CONCAT (no builder equivalent); parameterised tagged template keeps it
+    // injection-safe and works on both MySQL and Postgres.
+    const rows = await prisma.$queryRaw`
+      SELECT work_email, email FROM employee
+      WHERE CONCAT(firstName, ' ', lastName) = ${nameOrEmail} LIMIT 1`;
     const row = rows[0];
     return row?.work_email || row?.email || null;
   } catch { return null; }
@@ -60,7 +61,7 @@ async function buildInterviewRecipients(interview, candidate, job) {
 // ── Seed default hiring pipeline stages if table is empty ────────────────────
 
 (async () => {
-  await prisma.$executeRawUnsafe(`DELETE FROM hiringpipeline WHERE type = 'Offer'`).catch(() => {});
+  await prisma.hiringpipeline.deleteMany({ where: { type: 'Offer' } }).catch(() => {});
 
   const pipelineCount = await prisma.hiringpipeline.count().catch(() => 0);
   if (pipelineCount === 0) {
@@ -105,9 +106,9 @@ const createJob = asyncHandler(async (req, res) => {
   } = req.body;
 
   // Auto-fill companyName from payslip_settings
-  const [psRow] = await prisma.$queryRawUnsafe(
-    `SELECT company_name FROM payslip_settings LIMIT 1`
-  ).catch(() => []);
+  const psRow = await prisma.payslip_settings
+    .findFirst({ select: { company_name: true } })
+    .catch(() => null);
   const resolvedCompanyName = psRow?.company_name ?? null;
 
   const job = await prisma.job.create({
@@ -159,9 +160,9 @@ const updateJob = asyncHandler(async (req, res) => {
   } = req.body;
 
   // Keep companyName in sync with payslip_settings
-  const [psRow] = await prisma.$queryRawUnsafe(
-    `SELECT company_name FROM payslip_settings LIMIT 1`
-  ).catch(() => []);
+  const psRow = await prisma.payslip_settings
+    .findFirst({ select: { company_name: true } })
+    .catch(() => null);
   const resolvedCompanyName = psRow?.company_name ?? null;
 
   const job = await prisma.job.update({
@@ -273,13 +274,11 @@ const createCandidate = asyncHandler(async (req, res) => {
       source:                  source || 'Sourced',
       jobId:                   toBigInt(jobId),
       notes:                   notes || null,
+      cv_file:                 cv_file || null,
       created:                 new Date(),
       updated:                 new Date(),
     },
   });
-  if (cv_file) {
-    await prisma.$executeRawUnsafe(`UPDATE candidates SET cv_file = ? WHERE id = ?`, cv_file, candidate.id);
-  }
 
   // Auto-create an application record when a job is assigned
   if (candidate.jobId) {
@@ -324,12 +323,10 @@ const updateCandidate = asyncHandler(async (req, res) => {
       source:                  source || null,
       jobId:                   toBigInt(jobId),
       notes:                   notes || null,
+      cv_file:                 cv_file !== undefined ? (cv_file || null) : undefined,
       updated:                 new Date(),
     },
   });
-  if (cv_file !== undefined) {
-    await prisma.$executeRawUnsafe(`UPDATE candidates SET cv_file = ? WHERE id = ?`, cv_file || null, id);
-  }
 
   logActivity({ module: 'Recruitment', action: 'update_candidate', entityId: String(id), entityName: `${candidate.first_name} ${candidate.last_name}`, ...fromReq(req) });
   return respond.ok(res, 'Candidate updated', s(candidate));
@@ -440,15 +437,11 @@ const deleteApplication = asyncHandler(async (req, res) => {
 const getInterviews = asyncHandler(async (req, res) => {
   const { candidate, job } = req.query;
 
-  let sql = 'SELECT * FROM interviews';
-  const params = [];
-  const conditions = [];
-  if (candidate) { conditions.push('candidate = ?'); params.push(BigInt(candidate)); }
-  if (job)       { conditions.push('job = ?');       params.push(BigInt(job)); }
-  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
-  sql += ' ORDER BY id DESC';
+  const where = {};
+  if (candidate) where.candidate = toBigInt(candidate);
+  if (job)       where.job       = toBigInt(job);
 
-  const interviews = await prisma.$queryRawUnsafe(sql, ...params);
+  const interviews = await prisma.interviews.findMany({ where, orderBy: { id: 'desc' } });
   return respond.ok(res, 'Interviews', s(interviews));
 });
 
@@ -468,17 +461,11 @@ const createInterview = asyncHandler(async (req, res) => {
       interviewers:     interviewers || null,
       status:           status || 'Scheduled',
       schedule_options: schedule_options || null,
+      scheduled_end:    scheduled_end ? new Date(scheduled_end) : null,
       created:          new Date(),
       updated:          new Date(),
     },
   });
-
-  if (scheduled_end) {
-    await prisma.$executeRawUnsafe(
-      'UPDATE interviews SET scheduled_end = ? WHERE id = ?',
-      new Date(scheduled_end), interview.id
-    );
-  }
 
   logActivity({ module: 'Recruitment', action: 'create_interview', entityId: String(interview.id), ...fromReq(req) });
   return respond.created(res, 'Interview created', s(interview));
@@ -501,15 +488,9 @@ const updateInterview = asyncHandler(async (req, res) => {
   if (outcome          !== undefined) data.outcome          = outcome || null;
   if (feedback         !== undefined) data.feedback         = feedback || null;
   if (schedule_options !== undefined) data.schedule_options = schedule_options || null;
+  if (scheduled_end    !== undefined) data.scheduled_end    = scheduled_end ? new Date(scheduled_end) : null;
 
   const interview = await prisma.interviews.update({ where: { id }, data });
-
-  if (scheduled_end !== undefined) {
-    await prisma.$executeRawUnsafe(
-      'UPDATE interviews SET scheduled_end = ? WHERE id = ?',
-      scheduled_end ? new Date(scheduled_end) : null, id
-    );
-  }
 
   logActivity({ module: 'Recruitment', action: 'update_interview', entityId: String(id), ...fromReq(req) });
   return respond.ok(res, 'Interview updated', s(interview));
@@ -589,10 +570,9 @@ const hireCandidate = asyncHandler(async (req, res) => {
   }
 
   // Record which employee record this candidate was converted to
-  await prisma.$executeRawUnsafe(
-    `UPDATE candidates SET hired_employee_id = ? WHERE id = ?`,
-    employee.id, id
-  ).catch(() => {});
+  await prisma.candidates
+    .updateMany({ where: { id }, data: { hired_employee_id: employee.id } })
+    .catch(() => {});
 
   logActivity({ module: 'Recruitment', action: 'hire_candidate', entityId: String(employee.id), entityName: `${employee.firstName} ${employee.lastName}`, details: { candidateId: id.toString() }, ...fromReq(req) });
   return respond.created(res, 'Employee record created', s({ employee }));
@@ -603,10 +583,10 @@ const hireCandidate = asyncHandler(async (req, res) => {
 // GET /public/recruitment/settings — return branding info (company name, logo, address, accent colour)
 // for the public career portal, sourced from payslip_settings.
 const getPublicSettings = asyncHandler(async (req, res) => {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT company_name, company_logo_url, company_address, accent_color FROM payslip_settings LIMIT 1`
-  );
-  return respond.ok(res, 'Settings', s(rows[0] ?? {}));
+  const row = await prisma.payslip_settings.findFirst({
+    select: { company_name: true, company_logo_url: true, company_address: true, accent_color: true },
+  });
+  return respond.ok(res, 'Settings', s(row ?? {}));
 });
 
 // GET /public/recruitment/jobs — list Active job postings for the public career portal, with optional
@@ -684,13 +664,11 @@ const applyForJob = asyncHandler(async (req, res) => {
       source:       'Applied',
       jobId:        job.id,
       notes:        coverLetter || null,
+      cv_file:      req.file?.filename || null,
       created:      new Date(),
       updated:      new Date(),
     },
   });
-  if (req.file?.filename) {
-    await prisma.$executeRawUnsafe(`UPDATE candidates SET cv_file = ? WHERE id = ?`, req.file.filename, candidate.id);
-  }
 
   await prisma.applications.create({
     data: {
@@ -751,9 +729,9 @@ const sendScheduleLink = asyncHandler(async (req, res) => {
     expiresAt: expires,
   });
 
-  await prisma.$executeRawUnsafe(
-    'UPDATE interviews SET schedule_link_sent_at = NOW() WHERE id = ?', id
-  ).catch(() => {});
+  await prisma.interviews
+    .updateMany({ where: { id }, data: { schedule_link_sent_at: new Date() } })
+    .catch(() => {});
 
   return respond.ok(res, 'Scheduling link sent');
 });
@@ -822,15 +800,9 @@ const confirmSchedule = asyncHandler(async (req, res) => {
       status:          'Scheduled',
       scheduleUpdated: 1,
       updated:         new Date(),
+      ...(slotEndTime ? { scheduled_end: slotEndTime } : {}),
     },
   });
-
-  if (slotEndTime) {
-    await prisma.$executeRawUnsafe(
-      'UPDATE interviews SET scheduled_end = ? WHERE id = ?',
-      slotEndTime, interview.id
-    );
-  }
 
   const candidate = interview.candidate
     ? await prisma.candidates.findUnique({ where: { id: interview.candidate } })
@@ -878,7 +850,7 @@ const confirmSchedule = asyncHandler(async (req, res) => {
 const sendInterviewInvite = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
 
-  const [row] = await prisma.$queryRawUnsafe('SELECT * FROM interviews WHERE id = ?', id);
+  const row = await prisma.interviews.findUnique({ where: { id } });
   if (!row) return respond.notFound(res, 'Interview not found');
   if (!row.scheduled) return respond.badReq(res, 'No interview date set. Set a date on the interview before sending an invite.');
 
@@ -925,9 +897,9 @@ const sendInterviewInvite = asyncHandler(async (req, res) => {
     )
   );
 
-  await prisma.$executeRawUnsafe(
-    'UPDATE interviews SET invite_sent_at = NOW() WHERE id = ?', id
-  ).catch(() => {});
+  await prisma.interviews
+    .updateMany({ where: { id }, data: { invite_sent_at: new Date() } })
+    .catch(() => {});
 
   logActivity({ module: 'Recruitment', action: 'send_interview_invite', entityId: String(id), ...fromReq(req) });
   return respond.ok(res, 'Interview invite sent');

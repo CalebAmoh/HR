@@ -1,84 +1,140 @@
-// aiAttrition — an explainable, offline attrition-risk scorecard. No training pipeline:
-// each signal contributes weighted points (0–100 total) with a human-readable reason, so HR
-// can see WHY an employee is flagged. Pure Node + SQL, ideal for a CPU-only host.
+// aiAttrition - explainable, offline attrition-risk scorecard.
+// Uses Prisma ORM plus in-process aggregation so it stays portable across DB engines.
 const { prisma } = require('./dbQueryHelper');
 
-const ACTIVE = `lifecycleStatus = 'ACTIVE' AND approvalStatus = 'APPROVED'`;
-const raw = (sql, ...p) => prisma.$queryRawUnsafe(sql, ...p).catch(() => []);
+const ACTIVE_WHERE = { lifecycleStatus: 'ACTIVE', approvalStatus: 'APPROVED' };
+
 const daysAgo = n => {
-  const d = new Date(Date.now() - n * 86400000); const p = x => String(x).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  const d = new Date(Date.now() - n * 86400000);
+  const p = x => String(x).padStart(2, '0');
+  return new Date(`${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`);
 };
 
-// Build a Map keyed by employee id (string) for a grouped query.
-function toMap(rows, key = 'employee') {
-  const m = new Map();
-  for (const r of rows) m.set(String(r[key]), r);
-  return m;
-}
-
 async function computeAttrition() {
-  const employees = await raw(`
-    SELECT e.id, TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS name, e.hireDate,
-           e.confirmationDate, cs.title AS department, jt.label AS job_title
-    FROM employee e
-    LEFT JOIN companystructures cs ON cs.id = e.departmentId
-    LEFT JOIN CodeListValue jt ON jt.id = e.jobTitleId
-    WHERE ${ACTIVE}
-  `);
+  const employees = await prisma.employee.findMany({
+    where: ACTIVE_WHERE,
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      hireDate: true,
+      confirmationDate: true,
+      departmentId: true,
+      jobTitleId: true,
+    },
+  }).catch(() => []);
   if (!employees.length) return [];
 
-  const since90  = daysAgo(90);
+  const since90 = daysAgo(90);
   const since180 = daysAgo(180);
+  const empIds = employees.map(e => e.id);
+  const deptIds = [...new Set(employees.map(e => e.departmentId).filter(Boolean))];
+  const jobTitleIds = [...new Set(employees.map(e => e.jobTitleId).filter(Boolean))];
 
-  const [att, leaves, perf, disc] = await Promise.all([
-    raw(`SELECT employee,
-            SUM(CASE WHEN day_status = 'Late' THEN 1 ELSE 0 END)   AS late,
-            SUM(CASE WHEN day_status = 'Absent' THEN 1 ELSE 0 END) AS absent
-         FROM attendance WHERE date >= ? GROUP BY employee`, since90),
-    raw(`SELECT employee, COUNT(*) AS cnt FROM employeeleaves
-         WHERE date_start >= ? AND status IN ('Approved','Pending','Processing') GROUP BY employee`, since180),
-    raw(`SELECT pr.employee, pr.supervisor_score, pr.hr_score
-         FROM performance_review pr
-         INNER JOIN (SELECT employee, MAX(id) AS mid FROM performance_review GROUP BY employee) last
-           ON last.employee = pr.employee AND last.mid = pr.id`),
-    raw(`SELECT employee,
-            SUM(CASE WHEN status <> 'Resolved' THEN 1 ELSE 0 END) AS open_cnt,
-            SUM(CASE WHEN severity IN ('High','Critical') THEN 1 ELSE 0 END) AS severe_cnt
-         FROM employee_disciplinary GROUP BY employee`),
+  const [
+    departments,
+    jobTitles,
+    attendanceRows,
+    leaveRows,
+    reviewRows,
+    disciplinaryRows,
+  ] = await Promise.all([
+    deptIds.length
+      ? prisma.companystructures.findMany({
+        where: { id: { in: deptIds } },
+        select: { id: true, title: true },
+      }).catch(() => [])
+      : [],
+    jobTitleIds.length
+      ? prisma.codeListValue.findMany({
+        where: { id: { in: jobTitleIds } },
+        select: { id: true, label: true },
+      }).catch(() => [])
+      : [],
+    prisma.attendance.findMany({
+      where: { employee: { in: empIds }, date: { gte: since90 } },
+      select: { employee: true, day_status: true },
+    }).catch(() => []),
+    prisma.employeeleaves.findMany({
+      where: {
+        employee: { in: empIds },
+        date_start: { gte: since180 },
+        status: { in: ['Approved', 'Pending', 'Processing'] },
+      },
+      select: { employee: true },
+    }).catch(() => []),
+    prisma.performance_review.findMany({
+      where: { employee: { in: empIds } },
+      orderBy: { id: 'desc' },
+      select: { employee: true, supervisor_score: true, hr_score: true },
+    }).catch(() => []),
+    prisma.employee_disciplinary.findMany({
+      where: { employee: { in: empIds } },
+      select: { employee: true, status: true, severity: true },
+    }).catch(() => []),
   ]);
 
-  const attMap  = toMap(att);
-  const leaveMap = toMap(leaves);
-  const perfMap = toMap(perf);
-  const discMap = toMap(disc);
-  const now = Date.now();
+  const deptMap = new Map(departments.map(d => [String(d.id), d.title]));
+  const jobTitleMap = new Map(jobTitles.map(j => [j.id, j.label]));
 
+  const attMap = new Map();
+  for (const row of attendanceRows) {
+    const key = String(row.employee);
+    const stat = attMap.get(key) || { late: 0, absent: 0 };
+    if (row.day_status === 'Late') stat.late++;
+    if (row.day_status === 'Absent') stat.absent++;
+    attMap.set(key, stat);
+  }
+
+  const leaveMap = new Map();
+  for (const row of leaveRows) {
+    const key = String(row.employee);
+    leaveMap.set(key, { cnt: (leaveMap.get(key)?.cnt || 0) + 1 });
+  }
+
+  const perfMap = new Map();
+  for (const row of reviewRows) {
+    const key = String(row.employee);
+    if (!perfMap.has(key)) perfMap.set(key, row);
+  }
+
+  const discMap = new Map();
+  for (const row of disciplinaryRows) {
+    const key = String(row.employee);
+    const stat = discMap.get(key) || { open_cnt: 0, severe_cnt: 0 };
+    if (row.status !== 'Resolved') stat.open_cnt++;
+    if (row.severity === 'High' || row.severity === 'Critical') stat.severe_cnt++;
+    discMap.set(key, stat);
+  }
+
+  const now = Date.now();
   const results = employees.map(e => {
     const id = String(e.id);
     const factors = [];
     let score = 0;
-    const add = (pts, label) => { if (pts > 0) { score += pts; factors.push({ label, points: pts }); } };
+    const add = (pts, label) => {
+      if (pts > 0) {
+        score += pts;
+        factors.push({ label, points: pts });
+      }
+    };
 
-    // 1) Tenure — newest hires and unconfirmed (probation) churn most.
     const tenureYrs = e.hireDate ? (now - new Date(e.hireDate).getTime()) / (365.25 * 86400000) : null;
     if (tenureYrs != null) {
       if (tenureYrs < 1) add(20, 'Short tenure (under 1 year)');
-      else if (tenureYrs < 2) add(10, 'Early tenure (1–2 years)');
+      else if (tenureYrs < 2) add(10, 'Early tenure (1-2 years)');
     }
     if (!e.confirmationDate) add(8, 'Not yet confirmed (probation)');
 
-    // 2) Attendance — lateness & absence over the last 90 days.
     const a = attMap.get(id);
-    const late = Number(a?.late ?? 0), absent = Number(a?.absent ?? 0);
+    const late = Number(a?.late ?? 0);
+    const absent = Number(a?.absent ?? 0);
     if (absent >= 3) add(Math.min(20, absent * 4), `Frequent absences (${absent} in 90 days)`);
     if (late >= 5) add(Math.min(12, Math.floor(late / 2)), `Frequent lateness (${late} in 90 days)`);
 
-    // 3) Leave frequency — spikes can signal burnout/disengagement.
     const lc = Number(leaveMap.get(id)?.cnt ?? 0);
     if (lc >= 4) add(Math.min(15, (lc - 3) * 4), `High leave frequency (${lc} in 180 days)`);
 
-    // 4) Performance — low latest score.
     const p = perfMap.get(id);
     const pScore = p ? Number(p.hr_score ?? p.supervisor_score ?? NaN) : NaN;
     if (!Number.isNaN(pScore)) {
@@ -86,9 +142,9 @@ async function computeAttrition() {
       else if (pScore <= 2.8) add(12, `Below-average performance score (${pScore})`);
     }
 
-    // 5) Disciplinary — open and severe cases.
     const d = discMap.get(id);
-    const open = Number(d?.open_cnt ?? 0), severe = Number(d?.severe_cnt ?? 0);
+    const open = Number(d?.open_cnt ?? 0);
+    const severe = Number(d?.severe_cnt ?? 0);
     if (severe > 0) add(Math.min(20, severe * 12), `Severe disciplinary record (${severe})`);
     else if (open > 0) add(Math.min(12, open * 6), `Open disciplinary case(s) (${open})`);
 
@@ -97,8 +153,13 @@ async function computeAttrition() {
     factors.sort((x, y) => y.points - x.points);
 
     return {
-      employee_id: id, name: e.name, department: e.department || '—', job_title: e.job_title || '—',
-      score, band, factors: factors.slice(0, 5),
+      employee_id: id,
+      name: `${e.firstName ?? ''} ${e.lastName ?? ''}`.trim(),
+      department: (e.departmentId && deptMap.get(String(e.departmentId))) || '-',
+      job_title: (e.jobTitleId && jobTitleMap.get(e.jobTitleId)) || '-',
+      score,
+      band,
+      factors: factors.slice(0, 5),
     };
   });
 
@@ -106,15 +167,18 @@ async function computeAttrition() {
   return results;
 }
 
-// Persist a computed scorecard to the cache table.
 async function persist(results) {
-  await prisma.$executeRawUnsafe(`DELETE FROM ai_attrition_scores`).catch(() => {});
-  for (const r of results) {
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO ai_attrition_scores (employee_id, score, band, factors) VALUES (?, ?, ?, ?)`,
-      BigInt(r.employee_id), r.score, r.band, JSON.stringify(r.factors)
-    ).catch(() => {});
-  }
+  await prisma.ai_attrition_scores.deleteMany().catch(() => {});
+  if (!results.length) return;
+
+  await prisma.ai_attrition_scores.createMany({
+    data: results.map(r => ({
+      employee_id: BigInt(r.employee_id),
+      score: r.score,
+      band: r.band,
+      factors: JSON.stringify(r.factors),
+    })),
+  }).catch(() => {});
 }
 
 module.exports = { computeAttrition, persist };

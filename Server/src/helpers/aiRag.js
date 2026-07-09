@@ -42,10 +42,15 @@ async function gatherCorpus() {
   } catch { /* help file optional */ }
 
   try {
-    const docs = await prisma.$queryRawUnsafe(
-      `SELECT id, name, details FROM companydocuments WHERE status = 'Active' AND details IS NOT NULL AND details <> ''`
-    ).catch(() => []);
+    const docs = await prisma.companydocuments.findMany({
+      where: {
+        status: 'Active',
+        details: { not: '' },
+      },
+      select: { id: true, name: true, details: true },
+    }).catch(() => []);
     for (const d of docs) {
+      if (!d.details) continue;
       for (const [i, c] of chunk(`${d.name}. ${d.details}`).entries()) {
         items.push({ source_type: 'document', source_id: String(d.id), chunk_index: i, title: d.name, content: c });
       }
@@ -80,10 +85,15 @@ async function gatherCorpus() {
 
   // Admin-managed in-app knowledge entries.
   try {
-    const rows = await prisma.$queryRawUnsafe(
-      `SELECT id, title, content FROM ai_knowledge WHERE enabled = 1 AND content IS NOT NULL AND content <> ''`
-    ).catch(() => []);
+    const rows = await prisma.ai_knowledge.findMany({
+      where: {
+        enabled: true,
+        content: { not: '' },
+      },
+      select: { id: true, title: true, content: true },
+    }).catch(() => []);
     for (const r of rows) {
+      if (!r.content) continue;
       for (const [i, c] of chunk(`${r.title}. ${r.content}`).entries())
         items.push({ source_type: 'knowledge', source_id: String(r.id), chunk_index: i, title: r.title, content: c });
     }
@@ -95,7 +105,10 @@ async function gatherCorpus() {
 // Rebuild the whole embedding index. Returns the number of chunks indexed.
 async function reindex() {
   const items = await gatherCorpus();
-  if (!items.length) { await prisma.$executeRawUnsafe(`DELETE FROM ai_embeddings`).catch(() => {}); return 0; }
+  if (!items.length) {
+    await prisma.ai_embeddings.deleteMany().catch(() => {});
+    return 0;
+  }
 
   // Embed in batches to keep request sizes reasonable on CPU.
   const vectors = [];
@@ -106,23 +119,28 @@ async function reindex() {
     vectors.push(...vecs);
   }
 
-  await prisma.$executeRawUnsafe(`DELETE FROM ai_embeddings`).catch(() => {});
+  await prisma.ai_embeddings.deleteMany().catch(() => {});
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO ai_embeddings (source_type, source_id, chunk_index, title, content, embedding)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      it.source_type, it.source_id, it.chunk_index, it.title, it.content, JSON.stringify(vectors[i])
-    );
+    await prisma.ai_embeddings.create({
+      data: {
+        source_type: it.source_type,
+        source_id: it.source_id,
+        chunk_index: it.chunk_index,
+        title: it.title,
+        content: it.content,
+        embedding: JSON.stringify(vectors[i]),
+      },
+    });
   }
   return items.length;
 }
 
 // Retrieve the top-k most relevant chunks for a query. Returns [{ title, content, score }].
 async function retrieve(query, k = 4) {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT title, content, embedding FROM ai_embeddings`
-  ).catch(() => []);
+  const rows = await prisma.ai_embeddings.findMany({
+    select: { title: true, content: true, embedding: true },
+  }).catch(() => []);
   if (!rows.length) return [];
 
   let qvec;
@@ -140,8 +158,8 @@ async function retrieve(query, k = 4) {
 
 // True when no embeddings have been built yet.
 async function isEmpty() {
-  const rows = await prisma.$queryRawUnsafe(`SELECT COUNT(*) AS cnt FROM ai_embeddings`).catch(() => [{ cnt: 0 }]);
-  return Number(rows?.[0]?.cnt ?? 0) === 0;
+  const count = await prisma.ai_embeddings.count().catch(() => 0);
+  return Number(count) === 0;
 }
 
 let indexing = false;

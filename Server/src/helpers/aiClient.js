@@ -18,9 +18,10 @@ function bool(v, dflt) {
 
 // Read the ai-category settings rows (name/value) as a plain map.
 async function readAiSettings() {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT name, value FROM settings WHERE category = ?`, SETTINGS_CAT
-  ).catch(() => []);
+  const rows = await prisma.settings.findMany({
+    where: { category: SETTINGS_CAT },
+    select: { name: true, value: true },
+  }).catch(() => []);
   return Object.fromEntries((rows || []).map(r => [r.name, r.value]));
 }
 
@@ -39,16 +40,25 @@ async function getConfig() {
 }
 
 async function upsertSetting(name, value) {
-  const existing = await prisma.$queryRawUnsafe(
-    `SELECT id FROM settings WHERE name = ? AND category = ?`, name, SETTINGS_CAT
-  ).catch(() => []);
-  if (existing.length) {
-    await prisma.$executeRawUnsafe(`UPDATE settings SET value = ? WHERE id = ?`, value, existing[0].id);
+  const existing = await prisma.settings.findFirst({
+    where: { name, category: SETTINGS_CAT },
+    select: { id: true },
+  }).catch(() => null);
+
+  if (existing) {
+    await prisma.settings.update({
+      where: { id: existing.id },
+      data: { value },
+    });
   } else {
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO settings (id, name, value, category) VALUES (?, ?, ?, ?)`,
-      BigInt(Date.now()), name, value, SETTINGS_CAT
-    );
+    await prisma.settings.create({
+      data: {
+        id: BigInt(Date.now()),
+        name,
+        value,
+        category: SETTINGS_CAT,
+      },
+    });
   }
 }
 

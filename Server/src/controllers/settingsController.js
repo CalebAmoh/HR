@@ -3,6 +3,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond      = require('../helpers/respondHelper');
 const nodemailer   = require('nodemailer');
 const messageStore = require('../helpers/messageStore');
+const { upsertSetting } = require('../helpers/settingsHelper');
 
 function escapeHtml(value = '') {
   return String(value)
@@ -16,9 +17,9 @@ function escapeHtml(value = '') {
 // Helpers
 
 async function readEmailSettings() {
-  const rows = await prisma.$queryRawUnsafe(
-    "SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'email_%'"
-  ).catch(() => []);
+  const rows = await prisma.app_settings
+    .findMany({ where: { setting_key: { startsWith: 'email_' } }, select: { setting_key: true, setting_value: true } })
+    .catch(() => []);
   return Object.fromEntries(rows.map(r => [r.setting_key, r.setting_value ?? '']));
 }
 
@@ -48,14 +49,14 @@ const updateEmailSettings = asyncHandler(async (req, res) => {
     'email_smtp_secure', 'email_smtp_user', 'email_smtp_pass', 'email_from',
   ];
 
-  for (const k of ALLOWED_KEYS) {
-    if (req.body[k] !== undefined) {
-      await prisma.$executeRawUnsafe(
-        'INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)',
-        k, String(req.body[k])
-      );
-    }
-  }
+  const writes = ALLOWED_KEYS
+    .filter(k => req.body[k] !== undefined)
+    .map(k => prisma.app_settings.upsert({
+      where:  { setting_key: k },
+      update: { setting_value: String(req.body[k]) },
+      create: { setting_key: k, setting_value: String(req.body[k]) },
+    }));
+  await prisma.$transaction(writes);
 
   return respond.ok(res, 'Email settings saved');
 });
@@ -160,9 +161,9 @@ const CONTROL_KEYS = [
 
 // GET /settings/controls — flat map of saved keys (client merges over its defaults)
 const getControlSettings = asyncHandler(async (req, res) => {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT name, value FROM settings WHERE category='app_controls'`
-  ).catch(() => []);
+  const rows = await prisma.settings
+    .findMany({ where: { category: 'app_controls' }, select: { name: true, value: true } })
+    .catch(() => []);
   const map = {};
   for (const r of rows) if (CONTROL_KEYS.includes(r.name)) map[r.name] = r.value ?? '';
   respond.ok(res, 'Control settings', map);
@@ -170,23 +171,12 @@ const getControlSettings = asyncHandler(async (req, res) => {
 
 // PUT /settings/controls — upsert any whitelisted keys present in the body
 const saveControlSettings = asyncHandler(async (req, res) => {
-  for (const key of CONTROL_KEYS) {
-    if (req.body[key] === undefined) continue;
-    const val = String(req.body[key]);
-    const existing = await prisma.$queryRawUnsafe(
-      `SELECT id FROM settings WHERE name=? AND category='app_controls'`, key
-    ).catch(() => []);
-    if (existing.length) {
-      await prisma.$executeRawUnsafe(
-        `UPDATE settings SET value=? WHERE name=? AND category='app_controls'`, val, key
-      );
-    } else {
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO settings (id, name, value, category) VALUES (?,?,?,'app_controls')`,
-        BigInt(Date.now() + Math.floor(Math.random() * 9999)), key, val
-      );
+  await prisma.$transaction(async (tx) => {
+    for (const key of CONTROL_KEYS) {
+      if (req.body[key] === undefined) continue;
+      await upsertSetting(tx, key, 'app_controls', String(req.body[key]));
     }
-  }
+  });
   respond.ok(res, 'Control settings saved');
 });
 
@@ -200,9 +190,9 @@ const notifyKey = (m) => `notify_${m}`;
 
 // GET /settings/notifications — map of module → enabled (default true)
 const getNotificationSettings = asyncHandler(async (req, res) => {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT name, value FROM settings WHERE category='notifications'`
-  ).catch(() => []);
+  const rows = await prisma.settings
+    .findMany({ where: { category: 'notifications' }, select: { name: true, value: true } })
+    .catch(() => []);
   const saved = {};
   for (const r of rows) saved[r.name] = r.value;
   const map = {};
@@ -212,22 +202,12 @@ const getNotificationSettings = asyncHandler(async (req, res) => {
 
 // PUT /settings/notifications — upsert any known module flags present in the body
 const saveNotificationSettings = asyncHandler(async (req, res) => {
-  for (const m of NOTIFY_MODULES) {
-    if (req.body[m] === undefined) continue;
-    const key = notifyKey(m);
-    const val = req.body[m] ? '1' : '0';
-    const existing = await prisma.$queryRawUnsafe(
-      `SELECT id FROM settings WHERE name=? AND category='notifications'`, key
-    ).catch(() => []);
-    if (existing.length) {
-      await prisma.$executeRawUnsafe(`UPDATE settings SET value=? WHERE name=? AND category='notifications'`, val, key);
-    } else {
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO settings (id, name, value, category) VALUES (?,?,?,'notifications')`,
-        BigInt(Date.now() + Math.floor(Math.random() * 9999)), key, val
-      );
+  await prisma.$transaction(async (tx) => {
+    for (const m of NOTIFY_MODULES) {
+      if (req.body[m] === undefined) continue;
+      await upsertSetting(tx, notifyKey(m), 'notifications', req.body[m] ? '1' : '0');
     }
-  }
+  });
   respond.ok(res, 'Notification settings saved');
 });
 
@@ -241,9 +221,9 @@ const ALL_MODULE_IDS = [
 ];
 
 const getModuleSettings = asyncHandler(async (req, res) => {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT module_id, enabled FROM module_settings`
-  ).catch(() => []);
+  const rows = await prisma.module_settings
+    .findMany({ select: { module_id: true, enabled: true } })
+    .catch(() => []);
 
   // Build a map of what the DB knows; anything missing defaults to enabled
   const dbMap = {};
@@ -257,15 +237,15 @@ const saveModuleSettings = asyncHandler(async (req, res) => {
   const { disabled } = req.body;
   const disabledSet = new Set(Array.isArray(disabled) ? disabled : []);
 
-  for (const moduleId of ALL_MODULE_IDS) {
-    const isEnabled = disabledSet.has(moduleId) ? 0 : 1;
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO module_settings (module_id, enabled)
-       VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE enabled = VALUES(enabled)`,
-      moduleId, isEnabled
-    );
-  }
+  const writes = ALL_MODULE_IDS.map((moduleId) => {
+    const enabled = !disabledSet.has(moduleId);
+    return prisma.module_settings.upsert({
+      where:  { module_id: moduleId },
+      update: { enabled },
+      create: { module_id: moduleId, enabled },
+    });
+  });
+  await prisma.$transaction(writes);
 
   return respond.ok(res, 'Module settings saved');
 });
@@ -275,9 +255,9 @@ const saveModuleSettings = asyncHandler(async (req, res) => {
 
 // GET /settings/app-setup
 const getAppSetup = asyncHandler(async (req, res) => {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT name, value FROM settings WHERE category='app_setup'`
-  ).catch(() => []);
+  const rows = await prisma.settings
+    .findMany({ where: { category: 'app_setup' }, select: { name: true, value: true } })
+    .catch(() => []);
   const map = {};
   for (const r of rows) map[r.name] = r.value ?? '';
   return respond.ok(res, 'App setup', {
@@ -289,21 +269,12 @@ const getAppSetup = asyncHandler(async (req, res) => {
 // PUT /settings/app-setup
 const saveAppSetup = asyncHandler(async (req, res) => {
   const fields = { company_name: req.body.company_name, company_logo: req.body.company_logo };
-  for (const [name, value] of Object.entries(fields)) {
-    if (value === undefined) continue;
-    const val = String(value ?? '');
-    const existing = await prisma.$queryRawUnsafe(
-      `SELECT id FROM settings WHERE name=? AND category='app_setup'`, name
-    ).catch(() => []);
-    if (existing.length) {
-      await prisma.$executeRawUnsafe(`UPDATE settings SET value=? WHERE name=? AND category='app_setup'`, val, name);
-    } else {
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO settings (id, name, value, category) VALUES (?,?,?,'app_setup')`,
-        BigInt(Date.now() + Math.floor(Math.random() * 9999)), name, val
-      );
+  await prisma.$transaction(async (tx) => {
+    for (const [name, value] of Object.entries(fields)) {
+      if (value === undefined) continue;
+      await upsertSetting(tx, name, 'app_setup', String(value ?? ''));
     }
-  }
+  });
   return respond.ok(res, 'App setup saved');
 });
 
@@ -317,14 +288,14 @@ const getMessages = asyncHandler(async (_req, res) => {
 const saveMessage = asyncHandler(async (req, res) => {
   const key = String(req.body.message_key ?? '').trim();
   const text = String(req.body.override_text ?? '');
-  const enabled = req.body.enabled === false || req.body.enabled === 0 || req.body.enabled === '0' ? 0 : 1;
+  const enabled = !(req.body.enabled === false || req.body.enabled === 0 || req.body.enabled === '0');
   if (!key) return respond.badReq(res, 'message_key is required');
   if (!text.trim()) return respond.badReq(res, 'Override text is required');
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO message_overrides (message_key, override_text, enabled) VALUES (?, ?, ?)
-     ON DUPLICATE KEY UPDATE override_text = VALUES(override_text), enabled = VALUES(enabled)`,
-    key, text, enabled
-  );
+  await prisma.message_overrides.upsert({
+    where:  { message_key: key },
+    update: { override_text: text, enabled },
+    create: { message_key: key, override_text: text, enabled },
+  });
   await messageStore.reload();
   respond.ok(res, 'Message saved');
 });
@@ -333,7 +304,7 @@ const saveMessage = asyncHandler(async (req, res) => {
 const resetMessage = asyncHandler(async (req, res) => {
   const key = String(req.body.message_key ?? '').trim();
   if (!key) return respond.badReq(res, 'message_key is required');
-  await prisma.$executeRawUnsafe(`DELETE FROM message_overrides WHERE message_key = ?`, key);
+  await prisma.message_overrides.deleteMany({ where: { message_key: key } });
   await messageStore.reload();
   respond.ok(res, 'Message reset to default');
 });

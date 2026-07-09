@@ -101,10 +101,12 @@ exports.chat = asyncHandler(async (req, res) => {
     (passages.length ? `\nReference material:\n${passages.map(p => `• ${p.title}: ${p.content}`).join('\n')}\n` : '');
 
   // Short rolling history for context.
-  const hist = await prisma.$queryRawUnsafe(
-    `SELECT role, content FROM ai_messages WHERE user_id = ? ORDER BY id DESC LIMIT 6`,
-    BigInt(req.user.id)
-  ).catch(() => []);
+  const hist = await prisma.ai_messages.findMany({
+    where: { user_id: BigInt(req.user.id) },
+    orderBy: { id: 'desc' },
+    take: 6,
+    select: { role: true, content: true },
+  }).catch(() => []);
   const historyMsgs = hist.reverse().map(h => ({ role: h.role, content: h.content }));
 
   const messages = [{ role: 'system', content: sys }, ...historyMsgs, { role: 'user', content: message }];
@@ -115,10 +117,12 @@ exports.chat = asyncHandler(async (req, res) => {
   try {
     const answer = await streamCompletion(res, messages, cfg);
     if (!aborted) {
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO ai_messages (user_id, role, content) VALUES (?, 'user', ?), (?, 'assistant', ?)`,
-        BigInt(req.user.id), message, BigInt(req.user.id), answer
-      ).catch(() => {});
+      await prisma.ai_messages.createMany({
+        data: [
+          { user_id: BigInt(req.user.id), role: 'user', content: message },
+          { user_id: BigInt(req.user.id), role: 'assistant', content: answer },
+        ],
+      }).catch(() => {});
     }
   } catch (e) {
     sseSend(res, { token: `\n\n⚠️ ${e.message || 'AI error'}` });
@@ -200,9 +204,10 @@ exports.reindex = asyncHandler(async (req, res) => {
 
 // ── Knowledge entries (admin-managed dataset) ─────────────────────────────────
 exports.listKnowledge = asyncHandler(async (req, res) => {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT id, title, content, enabled, updated_at FROM ai_knowledge ORDER BY title ASC`
-  ).catch(() => []);
+  const rows = await prisma.ai_knowledge.findMany({
+    orderBy: { title: 'asc' },
+    select: { id: true, title: true, content: true, enabled: true, updated_at: true },
+  }).catch(() => []);
   respond.ok(res, 'Knowledge entries', rows.map(r => ({
     id: String(r.id), title: r.title, content: r.content,
     enabled: !!r.enabled, updated_at: r.updated_at,
@@ -215,9 +220,9 @@ exports.createKnowledge = asyncHandler(async (req, res) => {
   const enabled = req.body?.enabled === false ? 0 : 1;
   if (!title)   return respond.badReq(res, 'Title is required');
   if (!content) return respond.badReq(res, 'Content is required');
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO ai_knowledge (title, content, enabled) VALUES (?, ?, ?)`, title, content, enabled
-  );
+  await prisma.ai_knowledge.create({
+    data: { title, content, enabled: !!enabled },
+  });
   respond.created(res, 'Knowledge entry added', {});
 });
 
@@ -225,19 +230,18 @@ exports.updateKnowledge = asyncHandler(async (req, res) => {
   const id = (() => { try { return BigInt(req.params.id); } catch { return null; } })();
   if (id == null) return respond.badReq(res, 'Invalid id');
   const { title, content, enabled } = req.body || {};
-  const sets = [], params = [];
-  if (title   !== undefined) { sets.push('title = ?');   params.push(String(title).trim()); }
-  if (content !== undefined) { sets.push('content = ?'); params.push(String(content).trim()); }
-  if (enabled !== undefined) { sets.push('enabled = ?'); params.push(enabled ? 1 : 0); }
-  if (!sets.length) return respond.badReq(res, 'Nothing to update');
-  params.push(id);
-  await prisma.$executeRawUnsafe(`UPDATE ai_knowledge SET ${sets.join(', ')} WHERE id = ?`, ...params);
+  const data = {};
+  if (title   !== undefined) data.title = String(title).trim();
+  if (content !== undefined) data.content = String(content).trim();
+  if (enabled !== undefined) data.enabled = !!enabled;
+  if (!Object.keys(data).length) return respond.badReq(res, 'Nothing to update');
+  await prisma.ai_knowledge.update({ where: { id }, data });
   respond.ok(res, 'Knowledge entry updated', {});
 });
 
 exports.deleteKnowledge = asyncHandler(async (req, res) => {
   const id = (() => { try { return BigInt(req.params.id); } catch { return null; } })();
   if (id == null) return respond.badReq(res, 'Invalid id');
-  await prisma.$executeRawUnsafe(`DELETE FROM ai_knowledge WHERE id = ?`, id);
+  await prisma.ai_knowledge.delete({ where: { id } });
   respond.ok(res, 'Knowledge entry deleted', {});
 });

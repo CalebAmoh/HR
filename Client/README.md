@@ -98,6 +98,9 @@ API_KEY=<random>
 # EMPLOYEE_SYNC_URL
 # POSTING_API_URL / POSTING_API_KEY / POSTING_API_SECRET / POSTING_CHANNEL_CODE / ...
 # PAYROLL_EXPENSE_GL / PAYROLL_DEDUCTION_GL / PAYROLL_NET_PAYABLE_GL
+
+# Offline AI assistant (optional — see section 8):
+# AI_ENABLED / OLLAMA_BASE_URL / OLLAMA_CHAT_MODEL / OLLAMA_EMBED_MODEL
 ```
 
 Generate the Prisma client and create all tables:
@@ -183,3 +186,87 @@ one origin (no CORS, public QR/onboarding links resolve correctly):
    `{ "status": "ok" }`.
 4. Run `npm run lint` in `Client/` (type-check) and confirm the API console shows
    `🚀 Server running on port 3040`.
+
+---
+
+## 8. Offline AI assistant (optional)
+
+The AI features run **fully offline** against a local [Ollama](https://ollama.com)
+server — no data ever leaves the machine and there is no API key or cloud account.
+Ollama exposes an OpenAI-compatible endpoint that the API talks to for:
+
+- **Assistant** — the in-app chat (answers from your help content, AI Knowledge,
+  and active company documents via retrieval / RAG)
+- **Drafting** — AI-assisted text (emails, descriptions, etc.)
+- **Document OCR** — extract text from uploaded documents
+- **Insights** — attrition / analytics summaries
+
+If you skip this section, the rest of the app works normally; AI panels just show
+"AI is disabled / unavailable."
+
+### 8.1 Install Ollama
+
+Download and install for your OS from <https://ollama.com/download> (Windows,
+macOS, and Linux). It runs as a background service listening on
+`http://localhost:11434`. Verify:
+
+```bash
+ollama --version
+curl http://localhost:11434/api/tags     # returns JSON (an empty model list at first)
+```
+
+> Runs on CPU out of the box (a GPU just makes it faster). Budget ~4–6 GB free RAM
+> for the default models below, plus disk for the one-time model downloads.
+
+### 8.2 Pull the models
+
+Pull the default chat and embedding models (the embedding model powers knowledge
+search and is **required** for the assistant):
+
+```bash
+ollama pull llama3.2:3b        # chat model  (OLLAMA_CHAT_MODEL)
+ollama pull nomic-embed-text   # embeddings  (OLLAMA_EMBED_MODEL)
+```
+
+You can swap in any other Ollama models later — just pull them and set the names
+in the env (below) or in **Settings → AI**. (Document OCR needs a **vision-capable**
+model, e.g. `ollama pull llama3.2-vision`, if you enable that feature.)
+
+### 8.3 Configure the API
+
+Add these to `Server/.env` (all optional — shown with their built-in defaults, so
+you only need `AI_ENABLED=true` if Ollama is on the same host with the default models):
+
+```dotenv
+AI_ENABLED=true
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_CHAT_MODEL=llama3.2:3b
+OLLAMA_EMBED_MODEL=nomic-embed-text
+```
+
+Point `OLLAMA_BASE_URL` at another host if Ollama runs on a separate machine.
+Restart the API after changing these.
+
+> These are just bootstrap defaults. At runtime, **Settings → AI** overrides them
+> (stored in the DB) and lets an admin toggle each capability — assistant, drafting,
+> ocr, insights — independently, without editing `.env`.
+
+### 8.4 Load the knowledge index
+
+The assistant retrieves answers from an embedded index built from your help
+content, in-app **AI Knowledge** entries, active company documents, and any files
+you drop in [`Server/src/data/knowledge/`](../Server/src/data/knowledge/)
+(`.md`, `.txt`, or `.json` — see the README there).
+
+The index **auto-builds on server startup when empty**. After editing knowledge
+files or content, rebuild it via **Settings → AI → Reindex knowledge**.
+
+### 8.5 Verify
+
+```bash
+curl http://<server>:3040/v1/api/hr/ai/health
+```
+
+A healthy response reports `ok: true`, the configured models, and
+`chatReady` / `embedReady` = `true` (both become `true` once the models from
+step 8.2 are pulled). Then open the in-app **AI Assistant** and ask a question.

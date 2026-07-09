@@ -16,23 +16,33 @@ const ALL_KEYS = [
 // ── Internal helpers ───────────────────────────────────────────────────────────
 
 async function upsertSetting(name, value) {
-  const existing = await prisma.$queryRawUnsafe(
-    `SELECT id FROM settings WHERE name = ? AND category = ?`, name, API_CAT
-  ).catch(() => []);
-  if (existing.length) {
-    await prisma.$executeRawUnsafe(`UPDATE settings SET value = ? WHERE id = ?`, value, existing[0].id);
+  const existing = await prisma.settings.findFirst({
+    where: { name, category: API_CAT },
+    select: { id: true },
+  }).catch(() => null);
+
+  if (existing) {
+    await prisma.settings.update({
+      where: { id: existing.id },
+      data: { value },
+    });
   } else {
-    const newId = BigInt(Date.now());
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO settings (id, name, value, category) VALUES (?, ?, ?, ?)`, newId, name, value, API_CAT
-    );
+    await prisma.settings.create({
+      data: {
+        id: BigInt(Date.now()),
+        name,
+        value,
+        category: API_CAT,
+      },
+    });
   }
 }
 
 async function readApiSettings() {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT name, value FROM settings WHERE category = ?`, API_CAT
-  ).catch(() => []);
+  const rows = await prisma.settings.findMany({
+    where: { category: API_CAT },
+    select: { name: true, value: true },
+  }).catch(() => []);
   return Object.fromEntries(rows.map(r => [r.name, r.value ?? '']));
 }
 
@@ -89,15 +99,20 @@ async function getApiConfig() {
 
   for (let i = 0; i < seed.length; i++) {
     const [name, value] = seed[i];
-    const existing = await prisma.$queryRawUnsafe(
-      `SELECT id FROM settings WHERE name = ? AND category = ?`, name, API_CAT
-    ).catch(() => []);
-    if (!existing.length) {
-      const newId = BigInt(Date.now()) * 100n + BigInt(i);
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO settings (id, name, value, category) VALUES (?, ?, ?, ?)`,
-        newId, name, value, API_CAT
-      ).catch(() => {});
+    const existing = await prisma.settings.findFirst({
+      where: { name, category: API_CAT },
+      select: { id: true },
+    }).catch(() => null);
+
+    if (!existing) {
+      await prisma.settings.create({
+        data: {
+          id: BigInt(Date.now()) * 100n + BigInt(i),
+          name,
+          value,
+          category: API_CAT,
+        },
+      }).catch(() => {});
     }
   }
 })();

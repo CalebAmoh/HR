@@ -31,6 +31,10 @@ const MODULE_LABELS = {
   notches: 'Salary', paygrades: 'Salary', settings: 'Settings', roles: 'Roles', permissions: 'Permissions',
 };
 
+// BigInt-safe JSON: audited rows carry BigInt ids/FKs, which JSON.stringify cannot serialise
+// natively (it throws). Emit them as strings so the audit detail is never dropped.
+const jsonStringifySafe = (v) => JSON.stringify(v, (_k, val) => (typeof val === 'bigint' ? val.toString() : val));
+
 const lcFirst = (s) => (s ? s.charAt(0).toLowerCase() + s.slice(1) : s);
 const moduleLabel = (model) => MODULE_LABELS[model] || MODULE_LABELS[lcFirst(model)] || (model.charAt(0).toUpperCase() + model.slice(1));
 
@@ -116,7 +120,7 @@ function makeAuditMiddleware(prisma) {
         userId != null ? BigInt(userId) : null,
         userName != null ? String(userName) : null,
         ip != null ? String(ip) : null,
-        details != null ? JSON.stringify(details) : null,
+        details != null ? jsonStringifySafe(details) : null,
       );
     } catch (e) {
       console.error('[audit middleware]', e.message);

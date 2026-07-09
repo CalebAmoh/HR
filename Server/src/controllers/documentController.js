@@ -5,8 +5,31 @@ const { tmsg }     = require('../helpers/messageStore');
 const asyncHandler = require('../middleware/asyncHandler');
 const { UPLOAD_DIR } = require('../middleware/upload');
 const { prisma }   = require('../helpers/dbQueryHelper');
+const { upsertSetting } = require('../helpers/settingsHelper');
 
 const { toBigInt, s } = require('../helpers/controllerHelpers');
+
+// Batch-resolve the document-type rows referenced by a set of employeedocuments (replaces the
+// LEFT JOIN documents in the old raw queries). Returns Map<string(document id) → {name, details}>.
+async function documentTypeMap(docs) {
+  const ids = [...new Set(docs.map(d => d.document).filter(v => v != null))];
+  if (!ids.length) return new Map();
+  const types = await prisma.documents
+    .findMany({ where: { id: { in: ids } }, select: { id: true, name: true, details: true } })
+    .catch(() => []);
+  return new Map(types.map(t => [String(t.id), t]));
+}
+
+// Batch-resolve employee display names referenced by a set of employeedocuments (replaces the
+// JOIN employee). Returns Map<string(employee id) → "First Last">.
+async function employeeNameMap(docs) {
+  const ids = [...new Set(docs.map(d => d.employee).filter(v => v != null))];
+  if (!ids.length) return new Map();
+  const emps = await prisma.employee
+    .findMany({ where: { id: { in: ids } }, select: { id: true, firstName: true, lastName: true } })
+    .catch(() => []);
+  return new Map(emps.map(e => [String(e.id), `${e.firstName ?? ''} ${e.lastName ?? ''}`.trim()]));
+}
 
 // POST /employees/documents/upload
 const uploadDocument = asyncHandler(async (req, res) => {
@@ -46,9 +69,9 @@ const getMySharedDocs = asyncHandler(async (req, res) => {
   if (!userId) return respond.ok(res, 'Not authenticated', []);
 
   // Resolve employee ID from users table
-  const userRow = await prisma.$queryRawUnsafe(
-    `SELECT employeeId FROM users WHERE id=? LIMIT 1`, userId
-  ).then(r => r[0]).catch(() => null);
+  const userRow = await prisma.users
+    .findUnique({ where: { id: userId }, select: { employeeId: true } })
+    .catch(() => null);
 
   const empId = userRow?.employeeId;
   if (!empId) return respond.ok(res, 'No employee record linked', []);
@@ -56,9 +79,9 @@ const getMySharedDocs = asyncHandler(async (req, res) => {
   const empIdStr = String(empId);
 
   // Get employee's department
-  const emp = await prisma.$queryRawUnsafe(
-    `SELECT departmentId FROM employee WHERE id=? LIMIT 1`, toBigInt(empId)
-  ).then(r => r[0]).catch(() => null);
+  const emp = await prisma.employee
+    .findUnique({ where: { id: toBigInt(empId) }, select: { departmentId: true } })
+    .catch(() => null);
 
   const deptId = emp?.departmentId ? String(emp.departmentId) : null;
 
@@ -89,25 +112,28 @@ const getMyPersonalDocs = asyncHandler(async (req, res) => {
   const empId = req.user?.employeeId;
   if (!empId) return respond.ok(res, 'No employee record linked', []);
 
-  const rows = await prisma.$queryRawUnsafe(`
-    SELECT ed.*,
-           d.name  AS document_type_name,
-           d.details AS document_type_details
-    FROM employeedocuments ed
-    LEFT JOIN documents d ON d.id = ed.document
-    WHERE ed.employee = ?
-      AND (ed.status IS NULL OR ed.status != 'Archived')
-    ORDER BY ed.date_added DESC
-  `, toBigInt(empId)).catch(() => []);
+  // employeedocuments LEFT JOIN documents (for the type name/details). Exclude archived docs — the
+  // old raw query compared to 'Archived', which was never a valid enum value (it stored as ''); the
+  // real archived state is 'Inactive'. NULL status is still included.
+  const docs = await prisma.employeedocuments.findMany({
+    where: { employee: toBigInt(empId), OR: [{ status: null }, { status: { not: 'Inactive' } }] },
+    orderBy: { date_added: 'desc' },
+  }).catch(() => []);
+  const typeMap = await documentTypeMap(docs);
+  const rows = docs.map(d => ({
+    ...d,
+    document_type_name:    typeMap.get(String(d.document))?.name ?? null,
+    document_type_details: typeMap.get(String(d.document))?.details ?? null,
+  }));
 
   respond.ok(res, 'Personal documents', s(rows));
 });
 
 // GET /documents/settings
 const getDocumentSettings = asyncHandler(async (req, res) => {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT name, value FROM settings WHERE category='document_settings'`
-  ).catch(() => []);
+  const rows = await prisma.settings
+    .findMany({ where: { category: 'document_settings' }, select: { name: true, value: true } })
+    .catch(() => []);
   const map = { allow_document_download: 'No' };
   for (const r of rows) if (r.name in map) map[r.name] = r.value ?? map[r.name];
   respond.ok(res, 'Document settings', map);
@@ -116,31 +142,20 @@ const getDocumentSettings = asyncHandler(async (req, res) => {
 // PUT /documents/settings
 const updateDocumentSettings = asyncHandler(async (req, res) => {
   const KEYS = ['allow_document_download'];
-  for (const key of KEYS) {
-    if (req.body[key] === undefined) continue;
-    const val = String(req.body[key]);
-    const existing = await prisma.$queryRawUnsafe(
-      `SELECT id FROM settings WHERE name=? AND category='document_settings'`, key
-    ).catch(() => []);
-    if (existing.length) {
-      await prisma.$executeRawUnsafe(
-        `UPDATE settings SET value=? WHERE name=? AND category='document_settings'`, val, key
-      );
-    } else {
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO settings (id, name, value, category) VALUES (?,?,?,'document_settings')`,
-        BigInt(Date.now() + Math.floor(Math.random() * 9999)), key, val
-      );
+  await prisma.$transaction(async (tx) => {
+    for (const key of KEYS) {
+      if (req.body[key] === undefined) continue;
+      await upsertSetting(tx, key, 'document_settings', String(req.body[key]));
     }
-  }
+  });
   respond.ok(res, 'Document settings saved');
 });
 
 // GET /documents/company
 const getCompanyDocs = asyncHandler(async (req, res) => {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT * FROM companydocuments WHERE status='Active' ORDER BY id DESC`
-  ).catch(() => []);
+  const rows = await prisma.companydocuments
+    .findMany({ where: { status: 'Active' }, orderBy: { id: 'desc' } })
+    .catch(() => []);
   respond.ok(res, 'Company documents', s(rows));
 });
 
@@ -148,15 +163,19 @@ const getCompanyDocs = asyncHandler(async (req, res) => {
 const createCompanyDoc = asyncHandler(async (req, res) => {
   const { name, details, share_departments, share_employees, share_userlevel, attachment, valid_until } = req.body;
   if (!name) return respond.badReq(res, 'Name is required');
-  const id = BigInt(Date.now());
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO companydocuments (id, name, details, share_departments, share_employees, share_userlevel, attachment, valid_until, status)
-     VALUES (?,?,?,?,?,?,?,?,'Active')`,
-    id, name, details || null,
-    share_departments || null, share_employees || null, share_userlevel || null,
-    attachment || null, valid_until || null
-  );
-  respond.ok(res, 'Company document created', { id: String(id) });
+  const created = await prisma.companydocuments.create({
+    data: {
+      name,
+      details:           details || null,
+      share_departments: share_departments || null,
+      share_employees:   share_employees || null,
+      share_userlevel:   share_userlevel || null,
+      attachment:        attachment || null,
+      valid_until:       valid_until ? new Date(valid_until) : null,
+      status:            'Active',
+    },
+  });
+  respond.ok(res, 'Company document created', { id: String(created.id) });
 });
 
 // PUT /documents/company/:id
@@ -164,12 +183,18 @@ const updateCompanyDoc = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid id');
   const { name, details, share_departments, share_employees, share_userlevel, attachment, valid_until } = req.body;
-  await prisma.$executeRawUnsafe(
-    `UPDATE companydocuments SET name=?, details=?, share_departments=?, share_employees=?, share_userlevel=?, attachment=?, valid_until=? WHERE id=?`,
-    name, details || null,
-    share_departments || null, share_employees || null, share_userlevel || null,
-    attachment || null, valid_until || null, id
-  );
+  await prisma.companydocuments.updateMany({
+    where: { id },
+    data: {
+      name,
+      details:           details || null,
+      share_departments: share_departments || null,
+      share_employees:   share_employees || null,
+      share_userlevel:   share_userlevel || null,
+      attachment:        attachment || null,
+      valid_until:       valid_until ? new Date(valid_until) : null,
+    },
+  });
   respond.ok(res, 'Company document updated');
 });
 
@@ -177,9 +202,8 @@ const updateCompanyDoc = asyncHandler(async (req, res) => {
 const deleteCompanyDoc = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid id');
-  await prisma.$executeRawUnsafe(
-    `UPDATE companydocuments SET status='Archived' WHERE id=?`, id
-  );
+  // Soft-delete: 'Inactive' is the valid enum archive state (the old raw 'Archived' stored as '').
+  await prisma.companydocuments.updateMany({ where: { id }, data: { status: 'Inactive' } });
   respond.ok(res, 'Company document deleted');
 });
 
@@ -188,28 +212,35 @@ const deleteCompanyDoc = asyncHandler(async (req, res) => {
 // Upsert a document type by name and return its ID
 async function resolveDocTypeId(name) {
   if (!name) return null;
-  const existing = await prisma.$queryRawUnsafe(
-    'SELECT id FROM documents WHERE name=? LIMIT 1', name
-  ).then(r => r[0]).catch(() => null);
+  const existing = await prisma.documents
+    .findFirst({ where: { name }, select: { id: true } })
+    .catch(() => null);
   if (existing) return existing.id;
-  const newId = BigInt(Date.now());
-  await prisma.$executeRawUnsafe('INSERT INTO documents (id, name) VALUES (?,?)', newId, name);
-  return newId;
+  const created = await prisma.documents.create({ data: { name }, select: { id: true } });
+  return created.id;
 }
 
 // GET /documents/employee
 const getEmployeeDocs = asyncHandler(async (req, res) => {
-  const rows = await prisma.$queryRawUnsafe(`
-    SELECT ed.id, ed.employee, ed.date_added, ed.valid_until,
-           ed.place_of_issue, ed.details, ed.attachment, ed.expire_notification_last,
-           CONCAT(e.firstName, ' ', e.lastName) AS employee_name,
-           d.name AS document_type_name
-    FROM employeedocuments ed
-    JOIN employee e ON e.id = ed.employee
-    LEFT JOIN documents d ON d.id = ed.document
-    WHERE ed.status = 'Active'
-    ORDER BY ed.id DESC
-  `).catch(() => []);
+  // employeedocuments INNER JOIN employee (name) LEFT JOIN documents (type name), status Active.
+  const docs = await prisma.employeedocuments.findMany({
+    where: { status: 'Active' },
+    orderBy: { id: 'desc' },
+    select: {
+      id: true, employee: true, date_added: true, valid_until: true,
+      place_of_issue: true, details: true, attachment: true, expire_notification_last: true, document: true,
+    },
+  }).catch(() => []);
+
+  const empMap  = await employeeNameMap(docs);
+  const typeMap = await documentTypeMap(docs);
+  const rows = docs
+    .filter(d => empMap.has(String(d.employee)))                 // INNER JOIN: only docs with an employee
+    .map(({ document, ...d }) => ({
+      ...d,
+      employee_name:      empMap.get(String(d.employee)),
+      document_type_name: typeMap.get(String(document))?.name ?? null,
+    }));
   respond.ok(res, 'Employee documents', s(rows));
 });
 
@@ -218,15 +249,19 @@ const createEmployeeDoc = asyncHandler(async (req, res) => {
   const { employee, documentType, dateOfIssue, placeOfIssue, expiryDate, details, attachment } = req.body;
   if (!employee) return respond.badReq(res, 'Employee is required');
   const docTypeId = await resolveDocTypeId(documentType);
-  const id = BigInt(Date.now());
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO employeedocuments (id, employee, document, date_added, valid_until, place_of_issue, details, attachment, status)
-     VALUES (?,?,?,?,?,?,?,?,'Active')`,
-    id, toBigInt(employee), docTypeId,
-    dateOfIssue || null, expiryDate || null,
-    placeOfIssue || null, details || null, attachment || null
-  );
-  respond.ok(res, 'Employee document created', { id: String(id) });
+  const created = await prisma.employeedocuments.create({
+    data: {
+      employee:       toBigInt(employee),
+      document:       docTypeId,
+      date_added:     dateOfIssue ? new Date(dateOfIssue) : new Date(),
+      valid_until:    expiryDate ? new Date(expiryDate) : null,
+      place_of_issue: placeOfIssue || null,
+      details:        details || null,
+      attachment:     attachment || null,
+      status:         'Active',
+    },
+  });
+  respond.ok(res, 'Employee document created', { id: String(created.id) });
 });
 
 // PUT /documents/employee/:id
@@ -235,14 +270,18 @@ const updateEmployeeDoc = asyncHandler(async (req, res) => {
   if (!id) return respond.badReq(res, 'Invalid id');
   const { employee, documentType, dateOfIssue, placeOfIssue, expiryDate, details, attachment } = req.body;
   const docTypeId = await resolveDocTypeId(documentType);
-  await prisma.$executeRawUnsafe(
-    `UPDATE employeedocuments
-     SET employee=?, document=?, date_added=?, valid_until=?, place_of_issue=?, details=?, attachment=?
-     WHERE id=?`,
-    toBigInt(employee), docTypeId,
-    dateOfIssue || null, expiryDate || null,
-    placeOfIssue || null, details || null, attachment || null, id
-  );
+  await prisma.employeedocuments.updateMany({
+    where: { id },
+    data: {
+      employee:       toBigInt(employee),
+      document:       docTypeId,
+      date_added:     dateOfIssue ? new Date(dateOfIssue) : undefined, // required column — leave as-is if absent
+      valid_until:    expiryDate ? new Date(expiryDate) : null,
+      place_of_issue: placeOfIssue || null,
+      details:        details || null,
+      attachment:     attachment || null,
+    },
+  });
   respond.ok(res, 'Employee document updated');
 });
 
@@ -250,9 +289,8 @@ const updateEmployeeDoc = asyncHandler(async (req, res) => {
 const deleteEmployeeDoc = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid id');
-  await prisma.$executeRawUnsafe(
-    `UPDATE employeedocuments SET status='Archived' WHERE id=?`, id
-  );
+  // Soft-delete: 'Inactive' is the valid enum archive state (the old raw 'Archived' stored as '').
+  await prisma.employeedocuments.updateMany({ where: { id }, data: { status: 'Inactive' } });
   respond.ok(res, 'Employee document deleted');
 });
 
@@ -262,34 +300,40 @@ const notifyExpiredDocs = asyncHandler(async (req, res) => {
   const { sendDocumentExpiryEmail } = require('../helpers/emailHelper');
   const today = new Date().toISOString().slice(0, 10);
 
-  const expired = await prisma.$queryRawUnsafe(`
-    SELECT ed.id, ed.valid_until,
-           e.firstName, e.lastName, e.work_email,
-           d.name AS document_type_name
-    FROM employeedocuments ed
-    JOIN employee e ON e.id = ed.employee
-    LEFT JOIN documents d ON d.id = ed.document
-    WHERE ed.status = 'Active'
-      AND ed.valid_until IS NOT NULL
-      AND ed.valid_until <= ?
-      AND ed.expire_notification_last IS NULL
-  `, today).catch(() => []);
+  // Active docs past their valid_until that haven't been notified yet (INNER JOIN employee for contact,
+  // LEFT JOIN documents for the type name — both resolved via batched lookups below).
+  const expired = await prisma.employeedocuments.findMany({
+    where: {
+      status:                   'Active',
+      valid_until:              { not: null, lte: new Date(today) },
+      expire_notification_last: null,
+    },
+    select: { id: true, valid_until: true, employee: true, document: true },
+  }).catch(() => []);
+
+  const empRows = await prisma.employee
+    .findMany({ where: { id: { in: [...new Set(expired.map(d => d.employee))] } },
+      select: { id: true, firstName: true, lastName: true, work_email: true } })
+    .catch(() => []);
+  const empMap  = new Map(empRows.map(e => [String(e.id), e]));
+  const typeMap = await documentTypeMap(expired);
 
   let sent = 0;
   for (const doc of expired) {
-    if (doc.work_email) {
+    const emp = empMap.get(String(doc.employee));
+    if (!emp) continue;                                         // INNER JOIN employee
+    if (emp.work_email) {
       await sendDocumentExpiryEmail({
-        to:           doc.work_email,
-        employeeName: `${doc.firstName ?? ''} ${doc.lastName ?? ''}`.trim(),
-        docType:      doc.document_type_name || 'Document',
+        to:           emp.work_email,
+        employeeName: `${emp.firstName ?? ''} ${emp.lastName ?? ''}`.trim(),
+        docType:      typeMap.get(String(doc.document))?.name || 'Document',
         expiryDate:   doc.valid_until,
       }).catch(() => {});
       sent++;
     }
-    await prisma.$executeRawUnsafe(
-      'UPDATE employeedocuments SET expire_notification_last=? WHERE id=?',
-      Math.floor(Date.now() / 1000), toBigInt(doc.id)
-    ).catch(() => {});
+    await prisma.employeedocuments
+      .updateMany({ where: { id: doc.id }, data: { expire_notification_last: Math.floor(Date.now() / 1000) } })
+      .catch(() => {});
   }
 
   respond.ok(res, tmsg('document.notified_expired', { sent, total: expired.length }), { notified: sent, total: expired.length });

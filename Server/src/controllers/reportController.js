@@ -20,9 +20,9 @@ exports.tablePdf = asyncHandler(async (req, res) => {
   if (rows.length > 5000) return respond.badReq(res, 'Report too large — maximum 5000 rows');
 
   // Branding from payslip settings (same source the payslip PDF uses)
-  const [s] = await prisma.$queryRawUnsafe(
-    `SELECT company_name, accent_color FROM payslip_settings LIMIT 1`
-  ).catch(() => []);
+  const s = await prisma.payslip_settings.findFirst({
+    select: { company_name: true, accent_color: true },
+  }).catch(() => null);
   const company = s?.company_name || 'HR Report';
   const [acR, acG, acB] = hexToRgb(s?.accent_color || '#2563eb');
 
