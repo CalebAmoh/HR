@@ -58,7 +58,7 @@ export function Login({ onLogin }: LoginProps) {
         <div className="relative z-10">
           <div className="flex items-center gap-3 mb-16">
             <div className="w-10 h-10 rounded bg-gradient-to-br from-[#0066b3] to-[#0099ff] flex items-center justify-center shadow-lg border border-white/20">
-              <span className="text-white font-bold text-xl tracking-tight">SI</span>
+              <span className="text-white font-bold text-xl tracking-tight">HR</span>
             </div>
             <span className="text-2xl font-bold tracking-wide">
               SISL <span className="font-normal text-[#99b3c6]">Portal</span>
