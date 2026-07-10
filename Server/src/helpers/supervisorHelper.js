@@ -19,11 +19,9 @@ async function reassignPendingSupervisorWork(employeeId, newSupervisorId) {
   const newSup = newSupervisorId != null ? BigInt(newSupervisorId) : null;
 
   try {
-    await prisma.$executeRawUnsafe(
-      `UPDATE performance_review SET supervisor = ?, updated_at = NOW()
-       WHERE employee = ? AND status IN ('Not Started', 'Self Assessment')`,
-      newSup, empId
-    );
+    await prisma.$executeRaw`
+      UPDATE performance_review SET supervisor = ${newSup}, updated_at = NOW()
+       WHERE employee = ${empId} AND status IN ('Not Started', 'Self Assessment')`;
   } catch { /* non-critical — never block the employee update */ }
 }
 

@@ -4,7 +4,8 @@
 //
 // Safety: ALL logging is wrapped — if anything here throws, the original write still returns
 // normally (audit logging must never break an operation). Recursion is avoided because the audit
-// INSERT uses $executeRawUnsafe (action 'executeRawUnsafe', no model) which this middleware skips.
+// INSERT is a raw query (no `model`), so the `!model` guard below skips it — this holds for any
+// raw variant ($executeRaw / $executeRawUnsafe alike).
 const { currentActor } = require('../middleware/requestContext');
 
 // Models we never auto-audit: the audit table itself, auth/session noise, embeddings, notifications.
@@ -113,15 +114,13 @@ function makeAuditMiddleware(prisma) {
       }
 
       const entId = principal && principal.id != null ? String(principal.id) : null;
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO auditlogs (module, action, entity_id, entity_name, user_id, user_name, ip_address, details)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        moduleLabel(model), action, entId, entityName(principal),
-        userId != null ? BigInt(userId) : null,
-        userName != null ? String(userName) : null,
-        ip != null ? String(ip) : null,
-        details != null ? jsonStringifySafe(details) : null,
-      );
+      await prisma.$executeRaw`
+        INSERT INTO auditlogs (module, action, entity_id, entity_name, user_id, user_name, ip_address, details)
+         VALUES (${moduleLabel(model)}, ${action}, ${entId}, ${entityName(principal)},
+                 ${userId != null ? BigInt(userId) : null},
+                 ${userName != null ? String(userName) : null},
+                 ${ip != null ? String(ip) : null},
+                 ${details != null ? jsonStringifySafe(details) : null})`;
     } catch (e) {
       console.error('[audit middleware]', e.message);
     }

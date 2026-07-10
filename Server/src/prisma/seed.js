@@ -35,109 +35,78 @@ const ROLES = [
 ];
 
 // ─────────────────────────────────────────────────────────
-// Permissions grouped by feature area
-// Groups match UserCreationForm.tsx PERMISSION_GROUPS exactly
+// Permissions grouped by feature area.
+// MUST stay in sync with Client/lib/permissionGroups.ts (the single source of truth for the app's
+// permission keys). super-admin receives every key in this object.
 // ─────────────────────────────────────────────────────────
 const PERMISSIONS = {
+  'Dashboard': ['view_dashboard'],
 
-  // ── Users & Access ──────────────────────────────────────
   'Users & Access': [
-    'view_users',
-    'create_users',
-    'edit_users',
-    'deactivate_users',
-    'activate_users',
-    'change_user_password',
-    'manage_roles',
+    'view_users', 'create_users', 'edit_users', 'deactivate_users',
+    'activate_users', 'change_user_password', 'manage_roles',
   ],
 
-  // ── Employees ───────────────────────────────────────────
   'Employees': [
-    'view_employees',
-    'create_employees',
-    'edit_employees',
-    'approve_employees',
-    'change_employee_status',
+    'view_employees', 'create_employees', 'edit_employees',
+    'approve_employees', 'change_employee_status', 'manage_onboarding',
   ],
 
-  // ── Employee Relations (tabs) ───────────────────────────
   'Employee Relations': [
-    'manage_skills',
-    'manage_certifications',
-    'manage_education',
-    'manage_languages',
-    'manage_dependents',
-    'manage_emergency_contacts',
+    'manage_skills', 'manage_certifications', 'manage_education',
+    'manage_languages', 'manage_dependents', 'manage_emergency_contacts',
   ],
 
-  // ── Company ─────────────────────────────────────────────
   'Company': [
-    'view_company_structure',
-    'create_company_structure',
-    'edit_company_structure',
-    'delete_company_structure',
+    'view_company_structure', 'create_company_structure',
+    'edit_company_structure', 'delete_company_structure',
   ],
 
-  // ── Documents ───────────────────────────────────────────
   'Documents': [
-    'view_documents',
-    'create_documents',
-    'edit_documents',
-    'delete_documents',
+    'view_documents', 'create_documents', 'edit_documents', 'delete_documents',
   ],
 
-  // ── Leave Management ────────────────────────────────────
-  'Leave': [],
-
-  // ── Leave Setup ─────────────────────────────────────────
   'Leave Setup': [
-    'view_leave_setup',
-    'manage_leave_types',
-    'manage_leave_periods',
-    'manage_holidays',
-    'manage_work_week',
-    'manage_leave_groups',
-    'manage_leave_rules',
-    'manage_leave_approvals',
+    'view_leave_setup', 'manage_leave_types', 'manage_leave_periods', 'manage_holidays',
+    'manage_work_week', 'manage_leave_groups', 'manage_leave_rules', 'manage_leave_approvals',
   ],
 
-  // ── Salary ──────────────────────────────────────────────
   'Salary': [
-    'view_salary_setup',
-    'manage_salary_component_types',
-    'manage_salary_components',
-    'manage_employee_salary_components',
-    'manage_notch_setup',
-    'manage_payment_types',
+    'view_salary_setup', 'manage_salary_component_types', 'manage_salary_components',
+    'manage_employee_salary_components', 'manage_notch_setup', 'manage_payment_types',
     'manage_notch_movements',
   ],
 
-  // ── Payroll ─────────────────────────────────────────────
   'Payroll': [
-    'view_payroll',
-    'manage_payroll_employees',
-    'process_payroll',
-    'approve_payroll',
-    'export_payroll_reports',
-    'manage_payroll_columns',
-    'manage_calculation_groups',
+    'view_payroll', 'manage_payroll_employees', 'process_payroll', 'approve_payroll',
+    'export_payroll_reports', 'manage_payroll_columns', 'manage_calculation_groups',
     'manage_report_templates',
   ],
 
-  // ── Reports ─────────────────────────────────────────────
-  'Reports': [
-    'generate_reports',
-    'export_reports',
+  'Reports': ['generate_reports', 'export_reports'],
+
+  'System': [
+    'view_app_settings', 'manage_app_settings', 'view_settings', 'manage_settings', 'view_audit_logs',
   ],
 
-  // ── System (App Settings + Settings pages + Audit logs) ──
-  'System': [
-    'view_app_settings',
-    'manage_app_settings',
-    'view_settings',
-    'manage_settings',
-    'view_audit_logs',
+  'Recruitment': [
+    'view_recruitment', 'manage_jobs', 'manage_candidates', 'manage_applications', 'manage_interviews',
   ],
+
+  'Performance': [
+    'view_performance', 'create_performance', 'delete_performance', 'review_performance',
+  ],
+
+  'Medical': [
+    'view_medical', 'create_medical', 'edit_medical', 'delete_medical',
+    'approve_medical', 'manage_medical_limits', 'manage_hospitals', 'reset_medical_utilization',
+  ],
+
+  'Attendance': ['view_attendance', 'manage_attendance'],
+
+  'Training': ['view_training', 'create_training', 'delete_training', 'approve_training'],
+
+  'AI Assistant': ['use_ai_assistant', 'view_ai_insights'],
 };
 
 const ALL_PERMISSIONS = Object.values(PERMISSIONS).flat();
@@ -146,9 +115,11 @@ const ALL_PERMISSIONS = Object.values(PERMISSIONS).flat();
 // Role → permission assignments
 // ─────────────────────────────────────────────────────────
 const ROLE_PERMISSIONS = {
+  // super-admin gets EVERY permission that exists.
   'super-admin': ALL_PERMISSIONS,
 
   'admin': [
+    ...PERMISSIONS['Dashboard'],
     // User & role management (manage_roles lives in Users & Access)
     ...PERMISSIONS['Users & Access'],
     // System, settings & audit
@@ -158,6 +129,7 @@ const ROLE_PERMISSIONS = {
   ],
 
   'hr-manager': [
+    ...PERMISSIONS['Dashboard'],
     // Full employee lifecycle
     ...PERMISSIONS['Employees'],
     ...PERMISSIONS['Employee Relations'],
@@ -165,8 +137,7 @@ const ROLE_PERMISSIONS = {
     ...PERMISSIONS['Company'],
     // Documents
     ...PERMISSIONS['Documents'],
-    // Leave (all)
-    ...PERMISSIONS['Leave'],
+    // Leave
     ...PERMISSIONS['Leave Setup'],
     // Salary setup
     ...PERMISSIONS['Salary'],
@@ -174,11 +145,18 @@ const ROLE_PERMISSIONS = {
     ...PERMISSIONS['Payroll'],
     // Reports
     ...PERMISSIONS['Reports'],
+    // HR operational areas
+    ...PERMISSIONS['Recruitment'],
+    ...PERMISSIONS['Performance'],
+    ...PERMISSIONS['Medical'],
+    ...PERMISSIONS['Attendance'],
+    ...PERMISSIONS['Training'],
     // Read-only user/role access
     'view_users',
   ],
 
   'employee': [
+    ...PERMISSIONS['Dashboard'],
     'view_documents',
   ],
 };
@@ -186,44 +164,38 @@ const ROLE_PERMISSIONS = {
 // ─────────────────────────────────────────────────────────
 // Ensure tables the login controller needs actually exist.
 // ─────────────────────────────────────────────────────────
+// Legacy defensive schema patch (MySQL-dialect DDL). On a schema managed by `prisma db push`
+// or migrations (both MySQL and Postgres), these tables/columns already exist — so every
+// statement is best-effort and its failure is ignored. The backtick identifiers make these
+// MySQL-only; on Postgres they simply error-and-skip (the schema is already in place).
 async function ensureTables() {
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS \`employee\` (
-      \`id\`        BIGINT       NOT NULL AUTO_INCREMENT,
-      \`firstName\` VARCHAR(100) NOT NULL DEFAULT '',
-      \`lastName\`  VARCHAR(100) NOT NULL DEFAULT '',
-      \`email\`     VARCHAR(100) NOT NULL DEFAULT '',
-      \`phone\`     VARCHAR(20)  NULL,
-      \`status\`    CHAR(1)      NOT NULL DEFAULT '1',
-      PRIMARY KEY (\`id\`),
-      UNIQUE INDEX \`employee_email_unique\` (\`email\`)
-    ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-  `);
-
-  const userColumns = [
-    '`employeeId` BIGINT NULL',
-    '`posted_by`  BIGINT NULL DEFAULT 0',
-    '`status`     CHAR(1) NOT NULL DEFAULT \'1\'',
+  const stmts = [
+    `CREATE TABLE IF NOT EXISTS \`employee\` (
+       \`id\` BIGINT NOT NULL AUTO_INCREMENT,
+       \`firstName\` VARCHAR(100) NOT NULL DEFAULT '',
+       \`lastName\` VARCHAR(100) NOT NULL DEFAULT '',
+       \`email\` VARCHAR(100) NOT NULL DEFAULT '',
+       \`phone\` VARCHAR(20) NULL,
+       \`status\` CHAR(1) NOT NULL DEFAULT '1',
+       PRIMARY KEY (\`id\`),
+       UNIQUE INDEX \`employee_email_unique\` (\`email\`)
+     ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    'ALTER TABLE `users` ADD COLUMN `employeeId` BIGINT NULL',
+    'ALTER TABLE `users` ADD COLUMN `posted_by`  BIGINT NULL DEFAULT 0',
+    "ALTER TABLE `users` ADD COLUMN `status` CHAR(1) NOT NULL DEFAULT '1'",
+    `CREATE TABLE IF NOT EXISTS \`refresh_tokens\` (
+       \`id\` BIGINT NOT NULL AUTO_INCREMENT,
+       \`user_id\` BIGINT NOT NULL,
+       \`token\` TEXT NOT NULL,
+       \`expires_at\` DATETIME NOT NULL,
+       \`revoked\` BOOLEAN NOT NULL DEFAULT false,
+       \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       PRIMARY KEY (\`id\`)
+     ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
   ];
-  for (const col of userColumns) {
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE \`users\` ADD COLUMN ${col}`);
-    } catch {
-      // Column already exists — safe to ignore
-    }
+  for (const sql of stmts) {
+    try { await prisma.$executeRawUnsafe(sql); } catch { /* already exists / not applicable on this provider */ }
   }
-
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS \`refresh_tokens\` (
-      \`id\`         BIGINT   NOT NULL AUTO_INCREMENT,
-      \`user_id\`    BIGINT   NOT NULL,
-      \`token\`      TEXT     NOT NULL,
-      \`expires_at\` DATETIME NOT NULL,
-      \`revoked\`    BOOLEAN  NOT NULL DEFAULT false,
-      \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (\`id\`)
-    ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-  `);
 }
 
 async function main() {
@@ -289,54 +261,39 @@ async function main() {
   // ── 4. Seed super-admin employee record ──────────────
   console.log('\n👑 Seeding super-admin user...');
 
-  const existingEmp = await prisma.$queryRawUnsafe(
-    'SELECT id FROM `employee` WHERE email = ? LIMIT 1',
-    'superadmin@usg.com'
-  );
-
-  let empId;
-  if (existingEmp.length > 0) {
-    empId = existingEmp[0].id;
-    console.log('   ⚠ Employee record already exists — skipping');
-  } else {
-    await prisma.$executeRawUnsafe(
-      'INSERT INTO `employee` (firstName, lastName, email, phone, status) VALUES (?, ?, ?, ?, ?)',
-      'Super', 'Admin', 'superadmin@usg.com', '0000000000', '1'
-    );
-    const [newEmp] = await prisma.$queryRawUnsafe(
-      'SELECT id FROM `employee` WHERE email = ? LIMIT 1',
-      'superadmin@usg.com'
-    );
-    empId = newEmp.id;
-    console.log(`   ✔ Employee created (id: ${empId})`);
-  }
+  // Portable (works on MySQL + Postgres): email is @unique, so upsert on it.
+  const emp = await prisma.employee.upsert({
+    where:  { email: 'superadmin@usg.com' },
+    update: { firstName: 'Super', lastName: 'Admin', status: '1' },
+    create: { firstName: 'Super', lastName: 'Admin', email: 'superadmin@usg.com', phone: '0000000000', status: '1' },
+    select: { id: true },
+  });
+  const empId = emp.id;
+  console.log(`   ✔ Employee ready (id: ${empId})`);
 
   // ── 5. Seed super-admin users record ─────────────────
   const salt           = await bcrypt.genSalt(10);
   const hashedPassword = await bcrypt.hash('pass1234', salt);
 
-  const existingUser = await prisma.$queryRawUnsafe(
-    'SELECT id FROM `users` WHERE username = ? LIMIT 1',
-    'superadmin@usg.com'
-  );
+  // Portable: find-then-update/create (username has no unique constraint in the schema).
+  const existingUser = await prisma.users.findFirst({
+    where: { username: 'superadmin@usg.com' },
+    select: { id: true },
+  });
 
   let userId;
-  if (existingUser.length > 0) {
-    userId = existingUser[0].id;
-    await prisma.$executeRawUnsafe(
-      'UPDATE `users` SET password = ?, employeeId = ?, status = ? WHERE id = ?',
-      hashedPassword, empId, '1', userId
-    );
+  if (existingUser) {
+    userId = existingUser.id;
+    await prisma.users.update({
+      where: { id: userId },
+      data:  { password: hashedPassword, employeeId: empId, status: '1' },
+    });
     console.log('   ✔ User already existed — password and employeeId reset');
   } else {
-    await prisma.$executeRawUnsafe(
-      'INSERT INTO `users` (username, password, employeeId, posted_by, status) VALUES (?, ?, ?, ?, ?)',
-      'superadmin@usg.com', hashedPassword, empId, 0, '1'
-    );
-    const [newUser] = await prisma.$queryRawUnsafe(
-      'SELECT id FROM `users` WHERE username = ? LIMIT 1',
-      'superadmin@usg.com'
-    );
+    const newUser = await prisma.users.create({
+      data: { username: 'superadmin@usg.com', password: hashedPassword, employeeId: empId, posted_by: 0n, status: '1' },
+      select: { id: true },
+    });
     userId = newUser.id;
     console.log(`   ✔ User created (id: ${userId})`);
   }

@@ -20,14 +20,16 @@ const RATING_SCALE    = [
 ];
 
 const { toBigInt, s } = require('../helpers/controllerHelpers');
+const { Prisma } = require('@prisma/client'); // Prisma.sql / Prisma.join for portable dynamic SQL
 
-async function query(sql, ...params) {
-  const rows = await prisma.$queryRawUnsafe(sql, ...params);
-  return s(rows);
+// Tagged-template query helpers — portable (Prisma emits the right placeholders per provider).
+// Call as query`SELECT ... ${value}` (values become bound parameters).
+async function query(strings, ...values) {
+  return s(await prisma.$queryRaw(strings, ...values));
 }
 
-async function exec(sql, ...params) {
-  return prisma.$executeRawUnsafe(sql, ...params);
+async function exec(strings, ...values) {
+  return prisma.$executeRaw(strings, ...values);
 }
 
 const now = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -36,10 +38,7 @@ async function enrichEmployees(rows, field = 'employee') {
   if (!rows.length) return rows;
   const ids = [...new Set(rows.map(r => String(r[field])).filter(Boolean))];
   const emps = ids.length
-    ? await query(
-        `SELECT id, firstName, lastName, employee_id AS emp_code, work_email, email FROM employee WHERE id IN (${ids.map(() => '?').join(',')})`,
-        ...ids.map(toBigInt)
-      )
+    ? await query`SELECT id, firstName, lastName, employee_id AS emp_code, work_email, email FROM employee WHERE id IN (${Prisma.join(ids.map(toBigInt))})`
     : [];
   const em = Object.fromEntries(emps.map(e => [String(e.id), e]));
   return rows.map(r => {
@@ -72,18 +71,17 @@ const getPerformanceMeta = asyncHandler(async (_req, res) => {
 
 // GET /performance/cycles — list all performance cycles with per-cycle review counts (total and completed).
 const getAllCycles = asyncHandler(async (_req, res) => {
-  const cycles = await query(`SELECT * FROM performance_cycle ORDER BY created_at DESC`);
+  const cycles = await query`SELECT * FROM performance_cycle ORDER BY created_at DESC`;
   if (!cycles.length) return respond.ok(res, 'Cycles retrieved', []);
 
   const ids = cycles.map(c => c.id);
-  const stats = await query(
-    `SELECT cycle_id,
+  const stats = await query`
+    SELECT cycle_id,
        COUNT(*) AS total,
-       CAST(SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) AS UNSIGNED) AS completed
-     FROM performance_review WHERE cycle_id IN (${ids.map(() => '?').join(',')}) GROUP BY cycle_id`,
-    ...ids.map(toBigInt)
-  );
-  const sm = Object.fromEntries(stats.map(s => [String(s.cycle_id), s]));
+       SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) AS completed
+     FROM performance_review WHERE cycle_id IN (${Prisma.join(ids.map(toBigInt))}) GROUP BY cycle_id`;
+  // COUNT/SUM come back as BigInt (MySQL) or string/BigInt (PG); normalise to plain numbers.
+  const sm = Object.fromEntries(stats.map(st => [String(st.cycle_id), { total: Number(st.total) || 0, completed: Number(st.completed) || 0 }]));
 
   respond.ok(res, 'Cycles retrieved', cycles.map(c => ({
     ...c,
@@ -95,19 +93,17 @@ const getAllCycles = asyncHandler(async (_req, res) => {
 const getCycleById = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [cycle] = await query(`SELECT * FROM performance_cycle WHERE id = ? LIMIT 1`, id);
+  const [cycle] = await query`SELECT * FROM performance_cycle WHERE id = ${id} LIMIT 1`;
   if (!cycle) return respond.notFound(res, 'Cycle not found');
 
-  const reviews = await query(
-    `SELECT pr.*, e.firstName, e.lastName, e.employee_id AS emp_code,
+  const reviews = await query`
+    SELECT pr.*, e.firstName, e.lastName, e.employee_id AS emp_code,
             s.firstName AS sup_first, s.lastName AS sup_last
      FROM performance_review pr
      LEFT JOIN employee e ON e.id = pr.employee
      LEFT JOIN employee s ON s.id = pr.supervisor
-     WHERE pr.cycle_id = ?
-     ORDER BY e.firstName, e.lastName`,
-    id
-  );
+     WHERE pr.cycle_id = ${id}
+     ORDER BY e.firstName, e.lastName`;
 
   respond.ok(res, 'Cycle retrieved', {
     ...cycle,
@@ -129,14 +125,11 @@ const createCycle = asyncHandler(async (req, res) => {
 
   const createdBy = req.user?.id ? BigInt(req.user.id) : null;
 
-  await exec(
-    `INSERT INTO performance_cycle (name, type, period_start, period_end, self_due, supervisor_due, hr_due, status, notes, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'Draft', ?, ?, ?, ?)`,
-    name.trim(), type, period_start, period_end,
-    self_due || null, supervisor_due || null, hr_due || null,
-    notes?.trim() || null, createdBy, now(), now()
-  );
-  const [created] = await query(`SELECT * FROM performance_cycle ORDER BY id DESC LIMIT 1`);
+  await exec`
+    INSERT INTO performance_cycle (name, type, period_start, period_end, self_due, supervisor_due, hr_due, status, notes, created_by, created_at, updated_at)
+     VALUES (${name.trim()}, ${type}, ${period_start}, ${period_end}, ${self_due || null}, ${supervisor_due || null}, ${hr_due || null},
+             'Draft', ${notes?.trim() || null}, ${createdBy}, ${now()}, ${now()})`;
+  const [created] = await query`SELECT * FROM performance_cycle ORDER BY id DESC LIMIT 1`;
 
   logActivity({
     module: 'Performance', action: 'create_cycle',
@@ -152,24 +145,24 @@ const createCycle = asyncHandler(async (req, res) => {
 const updateCycle = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [ex] = await query(`SELECT * FROM performance_cycle WHERE id = ? LIMIT 1`, id);
+  const [ex] = await query`SELECT * FROM performance_cycle WHERE id = ${id} LIMIT 1`;
   if (!ex) return respond.notFound(res, 'Cycle not found');
 
   const { name, type, period_start, period_end, self_due, supervisor_due, hr_due, notes } = req.body;
 
-  await exec(
-    `UPDATE performance_cycle SET name=?, type=?, period_start=?, period_end=?, self_due=?, supervisor_due=?, hr_due=?, notes=?, updated_at=? WHERE id=?`,
-    name?.trim()       ?? ex.name,
-    type               ?? ex.type,
-    period_start       ?? ex.period_start,
-    period_end         ?? ex.period_end,
-    self_due       != null ? (self_due || null)       : ex.self_due,
-    supervisor_due != null ? (supervisor_due || null) : ex.supervisor_due,
-    hr_due         != null ? (hr_due || null)         : ex.hr_due,
-    notes          != null ? (notes?.trim() || null)  : ex.notes,
-    now(), id
-  );
-  const [updated] = await query(`SELECT * FROM performance_cycle WHERE id = ? LIMIT 1`, id);
+  await exec`
+    UPDATE performance_cycle SET
+      name=${name?.trim() ?? ex.name},
+      type=${type ?? ex.type},
+      period_start=${period_start ?? ex.period_start},
+      period_end=${period_end ?? ex.period_end},
+      self_due=${self_due != null ? (self_due || null) : ex.self_due},
+      supervisor_due=${supervisor_due != null ? (supervisor_due || null) : ex.supervisor_due},
+      hr_due=${hr_due != null ? (hr_due || null) : ex.hr_due},
+      notes=${notes != null ? (notes?.trim() || null) : ex.notes},
+      updated_at=${now()}
+     WHERE id=${id}`;
+  const [updated] = await query`SELECT * FROM performance_cycle WHERE id = ${id} LIMIT 1`;
   respond.ok(res, 'Cycle updated', updated);
 });
 
@@ -177,10 +170,10 @@ const updateCycle = asyncHandler(async (req, res) => {
 const deleteCycle = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [ex] = await query(`SELECT status FROM performance_cycle WHERE id = ? LIMIT 1`, id);
+  const [ex] = await query`SELECT status FROM performance_cycle WHERE id = ${id} LIMIT 1`;
   if (!ex) return respond.notFound(res, 'Cycle not found');
   if (ex.status !== 'Draft') return respond.badReq(res, 'Only Draft cycles can be deleted');
-  await exec(`DELETE FROM performance_cycle WHERE id = ?`, id);
+  await exec`DELETE FROM performance_cycle WHERE id = ${id}`;
   respond.ok(res, 'Cycle deleted');
 });
 
@@ -188,10 +181,10 @@ const deleteCycle = asyncHandler(async (req, res) => {
 const closeCycle = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [ex] = await query(`SELECT status FROM performance_cycle WHERE id = ? LIMIT 1`, id);
+  const [ex] = await query`SELECT status FROM performance_cycle WHERE id = ${id} LIMIT 1`;
   if (!ex) return respond.notFound(res, 'Cycle not found');
   if (ex.status !== 'Active') return respond.badReq(res, 'Only Active cycles can be closed');
-  await exec(`UPDATE performance_cycle SET status='Closed', updated_at=? WHERE id=?`, now(), id);
+  await exec`UPDATE performance_cycle SET status='Closed', updated_at=${now()} WHERE id=${id}`;
   logActivity({ module: 'Performance', action: 'close_cycle', entityId: String(id), ...fromReq(req) });
   respond.ok(res, 'Cycle closed');
 });
@@ -208,10 +201,7 @@ const addEmployeesToCycle = asyncHandler(async (req, res) => {
   // Bulk-fetch supervisorId from employee records
   const empIds = assignments.map(a => toBigInt(a.employee_id)).filter(Boolean);
   const empRows = empIds.length
-    ? await query(
-        `SELECT id, supervisorId FROM employee WHERE id IN (${empIds.map(() => '?').join(',')})`,
-        ...empIds
-      )
+    ? await query`SELECT id, supervisorId FROM employee WHERE id IN (${Prisma.join(empIds)})`
     : [];
   const supMap = Object.fromEntries(empRows.map(e => [String(e.id), e.supervisorId ?? null]));
 
@@ -221,13 +211,15 @@ const addEmployeesToCycle = asyncHandler(async (req, res) => {
     const empId = toBigInt(a.employee_id);
     if (!empId) continue;
     const supId = toBigInt(supMap[String(empId)]);
-    try {
-      await exec(
-        `INSERT IGNORE INTO performance_review (cycle_id, employee, supervisor, status, created_at, updated_at) VALUES (?, ?, ?, 'Not Started', ?, ?)`,
-        cycleId, empId, supId ?? null, ts, ts
-      );
-      added++;
-    } catch { /* duplicate — skip */ }
+    // Portable "INSERT IGNORE": only insert when no review already exists for this cycle+employee.
+    const affected = await exec`
+      INSERT INTO performance_review (cycle_id, employee, supervisor, status, created_at, updated_at)
+      SELECT ${cycleId}, ${empId}, ${supId ?? null}, 'Not Started', ${ts}, ${ts}
+      FROM (SELECT 1) AS _t
+      WHERE NOT EXISTS (
+        SELECT 1 FROM performance_review WHERE cycle_id = ${cycleId} AND employee = ${empId}
+      )`;
+    if (affected > 0) added++;
   }
   respond.ok(res, tmsg('performance.added_to_cycle', { count: added }));
 });
@@ -238,11 +230,11 @@ const removeEmployeeFromCycle = asyncHandler(async (req, res) => {
   const empId   = toBigInt(req.params.employeeId);
   if (!cycleId || !empId) return respond.badReq(res, 'Invalid ID');
 
-  const [cycle] = await query(`SELECT status FROM performance_cycle WHERE id = ? LIMIT 1`, cycleId);
+  const [cycle] = await query`SELECT status FROM performance_cycle WHERE id = ${cycleId} LIMIT 1`;
   if (!cycle) return respond.notFound(res, 'Cycle not found');
   if (cycle.status !== 'Draft') return respond.badReq(res, 'Employees can only be removed from Draft cycles');
 
-  await exec(`DELETE FROM performance_review WHERE cycle_id = ? AND employee = ?`, cycleId, empId);
+  await exec`DELETE FROM performance_review WHERE cycle_id = ${cycleId} AND employee = ${empId}`;
   respond.ok(res, 'Employee removed from cycle');
 });
 
@@ -251,18 +243,17 @@ const removeEmployeeFromCycle = asyncHandler(async (req, res) => {
 const activateCycle = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [cycle] = await query(`SELECT * FROM performance_cycle WHERE id = ? LIMIT 1`, id);
+  const [cycle] = await query`SELECT * FROM performance_cycle WHERE id = ${id} LIMIT 1`;
   if (!cycle) return respond.notFound(res, 'Cycle not found');
   if (cycle.status === 'Active') return respond.badReq(res, 'Cycle is already active');
 
-  await exec(`UPDATE performance_cycle SET status='Active', updated_at=? WHERE id=?`, now(), id);
+  await exec`UPDATE performance_cycle SET status='Active', updated_at=${now()} WHERE id=${id}`;
 
   // Notify all assigned employees
-  const reviews = await query(
-    `SELECT pr.employee, e.firstName, e.lastName, e.work_email, e.email
+  const reviews = await query`
+    SELECT pr.employee, e.firstName, e.lastName, e.work_email, e.email
      FROM performance_review pr LEFT JOIN employee e ON e.id = pr.employee
-     WHERE pr.cycle_id = ?`, id
-  );
+     WHERE pr.cycle_id = ${id}`;
   for (const r of reviews) {
     notifyEmployee(r.employee, {
       message: `Your performance review for "${cycle.name}" is open — complete your self-assessment`,
@@ -292,23 +283,22 @@ const activateCycle = asyncHandler(async (req, res) => {
 const getAllReviews = asyncHandler(async (req, res) => {
   const { cycle_id, status, employee_id, search, page = '1', limit = '25' } = req.query;
 
-  const cond = ['1=1']; const params = [];
-  if (cycle_id)    { cond.push('pr.cycle_id = ?'); params.push(toBigInt(cycle_id)); }
-  if (status)      { cond.push('pr.status = ?');   params.push(status); }
-  if (employee_id) { cond.push('pr.employee = ?'); params.push(toBigInt(employee_id)); }
+  const conds = [Prisma.sql`1=1`];
+  if (cycle_id)    conds.push(Prisma.sql`pr.cycle_id = ${toBigInt(cycle_id)}`);
+  if (status)      conds.push(Prisma.sql`pr.status = ${status}`);
+  if (employee_id) conds.push(Prisma.sql`pr.employee = ${toBigInt(employee_id)}`);
+  const where = Prisma.join(conds, ' AND ');
 
-  let rows = await query(
-    `SELECT pr.*, e.firstName, e.lastName, e.employee_id AS emp_code,
+  let rows = await query`
+    SELECT pr.*, e.firstName, e.lastName, e.employee_id AS emp_code,
             s.firstName AS sup_first, s.lastName AS sup_last,
             pc.name AS cycle_name
      FROM performance_review pr
      LEFT JOIN employee e ON e.id = pr.employee
      LEFT JOIN employee s ON s.id = pr.supervisor
      LEFT JOIN performance_cycle pc ON pc.id = pr.cycle_id
-     WHERE ${cond.join(' AND ')}
-     ORDER BY pr.created_at DESC`,
-    ...params
-  );
+     WHERE ${where}
+     ORDER BY pr.created_at DESC`;
 
   if (search) {
     const q = search.toLowerCase();
@@ -341,16 +331,14 @@ const getMyReviews = asyncHandler(async (req, res) => {
   const empId  = toBigInt(userId);
   if (!empId) return respond.badReq(res, 'Employee not resolved from token');
 
-  const rows = await query(
-    `SELECT pr.*, pc.name AS cycle_name, pc.status AS cycle_status,
+  const rows = await query`
+    SELECT pr.*, pc.name AS cycle_name, pc.status AS cycle_status,
             pc.period_start, pc.period_end,
             pc.self_due, pc.supervisor_due, pc.hr_due
      FROM performance_review pr
      LEFT JOIN performance_cycle pc ON pc.id = pr.cycle_id
-     WHERE pr.employee = ? AND pc.status != 'Draft'
-     ORDER BY pr.created_at DESC`,
-    empId
-  );
+     WHERE pr.employee = ${empId} AND pc.status != 'Draft'
+     ORDER BY pr.created_at DESC`;
   respond.ok(res, 'My reviews retrieved', rows);
 });
 
@@ -360,16 +348,14 @@ const getTeamReviews = asyncHandler(async (req, res) => {
   const supId  = toBigInt(userId);
   if (!supId) return respond.badReq(res, 'Employee not resolved from token');
 
-  const rows = await query(
-    `SELECT pr.*, e.firstName, e.lastName, e.employee_id AS emp_code,
+  const rows = await query`
+    SELECT pr.*, e.firstName, e.lastName, e.employee_id AS emp_code,
             pc.name AS cycle_name, pc.supervisor_due
      FROM performance_review pr
      LEFT JOIN employee e ON e.id = pr.employee
      LEFT JOIN performance_cycle pc ON pc.id = pr.cycle_id
-     WHERE pr.supervisor = ?
-     ORDER BY pr.created_at DESC`,
-    supId
-  );
+     WHERE pr.supervisor = ${supId}
+     ORDER BY pr.created_at DESC`;
 
   respond.ok(res, 'Team reviews retrieved', rows.map(r => ({
     ...r,
@@ -383,37 +369,32 @@ const getReviewById = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
 
-  const [review] = await query(
-    `SELECT pr.*, e.firstName, e.lastName, e.employee_id AS emp_code, e.work_email, e.email,
+  const [review] = await query`
+    SELECT pr.*, e.firstName, e.lastName, e.employee_id AS emp_code, e.work_email, e.email,
             s.firstName AS sup_first, s.lastName AS sup_last,
             pc.name AS cycle_name, pc.self_due, pc.supervisor_due, pc.hr_due
      FROM performance_review pr
      LEFT JOIN employee e ON e.id = pr.employee
      LEFT JOIN employee s ON s.id = pr.supervisor
      LEFT JOIN performance_cycle pc ON pc.id = pr.cycle_id
-     WHERE pr.id = ? LIMIT 1`, id
-  );
+     WHERE pr.id = ${id} LIMIT 1`;
   if (!review) return respond.notFound(res, 'Review not found');
 
-  const ratings = await query(
-    `SELECT pc2.id AS competency_id, pc2.name AS competency_name, pc2.category,
+  const ratings = await query`
+    SELECT pc2.id AS competency_id, pc2.name AS competency_name, pc2.category,
             pcr.id, pcr.self_rating, pcr.supervisor_rating, pcr.hr_rating,
             pcr.self_comment, pcr.supervisor_comment, pcr.hr_comment
      FROM performance_competency pc2
-     LEFT JOIN performance_comp_rating pcr ON pcr.competency_id = pc2.id AND pcr.review_id = ?
-     WHERE pc2.is_active = 1
-     ORDER BY pc2.category, pc2.name`,
-    id
-  );
+     LEFT JOIN performance_comp_rating pcr ON pcr.competency_id = pc2.id AND pcr.review_id = ${id}
+     WHERE pc2.is_active = TRUE
+     ORDER BY pc2.category, pc2.name`;
 
-  const goals = await query(
-    `SELECT g.*, pc.self_due AS cycle_self_due, pc.name AS cycle_name
+  const goals = await query`
+    SELECT g.*, pc.self_due AS cycle_self_due, pc.name AS cycle_name
      FROM performance_goal g
      LEFT JOIN performance_cycle pc ON pc.id = g.cycle_id
-     WHERE g.cycle_id = ? AND g.employee = ?
-     ORDER BY g.title`,
-    toBigInt(review.cycle_id), toBigInt(review.employee)
-  );
+     WHERE g.cycle_id = ${toBigInt(review.cycle_id)} AND g.employee = ${toBigInt(review.employee)}
+     ORDER BY g.title`;
 
   respond.ok(res, 'Review retrieved', {
     ...review,
@@ -428,7 +409,7 @@ const getReviewById = asyncHandler(async (req, res) => {
 const updateReview = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [ex] = await query(`SELECT * FROM performance_review WHERE id = ? LIMIT 1`, id);
+  const [ex] = await query`SELECT * FROM performance_review WHERE id = ${id} LIMIT 1`;
   if (!ex) return respond.notFound(res, 'Review not found');
 
   const fields = [
@@ -437,15 +418,15 @@ const updateReview = asyncHandler(async (req, res) => {
     'supervisor_score', 'supervisor_comments', 'strengths', 'improvements',
     'hr_score', 'hr_comments', 'overall_score', 'development_plan',
   ];
-  const sets = []; const params = [];
+  const sets = [];
   for (const f of fields) {
-    if (req.body[f] !== undefined) { sets.push(`${f} = ?`); params.push(req.body[f] || null); }
+    if (req.body[f] !== undefined) sets.push(Prisma.sql`${Prisma.raw(f)} = ${req.body[f] || null}`);
   }
   if (!sets.length) return respond.badReq(res, 'Nothing to update');
 
-  sets.push('updated_at = ?'); params.push(now()); params.push(id);
-  await exec(`UPDATE performance_review SET ${sets.join(', ')} WHERE id = ?`, ...params);
-  const [updated] = await query(`SELECT * FROM performance_review WHERE id = ? LIMIT 1`, id);
+  sets.push(Prisma.sql`updated_at = ${now()}`);
+  await exec`UPDATE performance_review SET ${Prisma.join(sets, ', ')} WHERE id = ${id}`;
+  const [updated] = await query`SELECT * FROM performance_review WHERE id = ${id} LIMIT 1`;
   respond.ok(res, 'Review updated', updated);
 });
 
@@ -454,26 +435,24 @@ const updateReview = asyncHandler(async (req, res) => {
 const submitSelfAssessment = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [review] = await query(
-    `SELECT pr.*, e.work_email, e.email, e.firstName, e.lastName,
+  const [review] = await query`
+    SELECT pr.*, e.work_email, e.email, e.firstName, e.lastName,
             s.work_email AS sup_email, s.firstName AS sup_first, s.lastName AS sup_last,
             pc.name AS cycle_name, pc.supervisor_due
      FROM performance_review pr
      LEFT JOIN employee e ON e.id = pr.employee
      LEFT JOIN employee s ON s.id = pr.supervisor
      LEFT JOIN performance_cycle pc ON pc.id = pr.cycle_id
-     WHERE pr.id = ? LIMIT 1`, id
-  );
+     WHERE pr.id = ${id} LIMIT 1`;
   if (!review) return respond.notFound(res, 'Review not found');
   if (review.status !== 'Not Started') return respond.badReq(res, 'Self assessment already submitted');
 
   const { self_score, self_comments } = req.body;
   const ts = now();
 
-  await exec(
-    `UPDATE performance_review SET self_score=?, self_comments=?, self_submitted=?, status='Self Assessment', updated_at=? WHERE id=?`,
-    self_score ? Number(self_score) : null, self_comments?.trim() || null, ts, ts, id
-  );
+  await exec`
+    UPDATE performance_review SET self_score=${self_score ? Number(self_score) : null}, self_comments=${self_comments?.trim() || null},
+      self_submitted=${ts}, status='Self Assessment', updated_at=${ts} WHERE id=${id}`;
 
   logActivity({
     module: 'Performance', action: 'self_assessment',
@@ -507,11 +486,10 @@ const submitSelfAssessment = asyncHandler(async (req, res) => {
 const submitSupervisorReview = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [review] = await query(
-    `SELECT pr.*, pc.name AS cycle_name, pc.hr_due FROM performance_review pr
+  const [review] = await query`
+    SELECT pr.*, pc.name AS cycle_name, pc.hr_due FROM performance_review pr
      LEFT JOIN performance_cycle pc ON pc.id = pr.cycle_id
-     WHERE pr.id = ? LIMIT 1`, id
-  );
+     WHERE pr.id = ${id} LIMIT 1`;
   if (!review) return respond.notFound(res, 'Review not found');
   if (review.status !== 'Self Assessment') return respond.badReq(res, 'Review is not in Self Assessment stage');
 
@@ -521,14 +499,11 @@ const submitSupervisorReview = asyncHandler(async (req, res) => {
   const supId = supEmpId ?? toBigInt(review.supervisor);
   const ts = now();
 
-  await exec(
-    `UPDATE performance_review SET supervisor_score=?, supervisor_comments=?, strengths=?, improvements=?, supervisor_reviewed=?, supervisor=?, status='Supervisor Review', updated_at=? WHERE id=?`,
-    supervisor_score ? Number(supervisor_score) : null,
-    supervisor_comments?.trim() || null,
-    strengths?.trim()   || null,
-    improvements?.trim() || null,
-    ts, supId, ts, id
-  );
+  await exec`
+    UPDATE performance_review SET supervisor_score=${supervisor_score ? Number(supervisor_score) : null},
+      supervisor_comments=${supervisor_comments?.trim() || null}, strengths=${strengths?.trim() || null},
+      improvements=${improvements?.trim() || null}, supervisor_reviewed=${ts}, supervisor=${supId},
+      status='Supervisor Review', updated_at=${ts} WHERE id=${id}`;
 
   logActivity({
     module: 'Performance', action: 'supervisor_review',
@@ -541,14 +516,14 @@ const submitSupervisorReview = asyncHandler(async (req, res) => {
   }, req.user?.id);
 
   // Notify HR: fetch HR emails from users with admin/hr role
-  const hrUsers = await query(
-    `SELECT u.id, e.work_email, e.email, e.firstName, e.lastName
+  const hrUsers = await query`
+    SELECT u.id, e.work_email, e.email, e.firstName, e.lastName
      FROM users u
      LEFT JOIN employee e ON e.id = u.employee
      WHERE u.status = '1' AND (
        u.id IN (SELECT user_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE r.name IN ('admin','super-admin'))
      ) LIMIT 5`
-  ).catch(() => []);
+  .catch(() => []);
 
   for (const hr of hrUsers) {
     const to = hr.work_email || hr.email;
@@ -567,13 +542,12 @@ const submitSupervisorReview = asyncHandler(async (req, res) => {
 const submitHRReview = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [review] = await query(
-    `SELECT pr.*, e.work_email, e.email, e.firstName, e.lastName, pc.name AS cycle_name
+  const [review] = await query`
+    SELECT pr.*, e.work_email, e.email, e.firstName, e.lastName, pc.name AS cycle_name
      FROM performance_review pr
      LEFT JOIN employee e ON e.id = pr.employee
      LEFT JOIN performance_cycle pc ON pc.id = pr.cycle_id
-     WHERE pr.id = ? LIMIT 1`, id
-  );
+     WHERE pr.id = ${id} LIMIT 1`;
   if (!review) return respond.notFound(res, 'Review not found');
   if (review.status !== 'Supervisor Review') return respond.badReq(res, 'Review is not in Supervisor Review stage');
 
@@ -606,14 +580,13 @@ const submitHRReview = asyncHandler(async (req, res) => {
     : scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
   const overall = rawOverall != null && !isNaN(rawOverall) ? clamp(rawOverall, 0, 5) : null;
 
-  await exec(
-    `UPDATE performance_review SET hr_score=?, hr_comments=?, overall_score=?, development_plan=?, hr_reviewed=?, hr_reviewer=?, status='HR Review', updated_at=? WHERE id=?`,
-    hr_score ? clamp(Number(hr_score), 1, 5) : null, hr_comments?.trim() || null,
-    overall, development_plan?.trim() || null, ts, hrId, ts, id
-  );
+  await exec`
+    UPDATE performance_review SET hr_score=${hr_score ? clamp(Number(hr_score), 1, 5) : null}, hr_comments=${hr_comments?.trim() || null},
+      overall_score=${overall}, development_plan=${development_plan?.trim() || null}, hr_reviewed=${ts}, hr_reviewer=${hrId},
+      status='HR Review', updated_at=${ts} WHERE id=${id}`;
 
   // Second exec to mark Completed
-  await exec(`UPDATE performance_review SET status='Completed', updated_at=? WHERE id=?`, ts, id);
+  await exec`UPDATE performance_review SET status='Completed', updated_at=${ts} WHERE id=${id}`;
 
   logActivity({
     module: 'Performance', action: 'hr_review',
@@ -642,20 +615,19 @@ const submitHRReview = asyncHandler(async (req, res) => {
 // GET /performance/goals — list goals filterable by employee, cycle, or status; resolves employee name.
 const getGoals = asyncHandler(async (req, res) => {
   const { employee_id, cycle_id, status } = req.query;
-  const cond = ['1=1']; const params = [];
-  if (employee_id) { cond.push('g.employee = ?');  params.push(toBigInt(employee_id)); }
-  if (cycle_id)    { cond.push('g.cycle_id = ?');  params.push(toBigInt(cycle_id));    }
-  if (status)      { cond.push('g.status = ?');    params.push(status); }
+  const conds = [Prisma.sql`1=1`];
+  if (employee_id) conds.push(Prisma.sql`g.employee = ${toBigInt(employee_id)}`);
+  if (cycle_id)    conds.push(Prisma.sql`g.cycle_id = ${toBigInt(cycle_id)}`);
+  if (status)      conds.push(Prisma.sql`g.status = ${status}`);
+  const where = Prisma.join(conds, ' AND ');
 
-  const rows = await query(
-    `SELECT g.*, e.firstName, e.lastName, e.employee_id AS emp_code, pc.name AS cycle_name
+  const rows = await query`
+    SELECT g.*, e.firstName, e.lastName, e.employee_id AS emp_code, pc.name AS cycle_name
      FROM performance_goal g
      LEFT JOIN employee e ON e.id = g.employee
      LEFT JOIN performance_cycle pc ON pc.id = g.cycle_id
-     WHERE ${cond.join(' AND ')}
-     ORDER BY g.due_date, g.title`,
-    ...params
-  );
+     WHERE ${where}
+     ORDER BY g.due_date, g.title`;
 
   respond.ok(res, 'Goals retrieved', rows.map(r => ({
     ...r,
@@ -672,18 +644,13 @@ const createGoal = asyncHandler(async (req, res) => {
   if (!title?.trim())  return respond.badReq(res, 'Title is required');
 
   const empId = toBigInt(employee_id);
-  await exec(
-    `INSERT INTO performance_goal (employee, cycle_id, title, description, weight, target, actual_result, progress_note, status, due_date, achievement, source, comment, document_ref, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    empId, cycle_id ? toBigInt(cycle_id) : null, title.trim(),
-    description?.trim() || null, weight ?? null,
-    target?.trim() || null, actual_result?.trim() || null,
-    progress_note?.trim() || null,
-    status, due_date || null, achievement || null, source,
-    comment?.trim() || null, document_ref?.trim() || null,
-    now(), now()
-  );
-  const [created] = await query(`SELECT * FROM performance_goal ORDER BY id DESC LIMIT 1`);
+  await exec`
+    INSERT INTO performance_goal (employee, cycle_id, title, description, weight, target, actual_result, progress_note, status, due_date, achievement, source, comment, document_ref, created_at, updated_at)
+     VALUES (${empId}, ${cycle_id ? toBigInt(cycle_id) : null}, ${title.trim()}, ${description?.trim() || null}, ${weight ?? null},
+             ${target?.trim() || null}, ${actual_result?.trim() || null}, ${progress_note?.trim() || null}, ${status},
+             ${due_date || null}, ${achievement || null}, ${source}, ${comment?.trim() || null}, ${document_ref?.trim() || null},
+             ${now()}, ${now()})`;
+  const [created] = await query`SELECT * FROM performance_goal ORDER BY id DESC LIMIT 1`;
   respond.created(res, 'Goal created', created);
 });
 
@@ -693,31 +660,31 @@ const createGoal = asyncHandler(async (req, res) => {
 const updateGoal = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [ex] = await query(`SELECT * FROM performance_goal WHERE id = ? LIMIT 1`, id);
+  const [ex] = await query`SELECT * FROM performance_goal WHERE id = ${id} LIMIT 1`;
   if (!ex) return respond.notFound(res, 'Goal not found');
 
   const { title, description, weight, target, actual_result, progress_note, status, due_date, achievement, employee_score, supervisor_score, hr_score, comment, supervisor_comment, hr_comment, document_ref } = req.body;
-  await exec(
-    `UPDATE performance_goal SET title=?, description=?, weight=?, target=?, actual_result=?, progress_note=?, status=?, due_date=?, achievement=?, employee_score=?, supervisor_score=?, hr_score=?, comment=?, supervisor_comment=?, hr_comment=?, document_ref=?, updated_at=? WHERE id=?`,
-    title?.trim()         ?? ex.title,
-    description?.trim()   != null ? (description?.trim() || null) : ex.description,
-    weight                != null ? weight : ex.weight,
-    target?.trim()        != null ? (target?.trim() || null) : ex.target,
-    actual_result         != null ? (actual_result?.trim() || null) : ex.actual_result,
-    progress_note?.trim() != null ? (progress_note?.trim() || null) : ex.progress_note,
-    status                ?? ex.status,
-    due_date              != null ? (due_date || null) : ex.due_date,
-    achievement           != null ? (achievement || null) : ex.achievement,
-    employee_score        != null ? employee_score : ex.employee_score,
-    supervisor_score      != null ? supervisor_score : ex.supervisor_score,
-    hr_score              != null ? hr_score : ex.hr_score,
-    comment               != null ? (comment?.trim() || null) : ex.comment,
-    supervisor_comment    != null ? (supervisor_comment?.trim() || null) : ex.supervisor_comment,
-    hr_comment            != null ? (hr_comment?.trim() || null) : ex.hr_comment,
-    document_ref          != null ? (document_ref?.trim() || null) : ex.document_ref,
-    now(), id
-  );
-  const [updated] = await query(`SELECT * FROM performance_goal WHERE id = ? LIMIT 1`, id);
+  await exec`
+    UPDATE performance_goal SET
+      title=${title?.trim() ?? ex.title},
+      description=${description?.trim() != null ? (description?.trim() || null) : ex.description},
+      weight=${weight != null ? weight : ex.weight},
+      target=${target?.trim() != null ? (target?.trim() || null) : ex.target},
+      actual_result=${actual_result != null ? (actual_result?.trim() || null) : ex.actual_result},
+      progress_note=${progress_note?.trim() != null ? (progress_note?.trim() || null) : ex.progress_note},
+      status=${status ?? ex.status},
+      due_date=${due_date != null ? (due_date || null) : ex.due_date},
+      achievement=${achievement != null ? (achievement || null) : ex.achievement},
+      employee_score=${employee_score != null ? employee_score : ex.employee_score},
+      supervisor_score=${supervisor_score != null ? supervisor_score : ex.supervisor_score},
+      hr_score=${hr_score != null ? hr_score : ex.hr_score},
+      comment=${comment != null ? (comment?.trim() || null) : ex.comment},
+      supervisor_comment=${supervisor_comment != null ? (supervisor_comment?.trim() || null) : ex.supervisor_comment},
+      hr_comment=${hr_comment != null ? (hr_comment?.trim() || null) : ex.hr_comment},
+      document_ref=${document_ref != null ? (document_ref?.trim() || null) : ex.document_ref},
+      updated_at=${now()}
+     WHERE id=${id}`;
+  const [updated] = await query`SELECT * FROM performance_goal WHERE id = ${id} LIMIT 1`;
   respond.ok(res, 'Goal updated', updated);
 });
 
@@ -727,10 +694,10 @@ const uploadGoalDocument = asyncHandler(async (req, res) => {
   if (!id) return respond.badReq(res, 'Invalid goal ID');
   if (!req.file) return respond.badReq(res, 'No file provided');
 
-  const [ex] = await query(`SELECT id, document_ref FROM performance_goal WHERE id = ? LIMIT 1`, id);
+  const [ex] = await query`SELECT id, document_ref FROM performance_goal WHERE id = ${id} LIMIT 1`;
   if (!ex) return respond.notFound(res, 'Goal not found');
 
-  await exec(`UPDATE performance_goal SET document_ref=?, updated_at=? WHERE id=?`, req.file.filename, now(), id);
+  await exec`UPDATE performance_goal SET document_ref=${req.file.filename}, updated_at=${now()} WHERE id=${id}`;
   respond.ok(res, 'Document uploaded', { document_ref: req.file.filename });
 });
 
@@ -738,7 +705,7 @@ const uploadGoalDocument = asyncHandler(async (req, res) => {
 const deleteGoal = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  await exec(`DELETE FROM performance_goal WHERE id = ?`, id);
+  await exec`DELETE FROM performance_goal WHERE id = ${id}`;
   respond.ok(res, 'Goal deleted');
 });
 
@@ -746,7 +713,7 @@ const deleteGoal = asyncHandler(async (req, res) => {
 
 // GET /performance/competencies — list all active competency definitions ordered by category and name.
 const getCompetencies = asyncHandler(async (_req, res) => {
-  const rows = await query(`SELECT * FROM performance_competency WHERE is_active = 1 ORDER BY category, name`);
+  const rows = await query`SELECT * FROM performance_competency WHERE is_active = TRUE ORDER BY category, name`;
   respond.ok(res, 'Competencies retrieved', rows);
 });
 
@@ -755,11 +722,10 @@ const createCompetency = asyncHandler(async (req, res) => {
   const { name, category, description } = req.body;
   if (!name?.trim())     return respond.badReq(res, 'Name is required');
   if (!category?.trim()) return respond.badReq(res, 'Category is required');
-  await exec(
-    `INSERT INTO performance_competency (name, category, description, is_active) VALUES (?, ?, ?, 1)`,
-    name.trim(), category.trim(), description?.trim() || null
-  );
-  const [created] = await query(`SELECT * FROM performance_competency ORDER BY id DESC LIMIT 1`);
+  await exec`
+    INSERT INTO performance_competency (name, category, description, is_active)
+     VALUES (${name.trim()}, ${category.trim()}, ${description?.trim() || null}, TRUE)`;
+  const [created] = await query`SELECT * FROM performance_competency ORDER BY id DESC LIMIT 1`;
   respond.created(res, 'Competency created', created);
 });
 
@@ -767,19 +733,18 @@ const createCompetency = asyncHandler(async (req, res) => {
 const updateCompetency = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [ex] = await query(`SELECT * FROM performance_competency WHERE id = ? LIMIT 1`, id);
+  const [ex] = await query`SELECT * FROM performance_competency WHERE id = ${id} LIMIT 1`;
   if (!ex) return respond.notFound(res, 'Competency not found');
 
   const { name, category, description, is_active } = req.body;
-  await exec(
-    `UPDATE performance_competency SET name=?, category=?, description=?, is_active=? WHERE id=?`,
-    name?.trim()        ?? ex.name,
-    category?.trim()    ?? ex.category,
-    description?.trim() != null ? (description?.trim() || null) : ex.description,
-    is_active           != null ? (is_active ? 1 : 0) : ex.is_active,
-    id
-  );
-  const [updated] = await query(`SELECT * FROM performance_competency WHERE id = ? LIMIT 1`, id);
+  await exec`
+    UPDATE performance_competency SET
+      name=${name?.trim() ?? ex.name},
+      category=${category?.trim() ?? ex.category},
+      description=${description?.trim() != null ? (description?.trim() || null) : ex.description},
+      is_active=${is_active != null ? !!is_active : !!ex.is_active}
+     WHERE id=${id}`;
+  const [updated] = await query`SELECT * FROM performance_competency WHERE id = ${id} LIMIT 1`;
   respond.ok(res, 'Competency updated', updated);
 });
 
@@ -794,25 +759,18 @@ const saveCompRatings = asyncHandler(async (req, res) => {
   for (const r of ratings) {
     const compId = toBigInt(r.competency_id);
     if (!compId) continue;
-    const [existing] = await query(
-      `SELECT id FROM performance_comp_rating WHERE review_id = ? AND competency_id = ? LIMIT 1`,
-      reviewId, compId
-    );
+    const [existing] = await query`SELECT id FROM performance_comp_rating WHERE review_id = ${reviewId} AND competency_id = ${compId} LIMIT 1`;
     if (existing) {
-      await exec(
-        `UPDATE performance_comp_rating SET self_rating=?, supervisor_rating=?, hr_rating=?, self_comment=?, supervisor_comment=?, hr_comment=? WHERE id=?`,
-        r.self_rating ?? null, r.supervisor_rating ?? null, r.hr_rating ?? null,
-        r.self_comment?.trim() || null, r.supervisor_comment?.trim() || null, r.hr_comment?.trim() || null,
-        toBigInt(existing.id)
-      );
+      await exec`
+        UPDATE performance_comp_rating SET
+          self_rating=${r.self_rating ?? null}, supervisor_rating=${r.supervisor_rating ?? null}, hr_rating=${r.hr_rating ?? null},
+          self_comment=${r.self_comment?.trim() || null}, supervisor_comment=${r.supervisor_comment?.trim() || null}, hr_comment=${r.hr_comment?.trim() || null}
+         WHERE id=${toBigInt(existing.id)}`;
     } else {
-      await exec(
-        `INSERT INTO performance_comp_rating (review_id, competency_id, self_rating, supervisor_rating, hr_rating, self_comment, supervisor_comment, hr_comment)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        reviewId, compId,
-        r.self_rating ?? null, r.supervisor_rating ?? null, r.hr_rating ?? null,
-        r.self_comment?.trim() || null, r.supervisor_comment?.trim() || null, r.hr_comment?.trim() || null
-      );
+      await exec`
+        INSERT INTO performance_comp_rating (review_id, competency_id, self_rating, supervisor_rating, hr_rating, self_comment, supervisor_comment, hr_comment)
+         VALUES (${reviewId}, ${compId}, ${r.self_rating ?? null}, ${r.supervisor_rating ?? null}, ${r.hr_rating ?? null},
+                 ${r.self_comment?.trim() || null}, ${r.supervisor_comment?.trim() || null}, ${r.hr_comment?.trim() || null})`;
     }
   }
   respond.ok(res, 'Ratings saved');

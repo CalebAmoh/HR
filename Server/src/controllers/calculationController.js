@@ -4,6 +4,7 @@ const respond = require('../helpers/respondHelper');
 
 const { serialize, toBigInt } = require('../helpers/controllerHelpers');
 const { tokenizeFormula, detokenizeFormula } = require('../helpers/payrollFormula');
+const { Prisma } = require('@prisma/client'); // Prisma.sql for reusable/portable SQL fragments
 
 function toDecimalString(val) {
   if (val === undefined || val === null || val === '') return null;
@@ -11,20 +12,21 @@ function toDecimalString(val) {
   return Number.isFinite(n) ? n.toFixed(4) : null;
 }
 
-async function query(sql, ...params) {
-  const rows = await prisma.$queryRawUnsafe(sql, ...params);
-  return serialize(rows);
+// Tagged-template query helpers — portable (Prisma emits the right placeholders per provider).
+// Call as query`SELECT ... ${value}` (values become bound parameters).
+async function query(strings, ...values) {
+  return serialize(await prisma.$queryRaw(strings, ...values));
 }
 
-async function exec(sql, ...params) {
-  return prisma.$executeRawUnsafe(sql, ...params);
+async function exec(strings, ...values) {
+  return prisma.$executeRaw(strings, ...values);
 }
 
 // ─── Payroll column ↔ calculation group (many-to-many via payrollcolumn_groups) ──
 
 /** Map of payrollcolumn id (string) → array of group id strings it is scoped to. */
 async function columnGroupsMap() {
-  const rows = await query('SELECT payrollcolumn_id, group_id FROM payrollcolumn_groups');
+  const rows = await query`SELECT payrollcolumn_id, group_id FROM payrollcolumn_groups`;
   const map = {};
   for (const r of rows) {
     const key = String(r.payrollcolumn_id);
@@ -35,20 +37,19 @@ async function columnGroupsMap() {
 
 /** Group ids for a single column. */
 async function groupsForColumn(columnId) {
-  const rows = await query('SELECT group_id FROM payrollcolumn_groups WHERE payrollcolumn_id = ?', columnId);
+  const rows = await query`SELECT group_id FROM payrollcolumn_groups WHERE payrollcolumn_id = ${columnId}`;
   return rows.map(r => String(r.group_id));
 }
 
-/** Replace a column's group links with `groups` (array of ids or a comma-separated string). */
+/** Replace a column's group links with `groups` (array of ids or a comma-separated string).
+ *  DELETE-then-insert with Set-deduped ids means the unique key can't collide, so a plain
+ *  INSERT (portable) replaces the old MySQL-only INSERT IGNORE. */
 async function syncColumnGroups(columnId, groups) {
-  await exec('DELETE FROM payrollcolumn_groups WHERE payrollcolumn_id = ?', columnId);
+  await exec`DELETE FROM payrollcolumn_groups WHERE payrollcolumn_id = ${columnId}`;
   const raw = Array.isArray(groups) ? groups : String(groups ?? '').split(',');
   const ids = [...new Set(raw.map(g => toBigInt(g)).filter(Boolean).map(String))];
   for (const gid of ids) {
-    await exec(
-      'INSERT IGNORE INTO payrollcolumn_groups (payrollcolumn_id, group_id) VALUES (?, ?)',
-      columnId, BigInt(gid)
-    );
+    await exec`INSERT INTO payrollcolumn_groups (payrollcolumn_id, group_id) VALUES (${columnId}, ${BigInt(gid)})`;
   }
 }
 
@@ -56,22 +57,22 @@ async function syncColumnGroups(columnId, groups) {
 
 /** Map of payrollcolumn id (string) → array of component id strings. */
 async function columnComponentsMap() {
-  const rows = await query('SELECT payrollcolumn_id, component_id FROM payrollcolumn_components');
+  const rows = await query`SELECT payrollcolumn_id, component_id FROM payrollcolumn_components`;
   const map = {};
   for (const r of rows) (map[String(r.payrollcolumn_id)] ??= []).push(String(r.component_id));
   return map;
 }
 async function componentsForColumn(columnId) {
-  const rows = await query('SELECT component_id FROM payrollcolumn_components WHERE payrollcolumn_id = ?', columnId);
+  const rows = await query`SELECT component_id FROM payrollcolumn_components WHERE payrollcolumn_id = ${columnId}`;
   return rows.map(r => String(r.component_id));
 }
 /** Replace a column's linked salary components with `ids` (array or CSV of component ids). */
 async function syncColumnComponents(columnId, ids) {
-  await exec('DELETE FROM payrollcolumn_components WHERE payrollcolumn_id = ?', columnId);
+  await exec`DELETE FROM payrollcolumn_components WHERE payrollcolumn_id = ${columnId}`;
   const raw = Array.isArray(ids) ? ids : String(ids ?? '').split(',');
   const clean = [...new Set(raw.map(g => toBigInt(g)).filter(Boolean).map(String))];
   for (const cid of clean) {
-    await exec('INSERT IGNORE INTO payrollcolumn_components (payrollcolumn_id, component_id) VALUES (?, ?)', columnId, BigInt(cid));
+    await exec`INSERT INTO payrollcolumn_components (payrollcolumn_id, component_id) VALUES (${columnId}, ${BigInt(cid)})`;
   }
 }
 
@@ -79,7 +80,7 @@ async function syncColumnComponents(columnId, ids) {
 
 /** Map of payrollcolumn id (string) → { add: [ids], subtract: [ids] }. */
 async function columnLinksMap() {
-  const rows = await query('SELECT payrollcolumn_id, target_column_id, operation FROM payrollcolumn_links');
+  const rows = await query`SELECT payrollcolumn_id, target_column_id, operation FROM payrollcolumn_links`;
   const map = {};
   for (const r of rows) {
     const m = (map[String(r.payrollcolumn_id)] ??= { add: [], subtract: [] });
@@ -88,23 +89,23 @@ async function columnLinksMap() {
   return map;
 }
 async function linksForColumn(columnId) {
-  const rows = await query('SELECT target_column_id, operation FROM payrollcolumn_links WHERE payrollcolumn_id = ?', columnId);
+  const rows = await query`SELECT target_column_id, operation FROM payrollcolumn_links WHERE payrollcolumn_id = ${columnId}`;
   const out = { add: [], subtract: [] };
   for (const r of rows) (r.operation === 'subtract' ? out.subtract : out.add).push(String(r.target_column_id));
   return out;
 }
 /** Replace a column's add/subtract links. `addIds`/`subIds` are arrays (or CSV) of column ids. */
 async function syncColumnLinks(columnId, addIds, subIds) {
-  await exec('DELETE FROM payrollcolumn_links WHERE payrollcolumn_id = ?', columnId);
+  await exec`DELETE FROM payrollcolumn_links WHERE payrollcolumn_id = ${columnId}`;
   const clean = v => [...new Set((Array.isArray(v) ? v : String(v ?? '').split(',')).map(x => parseInt(x, 10)).filter(n => Number.isInteger(n) && n !== Number(columnId)))];
-  for (const tid of clean(addIds)) await exec('INSERT IGNORE INTO payrollcolumn_links (payrollcolumn_id, target_column_id, operation) VALUES (?,?,?)', columnId, tid, 'add');
-  for (const tid of clean(subIds)) await exec('INSERT IGNORE INTO payrollcolumn_links (payrollcolumn_id, target_column_id, operation) VALUES (?,?,?)', columnId, tid, 'subtract');
+  for (const tid of clean(addIds)) await exec`INSERT INTO payrollcolumn_links (payrollcolumn_id, target_column_id, operation) VALUES (${columnId}, ${tid}, 'add')`;
+  for (const tid of clean(subIds)) await exec`INSERT INTO payrollcolumn_links (payrollcolumn_id, target_column_id, operation) VALUES (${columnId}, ${tid}, 'subtract')`;
 }
 
 /** Build {comp,col} id→name maps for detokenizing formulas back to current names for the client. */
 async function nameMaps() {
-  const comps = await query('SELECT id, name FROM salarycomponent');
-  const cols = await query('SELECT id, name FROM payrollcolumns');
+  const comps = await query`SELECT id, name FROM salarycomponent`;
+  const cols = await query`SELECT id, name FROM payrollcolumns`;
   return {
     compById: new Map(comps.map(c => [String(c.id), c.name])),
     colById: new Map(cols.map(c => [String(c.id), c.name])),
@@ -114,15 +115,15 @@ async function nameMaps() {
 
 /** Re-fetch one column and attach its junction refs + detokenized formula (the API shape). */
 async function buildColumnResponse(id) {
-  const [row] = await query(`
+  const [row] = await query`
     SELECT id, name, COALESCE(function_type,'Simple') AS function_type,
            COALESCE(enabled,'Yes') AS enabled, COALESCE(editable,'Yes') AS editable,
            colorder, default_value, payment_deduction,
            salarycomponent_gl, posting_column, posting_branch,
            calculation_function, calculation_rule,
-           COALESCE(visible, 1) AS visible, COALESCE(include_in_net, 1) AS include_in_net,
+           COALESCE(visible, TRUE) AS visible, COALESCE(include_in_net, TRUE) AS include_in_net,
            payslip_label
-    FROM payrollcolumns WHERE id = ?`, id);
+    FROM payrollcolumns WHERE id = ${id}`;
   if (!row) return null;
   const { compById, colById } = await nameMaps();
   const links = await linksForColumn(id);
@@ -138,7 +139,7 @@ async function buildColumnResponse(id) {
 
 // GET /calculation/payroll-columns — list all payroll columns ordered by colorder, with all display/calculation config.
 const getPayrollColumns = asyncHandler(async (_req, res) => {
-  const rows = await query(`
+  const rows = await query`
     SELECT id, name,
            COALESCE(function_type, 'Simple') AS function_type,
            COALESCE(enabled,       'Yes')    AS enabled,
@@ -146,11 +147,10 @@ const getPayrollColumns = asyncHandler(async (_req, res) => {
            colorder, default_value, payment_deduction,
            salarycomponent_gl, posting_column, posting_branch,
            calculation_function, calculation_rule,
-           COALESCE(visible, 1) AS visible, COALESCE(include_in_net, 1) AS include_in_net,
+           COALESCE(visible, TRUE) AS visible, COALESCE(include_in_net, TRUE) AS include_in_net,
            payslip_label
     FROM payrollcolumns
-    ORDER BY COALESCE(colorder, 9999) ASC, name ASC
-  `);
+    ORDER BY COALESCE(colorder, 9999) ASC, name ASC`;
   const [groupMap, compMap, linkMap, { compById, colById }] = await Promise.all([
     columnGroupsMap(), columnComponentsMap(), columnLinksMap(), nameMaps(),
   ]);
@@ -176,34 +176,28 @@ const createPayrollColumn = asyncHandler(async (req, res) => {
   } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
 
-  const dup = await query('SELECT id FROM payrollcolumns WHERE UPPER(name) = UPPER(?) LIMIT 1', name.trim());
+  const dup = await query`SELECT id FROM payrollcolumns WHERE UPPER(name) = UPPER(${name.trim()}) LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'A column with this name already exists');
 
-  const [{ nextId }] = await query('SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM payrollcolumns');
+  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM payrollcolumns`;
   const colorderVal = (colorder !== undefined && colorder !== '')
     ? parseInt(colorder)
-    : Number((await query('SELECT COALESCE(MAX(colorder), 0) + 1 AS nextOrder FROM payrollcolumns'))[0].nextOrder);
+    : Number((await query`SELECT COALESCE(MAX(colorder), 0) + 1 AS nextOrder FROM payrollcolumns`)[0].nextOrder);
   const { comps, cols } = await nameMaps();
   const { formula } = tokenizeFormula(calculation_function, comps, cols);
-  await exec(
-    `INSERT INTO payrollcolumns (
+  // visible / include_in_net are Boolean columns — pass real booleans for PG portability.
+  const visibleBool      = visible        !== undefined && visible        !== '' ? !!parseInt(visible)        : true;
+  const includeInNetBool = include_in_net !== undefined && include_in_net !== '' ? !!parseInt(include_in_net) : true;
+  await exec`
+    INSERT INTO payrollcolumns (
       id, name, function_type, enabled, editable, colorder, default_value, payment_deduction,
       salarycomponent_gl, posting_column, posting_branch, calculation_function,
       calculation_rule, visible, include_in_net, payslip_label
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    nextId, name.trim(), function_type, enabled, editable,
-    colorderVal,
-    default_value?.trim() || null,
-    payment_deduction?.trim() || null,
-    salarycomponent_gl?.trim() || null,
-    posting_column?.trim() || 'Yes',
-    posting_branch?.trim() || null,
-    formula?.trim() || null,
-    calculation_rule ? parseInt(calculation_rule) : null,
-    visible !== undefined && visible !== '' ? parseInt(visible) : 1,
-    include_in_net !== undefined && include_in_net !== '' ? parseInt(include_in_net) : 1,
-    payslip_label?.trim() || null
-  );
+    ) VALUES (${nextId}, ${name.trim()}, ${function_type}, ${enabled}, ${editable}, ${colorderVal},
+             ${default_value?.trim() || null}, ${payment_deduction?.trim() || null}, ${salarycomponent_gl?.trim() || null},
+             ${posting_column?.trim() || 'Yes'}, ${posting_branch?.trim() || null}, ${formula?.trim() || null},
+             ${calculation_rule ? parseInt(calculation_rule) : null}, ${visibleBool}, ${includeInNetBool},
+             ${payslip_label?.trim() || null})`;
   await syncColumnGroups(nextId, deduction_groups);
   await syncColumnComponents(nextId, component_ids);
   await syncColumnLinks(nextId, add_column_ids, sub_column_ids);
@@ -222,34 +216,27 @@ const updatePayrollColumn = asyncHandler(async (req, res) => {
   } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
 
-  const existing = await query('SELECT id FROM payrollcolumns WHERE id = ? LIMIT 1', id);
+  const existing = await query`SELECT id FROM payrollcolumns WHERE id = ${id} LIMIT 1`;
   if (!existing.length) return respond.notFound(res, 'Payroll column not found');
 
-  const dup = await query('SELECT id FROM payrollcolumns WHERE UPPER(name) = UPPER(?) AND id <> ? LIMIT 1', name.trim(), id);
+  const dup = await query`SELECT id FROM payrollcolumns WHERE UPPER(name) = UPPER(${name.trim()}) AND id <> ${id} LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'A column with this name already exists');
 
   const { comps, cols } = await nameMaps();
   const { formula } = tokenizeFormula(calculation_function, comps, cols);
-  await exec(
-    `UPDATE payrollcolumns SET
-      name=?, function_type=?, enabled=?, editable=?, colorder=?, default_value=?, payment_deduction=?,
-      salarycomponent_gl=?, posting_column=?, posting_branch=?, calculation_function=?,
-      calculation_rule=?, visible=?, include_in_net=?, payslip_label=?
-    WHERE id=?`,
-    name.trim(), function_type || 'Simple', enabled || 'Yes', editable || 'Yes',
-    colorder !== undefined && colorder !== '' ? parseInt(colorder) : null,
-    default_value?.trim() || null,
-    payment_deduction?.trim() || null,
-    salarycomponent_gl?.trim() || null,
-    posting_column?.trim() || 'Yes',
-    posting_branch?.trim() || null,
-    formula?.trim() || null,
-    calculation_rule ? parseInt(calculation_rule) : null,
-    visible !== undefined && visible !== '' ? parseInt(visible) : 1,
-    include_in_net !== undefined && include_in_net !== '' ? parseInt(include_in_net) : 1,
-    payslip_label?.trim() || null,
-    id
-  );
+  // visible / include_in_net are Boolean columns — pass real booleans for PG portability.
+  const visibleBool      = visible        !== undefined && visible        !== '' ? !!parseInt(visible)        : true;
+  const includeInNetBool = include_in_net !== undefined && include_in_net !== '' ? !!parseInt(include_in_net) : true;
+  await exec`
+    UPDATE payrollcolumns SET
+      name=${name.trim()}, function_type=${function_type || 'Simple'}, enabled=${enabled || 'Yes'}, editable=${editable || 'Yes'},
+      colorder=${colorder !== undefined && colorder !== '' ? parseInt(colorder) : null},
+      default_value=${default_value?.trim() || null}, payment_deduction=${payment_deduction?.trim() || null},
+      salarycomponent_gl=${salarycomponent_gl?.trim() || null}, posting_column=${posting_column?.trim() || 'Yes'},
+      posting_branch=${posting_branch?.trim() || null}, calculation_function=${formula?.trim() || null},
+      calculation_rule=${calculation_rule ? parseInt(calculation_rule) : null},
+      visible=${visibleBool}, include_in_net=${includeInNetBool}, payslip_label=${payslip_label?.trim() || null}
+    WHERE id=${id}`;
   await syncColumnGroups(id, deduction_groups);
   await syncColumnComponents(id, component_ids);
   await syncColumnLinks(id, add_column_ids, sub_column_ids);
@@ -261,14 +248,14 @@ const deletePayrollColumn = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
 
-  const existing = await query('SELECT id FROM payrollcolumns WHERE id = ? LIMIT 1', id);
+  const existing = await query`SELECT id FROM payrollcolumns WHERE id = ${id} LIMIT 1`;
   if (!existing.length) return respond.notFound(res, 'Payroll column not found');
 
   // Clean up junction rows where this column is the owner OR a referenced target.
-  await exec('DELETE FROM payrollcolumn_groups WHERE payrollcolumn_id = ?', id);
-  await exec('DELETE FROM payrollcolumn_components WHERE payrollcolumn_id = ?', id);
-  await exec('DELETE FROM payrollcolumn_links WHERE payrollcolumn_id = ? OR target_column_id = ?', id, id);
-  await exec('DELETE FROM payrollcolumns WHERE id = ?', id);
+  await exec`DELETE FROM payrollcolumn_groups WHERE payrollcolumn_id = ${id}`;
+  await exec`DELETE FROM payrollcolumn_components WHERE payrollcolumn_id = ${id}`;
+  await exec`DELETE FROM payrollcolumn_links WHERE payrollcolumn_id = ${id} OR target_column_id = ${id}`;
+  await exec`DELETE FROM payrollcolumns WHERE id = ${id}`;
   respond.ok(res, 'Payroll column deleted');
 });
 
@@ -278,7 +265,7 @@ const reorderPayrollColumns = asyncHandler(async (req, res) => {
   if (!Array.isArray(updates) || !updates.length) return respond.badReq(res, 'Array of {id, colorder} required');
   for (const u of updates) {
     if (u.id == null || u.colorder == null) return respond.badReq(res, 'Each item needs id and colorder');
-    await exec('UPDATE payrollcolumns SET colorder=? WHERE id=?', parseInt(u.colorder), toBigInt(u.id));
+    await exec`UPDATE payrollcolumns SET colorder=${parseInt(u.colorder)} WHERE id=${toBigInt(u.id)}`;
   }
   respond.ok(res, 'Column order updated');
 });
@@ -287,7 +274,7 @@ const reorderPayrollColumns = asyncHandler(async (req, res) => {
 
 // GET /calculation/groups — list all calculation groups used to organise saved calculation rules.
 const getCalcGroups = asyncHandler(async (_req, res) => {
-  const rows = await query('SELECT id, name, details, created_at FROM calculationgroups ORDER BY name ASC');
+  const rows = await query`SELECT id, name, details, created_at FROM calculationgroups ORDER BY name ASC`;
   respond.ok(res, 'Calculation groups retrieved', rows);
 });
 
@@ -296,15 +283,12 @@ const createCalcGroup = asyncHandler(async (req, res) => {
   const { name, details } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
 
-  const dup = await query('SELECT id FROM calculationgroups WHERE UPPER(name) = UPPER(?) LIMIT 1', name.trim());
+  const dup = await query`SELECT id FROM calculationgroups WHERE UPPER(name) = UPPER(${name.trim()}) LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'A calculation group with this name already exists');
 
-  const [{ nextId }] = await query('SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM calculationgroups');
-  await exec(
-    'INSERT INTO calculationgroups (id, name, details) VALUES (?, ?, ?)',
-    nextId, name.trim(), details?.trim() || null
-  );
-  const [created] = await query('SELECT id, name, details, created_at FROM calculationgroups WHERE id = ?', nextId);
+  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM calculationgroups`;
+  await exec`INSERT INTO calculationgroups (id, name, details) VALUES (${nextId}, ${name.trim()}, ${details?.trim() || null})`;
+  const [created] = await query`SELECT id, name, details, created_at FROM calculationgroups WHERE id = ${nextId}`;
   respond.created(res, 'Calculation group created', created);
 });
 
@@ -315,14 +299,14 @@ const updateCalcGroup = asyncHandler(async (req, res) => {
   const { name, details } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
 
-  const existing = await query('SELECT id FROM calculationgroups WHERE id = ? LIMIT 1', id);
+  const existing = await query`SELECT id FROM calculationgroups WHERE id = ${id} LIMIT 1`;
   if (!existing.length) return respond.notFound(res, 'Calculation group not found');
 
-  const dup = await query('SELECT id FROM calculationgroups WHERE UPPER(name) = UPPER(?) AND id <> ? LIMIT 1', name.trim(), id);
+  const dup = await query`SELECT id FROM calculationgroups WHERE UPPER(name) = UPPER(${name.trim()}) AND id <> ${id} LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'A calculation group with this name already exists');
 
-  await exec('UPDATE calculationgroups SET name = ?, details = ? WHERE id = ?', name.trim(), details?.trim() || null, id);
-  const [updated] = await query('SELECT id, name, details, created_at FROM calculationgroups WHERE id = ?', id);
+  await exec`UPDATE calculationgroups SET name = ${name.trim()}, details = ${details?.trim() || null} WHERE id = ${id}`;
+  const [updated] = await query`SELECT id, name, details, created_at FROM calculationgroups WHERE id = ${id}`;
   respond.ok(res, 'Calculation group updated', updated);
 });
 
@@ -331,13 +315,13 @@ const deleteCalcGroup = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
 
-  const existing = await query('SELECT id FROM calculationgroups WHERE id = ? LIMIT 1', id);
+  const existing = await query`SELECT id FROM calculationgroups WHERE id = ${id} LIMIT 1`;
   if (!existing.length) return respond.notFound(res, 'Calculation group not found');
 
-  const inUse = await query('SELECT id FROM savedcalculations WHERE calculation_group_id = ? LIMIT 1', id);
+  const inUse = await query`SELECT id FROM savedcalculations WHERE calculation_group_id = ${id} LIMIT 1`;
   if (inUse.length) return respond.conflict(res, 'Cannot delete: group is in use by saved calculations');
 
-  await exec('DELETE FROM calculationgroups WHERE id = ?', id);
+  await exec`DELETE FROM calculationgroups WHERE id = ${id}`;
   respond.ok(res, 'Calculation group deleted');
 });
 
@@ -345,13 +329,12 @@ const deleteCalcGroup = asyncHandler(async (req, res) => {
 
 // GET /calculation/saved — list all saved calculation rules with their group name (no bracket items for speed).
 const getSavedCalculations = asyncHandler(async (_req, res) => {
-  const rows = await query(`
+  const rows = await query`
     SELECT sc.id, sc.name, sc.target_type, sc.target_id, sc.target_name, sc.calculation_group_id,
            cg.name AS group_name
     FROM savedcalculations sc
     LEFT JOIN calculationgroups cg ON cg.id = sc.calculation_group_id
-    ORDER BY sc.name ASC
-  `);
+    ORDER BY sc.name ASC`;
   respond.ok(res, 'Saved calculations retrieved', rows);
 });
 
@@ -360,24 +343,22 @@ const getSavedCalculationById = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
 
-  const rows = await query(`
+  const rows = await query`
     SELECT sc.id, sc.name, sc.target_type, sc.target_id, sc.target_name, sc.calculation_group_id,
            cg.name AS group_name
     FROM savedcalculations sc
     LEFT JOIN calculationgroups cg ON cg.id = sc.calculation_group_id
-    WHERE sc.id = ? LIMIT 1
-  `, id);
+    WHERE sc.id = ${id} LIMIT 1`;
   if (!rows.length) return respond.notFound(res, 'Saved calculation not found');
 
-  const items = await query(`
+  const items = await query`
     SELECT id,
-           lower_limit_condition, CAST(lower_limit AS CHAR) AS lower_limit,
-           upper_limit_condition, CAST(upper_limit AS CHAR) AS upper_limit,
+           lower_limit_condition, CONCAT(lower_limit, '') AS lower_limit,
+           upper_limit_condition, CONCAT(upper_limit, '') AS upper_limit,
            value, sort_order
     FROM calculationprocessitems
-    WHERE saved_calculation_id = ?
-    ORDER BY sort_order ASC, id ASC
-  `, id);
+    WHERE saved_calculation_id = ${id}
+    ORDER BY sort_order ASC, id ASC`;
 
   respond.ok(res, 'Saved calculation retrieved', { ...rows[0], items });
 });
@@ -389,39 +370,29 @@ const createSavedCalculation = asyncHandler(async (req, res) => {
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
   if (!['component', 'column'].includes(target_type)) return respond.badReq(res, 'Invalid target type');
 
-  const dup = await query('SELECT id FROM savedcalculations WHERE UPPER(name) = UPPER(?) LIMIT 1', name.trim());
+  const dup = await query`SELECT id FROM savedcalculations WHERE UPPER(name) = UPPER(${name.trim()}) LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'A saved calculation with this name already exists');
 
-  const [{ nextId }] = await query('SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM savedcalculations');
+  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM savedcalculations`;
   const groupId = calculation_group_id ? toBigInt(calculation_group_id) : null;
   const targetId = target_id ? toBigInt(target_id) : null;
 
-  await exec(
-    'INSERT INTO savedcalculations (id, name, target_type, target_id, target_name, calculation_group_id) VALUES (?, ?, ?, ?, ?, ?)',
-    nextId, name.trim(), target_type, targetId, target_name?.trim() || null, groupId
-  );
+  await exec`
+    INSERT INTO savedcalculations (id, name, target_type, target_id, target_name, calculation_group_id)
+     VALUES (${nextId}, ${name.trim()}, ${target_type}, ${targetId}, ${target_name?.trim() || null}, ${groupId})`;
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-    const [{ nextItemId }] = await query('SELECT COALESCE(MAX(id), 0) + 1 AS nextItemId FROM calculationprocessitems');
-    await exec(
-      `INSERT INTO calculationprocessitems
+    const [{ nextItemId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextItemId FROM calculationprocessitems`;
+    await exec`
+      INSERT INTO calculationprocessitems
         (id, saved_calculation_id, lower_limit_condition, lower_limit, upper_limit_condition, upper_limit, value, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      nextItemId, nextId,
-      item.lower_limit_condition || 'NO_LOWER_LIMIT',
-      toDecimalString(item.lower_limit),
-      item.upper_limit_condition || 'NO_UPPER_LIMIT',
-      toDecimalString(item.upper_limit),
-      item.value?.toString().trim() || '0',
-      i
-    );
+       VALUES (${nextItemId}, ${nextId}, ${item.lower_limit_condition || 'NO_LOWER_LIMIT'}, ${toDecimalString(item.lower_limit)},
+               ${item.upper_limit_condition || 'NO_UPPER_LIMIT'}, ${toDecimalString(item.upper_limit)},
+               ${item.value?.toString().trim() || '0'}, ${i})`;
   }
 
-  const [created] = await query(
-    'SELECT id, name, target_type, target_id, target_name, calculation_group_id FROM savedcalculations WHERE id = ?',
-    nextId
-  );
+  const [created] = await query`SELECT id, name, target_type, target_id, target_name, calculation_group_id FROM savedcalculations WHERE id = ${nextId}`;
   respond.created(res, 'Saved calculation created', created);
 });
 
@@ -433,42 +404,32 @@ const updateSavedCalculation = asyncHandler(async (req, res) => {
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
   if (!['component', 'column'].includes(target_type)) return respond.badReq(res, 'Invalid target type');
 
-  const existing = await query('SELECT id FROM savedcalculations WHERE id = ? LIMIT 1', id);
+  const existing = await query`SELECT id FROM savedcalculations WHERE id = ${id} LIMIT 1`;
   if (!existing.length) return respond.notFound(res, 'Saved calculation not found');
 
-  const dup = await query('SELECT id FROM savedcalculations WHERE UPPER(name) = UPPER(?) AND id <> ? LIMIT 1', name.trim(), id);
+  const dup = await query`SELECT id FROM savedcalculations WHERE UPPER(name) = UPPER(${name.trim()}) AND id <> ${id} LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'A saved calculation with this name already exists');
 
   const groupId = calculation_group_id ? toBigInt(calculation_group_id) : null;
   const targetId = target_id ? toBigInt(target_id) : null;
 
-  await exec(
-    'UPDATE savedcalculations SET name = ?, target_type = ?, target_id = ?, target_name = ?, calculation_group_id = ? WHERE id = ?',
-    name.trim(), target_type, targetId, target_name?.trim() || null, groupId, id
-  );
+  await exec`
+    UPDATE savedcalculations SET name = ${name.trim()}, target_type = ${target_type}, target_id = ${targetId},
+      target_name = ${target_name?.trim() || null}, calculation_group_id = ${groupId} WHERE id = ${id}`;
 
-  await exec('DELETE FROM calculationprocessitems WHERE saved_calculation_id = ?', id);
+  await exec`DELETE FROM calculationprocessitems WHERE saved_calculation_id = ${id}`;
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-    const [{ nextItemId }] = await query('SELECT COALESCE(MAX(id), 0) + 1 AS nextItemId FROM calculationprocessitems');
-    await exec(
-      `INSERT INTO calculationprocessitems
+    const [{ nextItemId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextItemId FROM calculationprocessitems`;
+    await exec`
+      INSERT INTO calculationprocessitems
         (id, saved_calculation_id, lower_limit_condition, lower_limit, upper_limit_condition, upper_limit, value, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      nextItemId, id,
-      item.lower_limit_condition || 'NO_LOWER_LIMIT',
-      toDecimalString(item.lower_limit),
-      item.upper_limit_condition || 'NO_UPPER_LIMIT',
-      toDecimalString(item.upper_limit),
-      item.value?.toString().trim() || '0',
-      i
-    );
+       VALUES (${nextItemId}, ${id}, ${item.lower_limit_condition || 'NO_LOWER_LIMIT'}, ${toDecimalString(item.lower_limit)},
+               ${item.upper_limit_condition || 'NO_UPPER_LIMIT'}, ${toDecimalString(item.upper_limit)},
+               ${item.value?.toString().trim() || '0'}, ${i})`;
   }
 
-  const [updated] = await query(
-    'SELECT id, name, target_type, target_id, target_name, calculation_group_id FROM savedcalculations WHERE id = ?',
-    id
-  );
+  const [updated] = await query`SELECT id, name, target_type, target_id, target_name, calculation_group_id FROM savedcalculations WHERE id = ${id}`;
   respond.ok(res, 'Saved calculation updated', updated);
 });
 
@@ -477,11 +438,11 @@ const deleteSavedCalculation = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
 
-  const existing = await query('SELECT id FROM savedcalculations WHERE id = ? LIMIT 1', id);
+  const existing = await query`SELECT id FROM savedcalculations WHERE id = ${id} LIMIT 1`;
   if (!existing.length) return respond.notFound(res, 'Saved calculation not found');
 
-  await exec('DELETE FROM calculationprocessitems WHERE saved_calculation_id = ?', id);
-  await exec('DELETE FROM savedcalculations WHERE id = ?', id);
+  await exec`DELETE FROM calculationprocessitems WHERE saved_calculation_id = ${id}`;
+  await exec`DELETE FROM savedcalculations WHERE id = ${id}`;
   respond.ok(res, 'Saved calculation deleted');
 });
 
@@ -489,7 +450,7 @@ const deleteSavedCalculation = asyncHandler(async (req, res) => {
 
 // GET /calculation/pay-frequencies — list all pay frequencies (Weekly, Monthly, etc.) ordered by sort_order.
 const getPayFrequencies = asyncHandler(async (_req, res) => {
-  const rows = await query('SELECT id, name, description, is_active, sort_order FROM payfrequencies ORDER BY sort_order ASC, name ASC');
+  const rows = await query`SELECT id, name, description, is_active, sort_order FROM payfrequencies ORDER BY sort_order ASC, name ASC`;
   respond.ok(res, 'Pay frequencies retrieved', rows);
 });
 
@@ -497,14 +458,19 @@ const getPayFrequencies = asyncHandler(async (_req, res) => {
 const createPayFrequency = asyncHandler(async (req, res) => {
   const { name, description, sort_order } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
-  const dup = await query('SELECT id FROM payfrequencies WHERE UPPER(name) = UPPER(?) LIMIT 1', name.trim());
+  const dup = await query`SELECT id FROM payfrequencies WHERE UPPER(name) = UPPER(${name.trim()}) LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'A pay frequency with this name already exists');
-  await exec(
-    'INSERT INTO payfrequencies (name, description, sort_order) VALUES (?, ?, ?)',
-    name.trim(), description?.trim() || null, sort_order != null && sort_order !== '' ? parseInt(sort_order) : 99
-  );
-  const [created] = await query('SELECT id, name, description, is_active, sort_order FROM payfrequencies WHERE id = LAST_INSERT_ID()');
-  respond.created(res, 'Pay frequency created', created);
+  // id is autoincrement — use the Prisma builder so we get the generated id back portably
+  // (MySQL's LAST_INSERT_ID() has no cross-dialect equivalent in raw SQL).
+  const created = await prisma.payfrequencies.create({
+    data: {
+      name: name.trim(),
+      description: description?.trim() || null,
+      sort_order: sort_order != null && sort_order !== '' ? parseInt(sort_order) : 99,
+    },
+    select: { id: true, name: true, description: true, is_active: true, sort_order: true },
+  });
+  respond.created(res, 'Pay frequency created', serialize(created));
 });
 
 // PUT /calculation/pay-frequencies/:id — update a pay frequency's name, description, sort order, or active flag.
@@ -513,18 +479,16 @@ const updatePayFrequency = asyncHandler(async (req, res) => {
   if (!id) return respond.badReq(res, 'Invalid ID');
   const { name, description, sort_order, is_active } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
-  const existing = await query('SELECT id FROM payfrequencies WHERE id = ? LIMIT 1', id);
+  const existing = await query`SELECT id FROM payfrequencies WHERE id = ${id} LIMIT 1`;
   if (!existing.length) return respond.notFound(res, 'Pay frequency not found');
-  const dup = await query('SELECT id FROM payfrequencies WHERE UPPER(name) = UPPER(?) AND id <> ? LIMIT 1', name.trim(), id);
+  const dup = await query`SELECT id FROM payfrequencies WHERE UPPER(name) = UPPER(${name.trim()}) AND id <> ${id} LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'A pay frequency with this name already exists');
-  await exec(
-    'UPDATE payfrequencies SET name=?, description=?, sort_order=?, is_active=? WHERE id=?',
-    name.trim(), description?.trim() || null,
-    sort_order != null && sort_order !== '' ? parseInt(sort_order) : 99,
-    is_active !== undefined ? (is_active ? 1 : 0) : 1,
-    id
-  );
-  const [updated] = await query('SELECT id, name, description, is_active, sort_order FROM payfrequencies WHERE id = ?', id);
+  await exec`
+    UPDATE payfrequencies SET name=${name.trim()}, description=${description?.trim() || null},
+      sort_order=${sort_order != null && sort_order !== '' ? parseInt(sort_order) : 99},
+      is_active=${is_active !== undefined ? !!is_active : true}
+     WHERE id=${id}`;
+  const [updated] = await query`SELECT id, name, description, is_active, sort_order FROM payfrequencies WHERE id = ${id}`;
   respond.ok(res, 'Pay frequency updated', updated);
 });
 
@@ -532,11 +496,11 @@ const updatePayFrequency = asyncHandler(async (req, res) => {
 const deletePayFrequency = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const existing = await query('SELECT id FROM payfrequencies WHERE id = ? LIMIT 1', id);
+  const existing = await query`SELECT id FROM payfrequencies WHERE id = ${id} LIMIT 1`;
   if (!existing.length) return respond.notFound(res, 'Pay frequency not found');
-  const inUse = await query('SELECT id FROM payrollemployees WHERE pay_frequency = ? LIMIT 1', id);
+  const inUse = await query`SELECT id FROM payrollemployees WHERE pay_frequency = ${id} LIMIT 1`;
   if (inUse.length) return respond.conflict(res, 'Cannot delete: frequency is used by payroll employees');
-  await exec('DELETE FROM payfrequencies WHERE id = ?', id);
+  await exec`DELETE FROM payfrequencies WHERE id = ${id}`;
   respond.ok(res, 'Pay frequency deleted');
 });
 
@@ -544,9 +508,10 @@ const deletePayFrequency = asyncHandler(async (req, res) => {
 // Payroll employee records link an employee to their pay frequency, currency, deduction group,
 // and any component exemptions. One record per employee — duplicate employee is blocked.
 
-const PE_SELECT = `
+// Reusable SELECT fragment (Prisma.sql so it composes into tagged queries).
+const PE_SELECT = Prisma.sql`
   SELECT pe.id, pe.employee,
-         TRIM(CONCAT(IFNULL(e.firstName,''), ' ', IFNULL(e.lastName,''))) AS emp_name,
+         TRIM(CONCAT(COALESCE(e.firstName,''), ' ', COALESCE(e.lastName,''))) AS emp_name,
          pe.pay_frequency, pf.name AS freq_name,
          pe.currency,
          pe.deduction_group, cg.name AS group_name,
@@ -559,7 +524,7 @@ const PE_SELECT = `
 
 // GET /calculation/payroll-employees — list all payroll employee setup records with employee name, frequency, and group.
 const getPayrollEmployees = asyncHandler(async (_req, res) => {
-  const rows = await query(`${PE_SELECT} ORDER BY emp_name ASC`);
+  const rows = await query`${PE_SELECT} ORDER BY emp_name ASC`;
   respond.ok(res, 'Payroll employees retrieved', rows);
 });
 
@@ -571,17 +536,15 @@ const createPayrollEmployee = asyncHandler(async (req, res) => {
   if (!currency)      return respond.badReq(res, 'Currency is required');
 
   const empId = toBigInt(employee);
-  const dup = await query('SELECT id FROM payrollemployees WHERE employee = ? LIMIT 1', empId);
+  const dup = await query`SELECT id FROM payrollemployees WHERE employee = ${empId} LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'This employee already has a payroll record');
 
-  const [{ nextId }] = await query('SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM payrollemployees');
-  await exec(
-    'INSERT INTO payrollemployees (id, employee, pay_frequency, currency, deduction_group, deduction_exemptions) VALUES (?, ?, ?, ?, ?, ?)',
-    nextId, empId, toBigInt(pay_frequency), currency?.trim() || null,
-    deduction_group ? toBigInt(deduction_group) : null,
-    deduction_exemptions?.trim() || null
-  );
-  const [created] = await query(`${PE_SELECT} WHERE pe.id = ?`, nextId);
+  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM payrollemployees`;
+  await exec`
+    INSERT INTO payrollemployees (id, employee, pay_frequency, currency, deduction_group, deduction_exemptions)
+     VALUES (${nextId}, ${empId}, ${toBigInt(pay_frequency)}, ${currency?.trim() || null},
+             ${deduction_group ? toBigInt(deduction_group) : null}, ${deduction_exemptions?.trim() || null})`;
+  const [created] = await query`${PE_SELECT} WHERE pe.id = ${nextId}`;
   respond.created(res, 'Payroll employee created', created);
 });
 
@@ -594,21 +557,18 @@ const updatePayrollEmployee = asyncHandler(async (req, res) => {
   if (!pay_frequency) return respond.badReq(res, 'Pay frequency is required');
   if (!currency)      return respond.badReq(res, 'Currency is required');
 
-  const existing = await query('SELECT id FROM payrollemployees WHERE id = ? LIMIT 1', id);
+  const existing = await query`SELECT id FROM payrollemployees WHERE id = ${id} LIMIT 1`;
   if (!existing.length) return respond.notFound(res, 'Payroll employee not found');
 
   const empId = toBigInt(employee);
-  const dup = await query('SELECT id FROM payrollemployees WHERE employee = ? AND id <> ? LIMIT 1', empId, id);
+  const dup = await query`SELECT id FROM payrollemployees WHERE employee = ${empId} AND id <> ${id} LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'This employee already has a payroll record');
 
-  await exec(
-    'UPDATE payrollemployees SET employee=?, pay_frequency=?, currency=?, deduction_group=?, deduction_exemptions=? WHERE id=?',
-    empId, toBigInt(pay_frequency), currency?.trim() || null,
-    deduction_group ? toBigInt(deduction_group) : null,
-    deduction_exemptions?.trim() || null,
-    id
-  );
-  const [updated] = await query(`${PE_SELECT} WHERE pe.id = ?`, id);
+  await exec`
+    UPDATE payrollemployees SET employee=${empId}, pay_frequency=${toBigInt(pay_frequency)}, currency=${currency?.trim() || null},
+      deduction_group=${deduction_group ? toBigInt(deduction_group) : null}, deduction_exemptions=${deduction_exemptions?.trim() || null}
+     WHERE id=${id}`;
+  const [updated] = await query`${PE_SELECT} WHERE pe.id = ${id}`;
   respond.ok(res, 'Payroll employee updated', updated);
 });
 
@@ -616,25 +576,25 @@ const updatePayrollEmployee = asyncHandler(async (req, res) => {
 const deletePayrollEmployee = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const existing = await query('SELECT id FROM payrollemployees WHERE id = ? LIMIT 1', id);
+  const existing = await query`SELECT id FROM payrollemployees WHERE id = ${id} LIMIT 1`;
   if (!existing.length) return respond.notFound(res, 'Payroll employee not found');
-  await exec('DELETE FROM payrollemployees WHERE id = ?', id);
+  await exec`DELETE FROM payrollemployees WHERE id = ${id}`;
   respond.ok(res, 'Payroll employee deleted');
 });
 
 // ── Payslip templates ─────────────────────────────────────────────────────────
 
-const PAYSLIP_SELECT = `
+// Base SELECT fragment (Prisma.sql) — callers append ORDER BY / WHERE as a tagged query.
+const PAYSLIP_SELECT = Prisma.sql`
   SELECT ps.*, cg.name AS group_name, pt.name AS type_name
   FROM payslip_settings ps
   LEFT JOIN calculationgroups cg ON cg.id = ps.deduction_group_id
   LEFT JOIN paymenttype pt ON pt.id = ps.payment_type_id
-  ORDER BY ps.id ASC
 `;
 
 // GET /calculation/payslip-templates — list all payslip templates with their deduction group and payment type names.
 const getPayslipTemplates = asyncHandler(async (_req, res) => {
-  const rows = await query(PAYSLIP_SELECT);
+  const rows = await query`${PAYSLIP_SELECT} ORDER BY ps.id ASC`;
   respond.ok(res, 'Payslip templates retrieved', rows);
 });
 
@@ -644,23 +604,19 @@ const createPayslipTemplate = asyncHandler(async (req, res) => {
           header_note, footer_note, accent_color, show_emp_id, show_department,
           show_position, show_bank_account, visible_columns, net_columns } = req.body;
   if (!template_name?.trim()) return respond.badReq(res, 'Template name is required');
-  await exec(
-    `INSERT INTO payslip_settings
+  // show_* are Boolean columns — pass real booleans for PG portability.
+  await exec`
+    INSERT INTO payslip_settings
        (template_name, deduction_group_id, payment_type_id, company_name, company_address, company_logo_url,
         header_note, footer_note, accent_color, show_emp_id, show_department,
         show_position, show_bank_account, visible_columns, net_columns)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    template_name.trim(),
-    deduction_group_id ? BigInt(deduction_group_id) : null,
-    payment_type_id ? BigInt(payment_type_id) : null,
-    company_name || null, company_address || null, company_logo_url || null,
-    header_note || null, footer_note || null, accent_color || '#3B82F6',
-    show_emp_id ? 1 : 0, show_department ? 1 : 0,
-    show_position ? 1 : 0, show_bank_account ? 1 : 0,
-    visible_columns?.length ? JSON.stringify(visible_columns) : null,
-    net_columns?.length ? JSON.stringify(net_columns) : null
-  );
-  const rows = await query(PAYSLIP_SELECT);
+     VALUES (${template_name.trim()}, ${deduction_group_id ? BigInt(deduction_group_id) : null}, ${payment_type_id ? BigInt(payment_type_id) : null},
+             ${company_name || null}, ${company_address || null}, ${company_logo_url || null},
+             ${header_note || null}, ${footer_note || null}, ${accent_color || '#3B82F6'},
+             ${!!show_emp_id}, ${!!show_department}, ${!!show_position}, ${!!show_bank_account},
+             ${visible_columns?.length ? JSON.stringify(visible_columns) : null},
+             ${net_columns?.length ? JSON.stringify(net_columns) : null})`;
+  const rows = await query`${PAYSLIP_SELECT} ORDER BY ps.id ASC`;
   respond.created(res, 'Template created', rows[rows.length - 1] ?? null);
 });
 
@@ -672,25 +628,18 @@ const updatePayslipTemplate = asyncHandler(async (req, res) => {
           header_note, footer_note, accent_color, show_emp_id, show_department,
           show_position, show_bank_account, visible_columns, net_columns } = req.body;
   if (!template_name?.trim()) return respond.badReq(res, 'Template name is required');
-  await exec(
-    `UPDATE payslip_settings SET
-       template_name=?, deduction_group_id=?, payment_type_id=?, company_name=?, company_address=?,
-       company_logo_url=?, header_note=?, footer_note=?, accent_color=?,
-       show_emp_id=?, show_department=?, show_position=?, show_bank_account=?,
-       visible_columns=?, net_columns=?
-     WHERE id=?`,
-    template_name.trim(),
-    deduction_group_id ? BigInt(deduction_group_id) : null,
-    payment_type_id ? BigInt(payment_type_id) : null,
-    company_name || null, company_address || null, company_logo_url || null,
-    header_note || null, footer_note || null, accent_color || '#3B82F6',
-    show_emp_id ? 1 : 0, show_department ? 1 : 0,
-    show_position ? 1 : 0, show_bank_account ? 1 : 0,
-    visible_columns?.length ? JSON.stringify(visible_columns) : null,
-    net_columns?.length ? JSON.stringify(net_columns) : null,
-    id
-  );
-  const [row] = await query(`${PAYSLIP_SELECT.replace('ORDER BY ps.id ASC', 'WHERE ps.id = ?')}`, id);
+  // show_* are Boolean columns — pass real booleans for PG portability.
+  await exec`
+    UPDATE payslip_settings SET
+       template_name=${template_name.trim()}, deduction_group_id=${deduction_group_id ? BigInt(deduction_group_id) : null},
+       payment_type_id=${payment_type_id ? BigInt(payment_type_id) : null}, company_name=${company_name || null},
+       company_address=${company_address || null}, company_logo_url=${company_logo_url || null},
+       header_note=${header_note || null}, footer_note=${footer_note || null}, accent_color=${accent_color || '#3B82F6'},
+       show_emp_id=${!!show_emp_id}, show_department=${!!show_department}, show_position=${!!show_position}, show_bank_account=${!!show_bank_account},
+       visible_columns=${visible_columns?.length ? JSON.stringify(visible_columns) : null},
+       net_columns=${net_columns?.length ? JSON.stringify(net_columns) : null}
+     WHERE id=${id}`;
+  const [row] = await query`${PAYSLIP_SELECT} WHERE ps.id = ${id}`;
   respond.ok(res, 'Template updated', row ?? null);
 });
 
@@ -698,7 +647,7 @@ const updatePayslipTemplate = asyncHandler(async (req, res) => {
 const deletePayslipTemplate = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  await exec('DELETE FROM payslip_settings WHERE id = ?', id);
+  await exec`DELETE FROM payslip_settings WHERE id = ${id}`;
   respond.ok(res, 'Template deleted', null);
 });
 

@@ -25,7 +25,7 @@ let _overrides = new Map();
 /** Re-load overrides from the DB into memory. Call after any write. */
 async function reload() {
   try {
-    const rows = await prisma.$queryRawUnsafe('SELECT message_key, override_text, enabled FROM message_overrides');
+    const rows = await prisma.$queryRaw`SELECT message_key, override_text, enabled FROM message_overrides`;
     const m = new Map();
     for (const r of rows) m.set(String(r.message_key), { text: r.override_text, enabled: r.enabled === 1 || r.enabled === true });
     _overrides = m;

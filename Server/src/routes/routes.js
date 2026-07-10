@@ -658,6 +658,9 @@ router.get   ('/attendance/:id/photos',               attendance.getRecordPhotos
 router.put   ('/attendance/:id',                      permissionGuard('manage_attendance'), attendance.updateRecord);
 router.delete('/attendance/:id',                      permissionGuard('manage_attendance'), attendance.deleteRecord);
 
+// Specific routes MUST be declared before the dynamic `/:id` routes, otherwise Express
+// matches e.g. GET /me as /:id with id="me" (wrong controller).
+router.get('/me',            checkToken, getMe);
 router.get('/:id/access',          roleGuard('admin','super-admin'), getUserAccess);
 router.get('/:id',                 getUserById);
 router.put('/:id',                 permissionGuard('edit_users'),       updateUser);
@@ -665,7 +668,6 @@ router.put('/:id/change-password', changePassword);
 router.put('/:id/deactivate',      permissionGuard('deactivate_users'), deactivateUser);
 router.put('/:id/activate',        permissionGuard('activate_users'),   activateUser);
 router.put('/user/:id/status', permissionGuard.any('deactivate_users','activate_users'), updateUserStatus);
-router.get('/me',            checkToken, getMe);
 
 // ─────────────────────────────────────────────
 // Catch-all

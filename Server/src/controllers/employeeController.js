@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { prisma } = require('../helpers/dbQueryHelper');
+const { Prisma } = require('@prisma/client'); // Prisma.sql / Prisma.join for portable dynamic SQL
 const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 const { logActivity, fromReq } = require('./auditController');
@@ -32,18 +33,18 @@ const { serialize: serializeBigInt, toBigInt } = require('../helpers/controllerH
 /** Read an app-control toggle (Settings → Approvals) from the settings table.
  *  Returns `defaultOn` when the key has never been saved. */
 async function readControlSetting(name, defaultOn) {
-  const [row] = await prisma.$queryRawUnsafe(
-    `SELECT value FROM settings WHERE name=? AND category='app_controls' LIMIT 1`, name
-  ).catch(() => []);
+  const row = await prisma.settings
+    .findFirst({ where: { name, category: 'app_controls' }, select: { value: true } })
+    .catch(() => null);
   return row ? row.value === '1' : defaultOn;
 }
 
 /** Load the admin-configured employee-form field config (Settings → Controls → Employee Form).
  *  Returns the parsed `{ key: { visible, required } }` map, or `{}` when never saved. */
 async function loadEmployeeFieldConfig() {
-  const [row] = await prisma.$queryRawUnsafe(
-    `SELECT value FROM settings WHERE name='employee_form_fields' AND category='app_controls' LIMIT 1`
-  ).catch(() => []);
+  const row = await prisma.settings
+    .findFirst({ where: { name: 'employee_form_fields', category: 'app_controls' }, select: { value: true } })
+    .catch(() => null);
   if (!row || !row.value) return {};
   try { return JSON.parse(row.value); } catch { return {}; }
 }
@@ -139,9 +140,7 @@ async function pushEmployeeToExternalSystem(e) {
       timeout: Number(apiCfg.employee_sync_timeout) || 10000,
     });
     console.log('[EmployeeSync] pushed', e.employee_id, '→ status:', r.status, '| response:', JSON.stringify(r.data));
-    await prisma.$executeRawUnsafe(
-      `UPDATE employee SET sync_status='synced', sync_error=NULL WHERE id=?`, id
-    );
+    await prisma.$executeRaw`UPDATE employee SET sync_status='synced', sync_error=NULL WHERE id=${id}`;
     return { success: true, httpStatus: r.status, data: r.data };
   } catch (err) {
     const msg = (err.response?.data ? JSON.stringify(err.response.data) : err.message) || 'Unknown error';
@@ -150,10 +149,7 @@ async function pushEmployeeToExternalSystem(e) {
       '| response:', JSON.stringify(err.response?.data),
       '| message:', err.message
     );
-    await prisma.$executeRawUnsafe(
-      `UPDATE employee SET sync_status='failed', sync_error=? WHERE id=?`,
-      msg.substring(0, 500), id
-    );
+    await prisma.$executeRaw`UPDATE employee SET sync_status='failed', sync_error=${msg.substring(0, 500)} WHERE id=${id}`;
     return { success: false, httpStatus: err.response?.status, data: err.response?.data, message: err.message };
   }
 }
@@ -164,9 +160,9 @@ const EMPLOYEE_ID_MAX_LENGTH = 10; // hard cap on staff ID (auto-generated OR ma
 /** Read the admin-configured employee-ID structure (Settings → Controls → General).
  *  Returns the stored template, or the default when never saved. */
 async function loadEmployeeIdFormat() {
-  const [row] = await prisma.$queryRawUnsafe(
-    `SELECT value FROM settings WHERE name='employee_id_format' AND category='app_controls' LIMIT 1`
-  ).catch(() => []);
+  const row = await prisma.settings
+    .findFirst({ where: { name: 'employee_id_format', category: 'app_controls' }, select: { value: true } })
+    .catch(() => null);
   const val = row && typeof row.value === 'string' ? row.value.trim() : '';
   return val || DEFAULT_EMPLOYEE_ID_PATTERN;
 }
@@ -685,9 +681,7 @@ const updateEmployee = asyncHandler(async (req, res) => {
   // else: leave approvalStatus / lifecycleStatus untouched (keep the employee's current status).
 
   await prisma.employee.update({ where: { id }, data: updateData });
-  await prisma.$executeRawUnsafe(
-    `UPDATE employee SET sync_status=NULL, sync_error=NULL WHERE id=?`, id
-  );
+  await prisma.$executeRaw`UPDATE employee SET sync_status=NULL, sync_error=NULL WHERE id=${id}`;
 
   // If the supervisor changed, move any pending supervisor-routed work to the new supervisor so
   // nothing stays stuck with the old one. Centralised in supervisorHelper (live queues like leave,
@@ -965,29 +959,21 @@ const getEmployeeActivity = asyncHandler(async (req, res) => {
   const id = String(req.params.id);
   const { search, action, page = '1', limit = '25' } = req.query;
 
-  const conditions = [`module = 'Employees'`, `entity_id = ?`];
-  const params     = [id];
-
-  if (action) { conditions.push('action = ?'); params.push(String(action)); }
+  const conds = [Prisma.sql`module = 'Employees'`, Prisma.sql`entity_id = ${id}`];
+  if (action) conds.push(Prisma.sql`action = ${String(action)}`);
   if (search) {
-    conditions.push('(action LIKE ? OR user_name LIKE ? OR details LIKE ?)');
     const like = `%${search}%`;
-    params.push(like, like, like);
+    conds.push(Prisma.sql`(action LIKE ${like} OR user_name LIKE ${like} OR details LIKE ${like})`);
   }
-
-  const where    = 'WHERE ' + conditions.join(' AND ');
+  const where    = Prisma.join(conds, ' AND ');
   const pageNum  = Math.max(1, parseInt(page));
   const pageSize = Math.min(100, Math.max(1, parseInt(limit)));
   const offset   = (pageNum - 1) * pageSize;
 
-  const [{ total }] = await prisma.$queryRawUnsafe(
-    `SELECT COUNT(*) AS total FROM auditlogs ${where}`, ...params
-  );
-  const logs = await prisma.$queryRawUnsafe(
-    `SELECT id, action, user_id, user_name, ip_address, details, created_at
-     FROM auditlogs ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-    ...params, pageSize, offset
-  );
+  const [{ total }] = await prisma.$queryRaw`SELECT COUNT(*) AS total FROM auditlogs WHERE ${where}`;
+  const logs = await prisma.$queryRaw`
+    SELECT id, action, user_id, user_name, ip_address, details, created_at
+     FROM auditlogs WHERE ${where} ORDER BY created_at DESC LIMIT ${pageSize} OFFSET ${offset}`;
 
   const serialize = v => {
     if (typeof v === 'bigint') return v.toString();
@@ -1031,12 +1017,12 @@ const getEmployeePositionImpact = asyncHandler(async (req, res) => {
     select: { id: true },
   });
   if (linkedUser) {
-    const rows = await prisma.$queryRawUnsafe(
-      `SELECT value FROM settings WHERE category='leave_threshold_approval' AND name='threshold_approvers' LIMIT 1`
-    ).catch(() => []);
-    if (rows[0]?.value) {
+    const row = await prisma.settings
+      .findFirst({ where: { category: 'leave_threshold_approval', name: 'threshold_approvers' }, select: { value: true } })
+      .catch(() => null);
+    if (row?.value) {
       try {
-        const approvers = JSON.parse(rows[0].value);
+        const approvers = JSON.parse(row.value);
         isThresholdApprover = approvers.includes(String(linkedUser.id));
       } catch {}
     }

@@ -210,7 +210,7 @@ const loginUser = asyncHandler(async (req, res) => {
     INNER JOIN model_has_roles mhr ON mhr.role_id = r.id
     WHERE mhr.model_id = ? AND mhr.model_type = 'users' AND r.status = '1'
     ORDER BY r.name ASC
-  `, [user.id]);
+  `, [String(user.id)]);
 
   const roles = rolesResult.data ?? [];
 
@@ -236,7 +236,7 @@ const loginUser = asyncHandler(async (req, res) => {
     INNER JOIN model_has_permissions mhp ON mhp.permission_id = p.id
     WHERE mhp.model_id = ? AND mhp.model_type = 'users'
     ORDER BY p.name ASC
-  `, [user.id]);
+  `, [String(user.id)]);
 
   const directPermissions = directPermsResult.data ?? [];
 
@@ -335,90 +335,57 @@ const logoutUser = asyncHandler(async (req, res) => {
 // @access  Private (Admin only)
 // ─────────────────────────────────────────────
 const getAllUsers = asyncHandler(async (req, res) => {
-   const result = await helper.selectRecordsWithQuery(`
-  SELECT
-    u.id,
-    u.username,
-    u.employeeId,
-    u.status,
-    u.posted_by,
-    e.firstName,
-    e.lastName,
-    e.middleName,
-    CONCAT_WS(' ', e.firstName, e.lastName) AS name,
-    e.phone,
-    e.email,
-
-    -- Roles as JSON array
-    CONCAT(
-      '[',
-      IFNULL(
-        GROUP_CONCAT(
-          DISTINCT CONCAT('"', r.name, '"')
-          ORDER BY r.name
-          SEPARATOR ','
-        ),
-        ''
-      ),
-      ']'
-    ) AS roles,
-
-    -- Direct permissions as JSON array
-    CONCAT(
-      '[',
-      IFNULL(
-        GROUP_CONCAT(
-          DISTINCT CONCAT('"', p.name, '"')
-          ORDER BY p.name
-          SEPARATOR ','
-        ),
-        ''
-      ),
-      ']'
-    ) AS direct_permissions
-
-  FROM users u
-  JOIN employee e ON e.id = u.employeeId
-
-  LEFT JOIN model_has_roles mhr
-    ON mhr.model_id = u.id
-    AND mhr.model_type = 'users'
-
-  LEFT JOIN roles r
-    ON r.id = mhr.role_id
-
-  LEFT JOIN model_has_permissions mhp
-    ON mhp.model_id = u.id
-    AND mhp.model_type = 'users'
-
-  LEFT JOIN permissions p
-    ON p.id = mhp.permission_id
-
-  WHERE u.status IN ('1', '0')
-
-  GROUP BY
-    u.id,
-    u.username,
-    u.employeeId,
-    u.status,
-    u.posted_by,
-    e.firstName,
-    e.lastName,
-    e.middleName,
-    e.phone,
-    e.email
-`);
+  // Portable across MySQL/Postgres: fetch flat rows and aggregate roles/permissions in JS
+  // (avoids MySQL-only GROUP_CONCAT). Response shape is preserved exactly — `roles` and
+  // `direct_permissions` are JSON-array STRINGS of sorted, distinct names, e.g. '["admin","hr"]'.
+  const result = await helper.selectRecordsWithQuery(`
+    SELECT u.id, u.username, u.employeeId, u.status, u.posted_by,
+           e.firstName, e.lastName, e.middleName,
+           CONCAT_WS(' ', e.firstName, e.lastName) AS name,
+           e.phone, e.email
+    FROM users u
+    JOIN employee e ON e.id = u.employeeId
+    WHERE u.status IN ('1', '0')
+  `);
 
   if (result.status === 'error') {
     console.error('Database error:', result.message);
     return res.status(404).json({ status: '404', message: 'No users found', data: [] });
   }
 
+  const [rolesRes, permsRes] = await Promise.all([
+    helper.selectRecordsWithQuery(`
+      SELECT mhr.model_id AS user_id, r.name
+      FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id
+      WHERE mhr.model_type = 'users'`),
+    helper.selectRecordsWithQuery(`
+      SELECT mhp.model_id AS user_id, p.name
+      FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id
+      WHERE mhp.model_type = 'users'`),
+  ]);
+
+  // user_id → sorted, distinct name[] → JSON-array string (matches the old GROUP_CONCAT output)
+  const jsonByUser = (rows) => {
+    const m = {};
+    for (const r of rows || []) (m[String(r.user_id)] ??= new Set()).add(r.name);
+    const out = {};
+    for (const [uid, set] of Object.entries(m)) out[uid] = JSON.stringify([...set].sort());
+    return out;
+  };
+  const rolesByUser = jsonByUser(rolesRes.data);
+  const permsByUser = jsonByUser(permsRes.data);
+
+  const data = result.data.map(u => ({
+    ...u,
+    roles:              rolesByUser[String(u.id)] ?? '[]',
+    direct_permissions: permsByUser[String(u.id)] ?? '[]',
+  }));
+
   res.status(200).json({
     status:  '200',
     message: 'Users retrieved successfully',
-    count:   result.count,
-    data:    result.data,
+    count:   data.length,
+    data,
   });
 });
 
@@ -433,71 +400,19 @@ const getAllUsers = asyncHandler(async (req, res) => {
 const getUserById = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
+  // Portable across MySQL/Postgres: fetch flat rows and assemble roles/permissions in JS
+  // (avoids MySQL-only GROUP_CONCAT + hand-rolled JSON). Response shape is preserved exactly:
+  //   roles = [{ name, id, permissions: [sorted names] }]  (sorted by role name)
+  //   direct_permissions = [sorted permission names]
   const result = await helper.selectRecordsWithQuery(`
-    SELECT
-      u.id,
-      u.username,
-      u.employeeId,
-      u.status,
-      u.posted_by,
-      e.firstName,
-      e.middleName,
-      e.lastName,
-      CONCAT_WS(' ', e.firstName, e.lastName) AS name,
-      e.phone,
-      e.email,
-
-      -- Roles + permissions per role (subquery)
-      COALESCE(
-        (SELECT CONCAT('[',
-          GROUP_CONCAT(
-            DISTINCT CONCAT(
-              '{',
-              '"name":"', REPLACE(r.name, '"', '\\"'), '",',
-              '"id":', r.id, ',',
-              '"permissions":[',
-                COALESCE(
-                  (SELECT GROUP_CONCAT(
-                     DISTINCT CONCAT('"', REPLACE(p.name, '"', '\\"'), '"')
-                     ORDER BY p.name SEPARATOR ','
-                   )
-                   FROM role_has_permissions rhp
-                   JOIN permissions p ON p.id = rhp.permission_id
-                   WHERE rhp.role_id = r.id),
-                  ''
-                ),
-              ']',
-              '}'
-            )
-            ORDER BY r.name SEPARATOR ','
-          ),
-        ']')
-        FROM model_has_roles mhr
-        JOIN roles r ON r.id = mhr.role_id
-        WHERE mhr.model_id = u.id AND mhr.model_type = 'users'
-        ),
-        '[]'
-      ) AS roles_json,
-
-      -- Direct permissions (separate subquery)
-      COALESCE(
-        (SELECT CONCAT('[',
-          GROUP_CONCAT(
-            DISTINCT CONCAT('"', REPLACE(p.name, '"', '\\"'), '"')
-            ORDER BY p.name SEPARATOR ','
-          ),
-        ']')
-        FROM model_has_permissions mhp
-        JOIN permissions p ON p.id = mhp.permission_id
-        WHERE mhp.model_id = u.id AND mhp.model_type = 'users'
-        ),
-        '[]'
-      ) AS direct_permissions_json
-
+    SELECT u.id, u.username, u.employeeId, u.status, u.posted_by,
+           e.firstName, e.middleName, e.lastName,
+           CONCAT_WS(' ', e.firstName, e.lastName) AS name,
+           e.phone, e.email
     FROM users u
     JOIN employee e ON e.id = u.employeeId
     WHERE u.id = ?
-  `, [id]);
+  `, [Number(id)]);
 
   if (result.status === 'error' || !result.data?.length) {
     return res.status(404).json({ status: '404', message: 'User not found' });
@@ -505,18 +420,38 @@ const getUserById = asyncHandler(async (req, res) => {
 
   const user = result.data[0];
 
-  let roles = [];
-  let directPermissions = [];
+  // Roles for this user, each with the permissions granted via that role.
+  const [roleRows, rolePermRows, directRows] = await Promise.all([
+    helper.selectRecordsWithQuery(`
+      SELECT r.id AS role_id, r.name AS role_name
+      FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id
+      WHERE mhr.model_id = ? AND mhr.model_type = 'users'`, [String(id)]),
+    helper.selectRecordsWithQuery(`
+      SELECT rhp.role_id AS role_id, p.name
+      FROM role_has_permissions rhp JOIN permissions p ON p.id = rhp.permission_id
+      JOIN model_has_roles mhr ON mhr.role_id = rhp.role_id
+      WHERE mhr.model_id = ? AND mhr.model_type = 'users'`, [String(id)]),
+    helper.selectRecordsWithQuery(`
+      SELECT p.name
+      FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id
+      WHERE mhp.model_id = ? AND mhp.model_type = 'users'`, [String(id)]),
+  ]);
 
-  try {
-    roles = JSON.parse(user.roles_json || '[]');
-    directPermissions = JSON.parse(user.direct_permissions_json || '[]');
-  } catch (err) {
-    console.error('JSON parse error:', err);
-  }
+  const permsByRole = {};
+  for (const r of rolePermRows.data || []) (permsByRole[String(r.role_id)] ??= new Set()).add(r.name);
 
-  delete user.roles_json;
-  delete user.direct_permissions_json;
+  // Distinct roles, sorted by name; each with sorted distinct permission names.
+  const seenRole = new Set();
+  const roles = (roleRows.data || [])
+    .filter(r => !seenRole.has(String(r.role_id)) && seenRole.add(String(r.role_id)))
+    .sort((a, b) => String(a.role_name).localeCompare(String(b.role_name)))
+    .map(r => ({
+      name: r.role_name,
+      id: r.role_id,
+      permissions: [...(permsByRole[String(r.role_id)] ?? new Set())].sort(),
+    }));
+
+  const directPermissions = [...new Set((directRows.data || []).map(p => p.name))].sort();
 
   res.status(200).json({
     status: '200',
@@ -635,7 +570,7 @@ const updateUser = asyncHandler(async (req, res) => {
     for (const roleId of roles) {
       await helper.selectRecordsWithQuery(
         `INSERT INTO model_has_roles (role_id, model_id, model_type) VALUES (?, ?, 'users')`,
-        [roleId, String(id)]
+        [Number(roleId), String(id)]
       );
     }
   }
@@ -670,7 +605,7 @@ const updateUser = asyncHandler(async (req, res) => {
     for (const permissionId of permissions) {
       await helper.selectRecordsWithQuery(
         `INSERT INTO model_has_permissions (permission_id, model_id, model_type) VALUES (?, ?, 'users')`,
-        [permissionId, String(id)]
+        [Number(permissionId), String(id)]
       );
     }
   }
@@ -915,35 +850,53 @@ const EMPLOYEE_PROFILE_INCLUDE = {
 const getMe = asyncHandler(async (req, res) => {
   const { id } = req.user;
 
-  // Only include employee for now — guardian/student relations require
-  // a regenerated Prisma client after the schema migration.
-  const user = await helper.prisma.users.findUnique({
-    where: { id },
-    include: {
-      employee: { include: EMPLOYEE_PROFILE_INCLUDE },
-    },
-  });
-
+  const user = await helper.prisma.users.findUnique({ where: { id: BigInt(id) } });
   if (!user) return respond.notFound(res, 'User not found');
 
-  const userType = user.employee ? 'employee' : 'admin';
-
+  // `users.employee`/`employeeId` are scalar FK ids (no Prisma relation), and the employee profile
+  // lookups (jobTitle, department, …) aren't relations either — resolve them manually via the same
+  // CodeListValue / companystructures lookups the employee endpoints use. Portable on MySQL + PG.
+  const empFk = user.employeeId ?? user.employee ?? null;
   let employee = null;
-  if (user.employee) {
-    const e = user.employee;
-    const remap = (obj) => obj ? { ...obj, value: obj.label } : null;
-    employee = {
-      ...e,
-      jobTitle:       remap(e.jobTitle),
-      department:     remap(e.department),
-      employmentType: remap(e.employmentType),
-      nationality:    remap(e.nationality),
-      religion:       remap(e.religion),
-    };
+  if (empFk != null) {
+    const e = await helper.prisma.employee.findUnique({ where: { id: BigInt(empFk) } });
+    if (e) {
+      // CodeListValue-backed lookups (string UUID ids) → { id, label, code, value }
+      const clvIds = [e.titleId, e.genderId, e.nationalityId, e.religionId, e.jobTitleId, e.employmentStatusId].filter(Boolean);
+      const clvMap = {};
+      if (clvIds.length) {
+        const vals = await helper.prisma.codeListValue.findMany({
+          where: { id: { in: clvIds } }, select: { id: true, label: true, code: true },
+        });
+        vals.forEach(v => { clvMap[v.id] = { ...v, value: v.label }; });
+      }
+      // companystructures-backed lookups (bigint ids) → { id, label, code, value }
+      const structIds = [e.departmentId, e.branchId, e.unitId, e.outletId].filter(v => v != null);
+      const structMap = {};
+      if (structIds.length) {
+        const structs = await helper.prisma.companystructures.findMany({
+          where: { id: { in: structIds } }, select: { id: true, title: true, comp_code: true },
+        });
+        structs.forEach(s => { structMap[s.id.toString()] = { id: s.id.toString(), label: s.title, value: s.title, code: s.comp_code }; });
+      }
+      const clv    = fk => fk ? (clvMap[fk] ?? null) : null;
+      const struct = fk => (fk != null) ? (structMap[fk.toString()] ?? null) : null;
+      employee = {
+        ...e,
+        title:            clv(e.titleId),
+        gender:           clv(e.genderId),
+        jobTitle:         clv(e.jobTitleId),
+        employmentType:   clv(e.employmentStatusId),
+        nationality:      clv(e.nationalityId),
+        religion:         clv(e.religionId),
+        department:       struct(e.departmentId),
+        branch:           struct(e.branchId),
+      };
+    }
   }
 
+  const userType = employee ? 'employee' : 'admin';
   const { password: _, ...safe } = user;
-
   return respond.ok(res, 'OK', { ...safe, employee, userType });
 });
 
@@ -958,7 +911,7 @@ const updateUserTheme = asyncHandler(async (req, res) => {
   if (!['dark', 'light'].includes(theme)) {
     return res.status(400).json({ status: '400', message: 'Invalid theme' });
   }
-  await helper.prisma.$executeRawUnsafe(`UPDATE users SET theme = ? WHERE id = ?`, theme, req.user.id);
+  await helper.prisma.users.updateMany({ where: { id: helper.safeBigInt(req.user.id) }, data: { theme } });
   return respond.ok(res, 'Theme saved');
 });
 

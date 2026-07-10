@@ -1,4 +1,5 @@
 const { prisma } = require('./dbQueryHelper');
+const { fieldFor } = require('./pgKeyMap'); // normalise lower-cased Postgres result keys → camelCase field names
 
 // Recursively convert BigInt / Date / Prisma Decimal to JSON-safe primitives.
 // Handles three Decimal shapes:
@@ -24,7 +25,7 @@ function serialize(obj) {
     }
     if (typeof obj.toFixed === 'function') return parseFloat(obj.toString());
     const out = {};
-    for (const [k, v] of Object.entries(obj)) out[k] = serialize(v);
+    for (const [k, v] of Object.entries(obj)) out[fieldFor(k)] = serialize(v);
     return out;
   }
   return obj;
@@ -39,8 +40,14 @@ function toBigInt(val) {
   try { return BigInt(val); } catch { return null; }
 }
 
-// Run an ALTER TABLE statement quietly — ignores duplicate-column and similar schema-patch errors
+// Run an ALTER TABLE / CREATE TABLE statement quietly — ignores duplicate-column and similar
+// schema-patch errors. Intentionally uses $executeRawUnsafe: this is DDL (a dynamic runtime
+// string, not parameterizable), so it can't be a tagged template. The statements are MySQL-dialect
+// (AUTO_INCREMENT, ADD INDEX, backtick-free but MySQL types); on Postgres the schema is created by
+// `prisma db push` / migrations, so these patches are redundant AND their MySQL syntax errors would
+// spam the logs — skip them entirely when the active provider isn't MySQL.
 async function safeAlter(sql) {
+  if (prisma?._activeProvider && prisma._activeProvider !== 'mysql') return;
   try { await prisma.$executeRawUnsafe(sql); } catch {}
 }
 

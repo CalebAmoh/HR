@@ -40,7 +40,7 @@ async function notifyEmployee(employeeId, payload = {}) {
   const empId = big(employeeId);
   if (!empId) return;
   try {
-    const rows = await prisma.$queryRawUnsafe('SELECT id FROM users WHERE employeeId = ? LIMIT 1', empId);
+    const rows = await prisma.$queryRaw`SELECT id FROM users WHERE employeeId = ${empId} LIMIT 1`;
     if (!rows.length) return;
     await createNotification({ toUser: rows[0].id, employee: empId, ...payload });
   } catch (err) {
@@ -57,20 +57,18 @@ async function notifyUser(userId, payload = {}) {
 // excluding the actor so people aren't pinged about their own action.
 async function notifyUsersWithPermission(permission, payload = {}, exceptUserId = null) {
   try {
-    const rows = await prisma.$queryRawUnsafe(
-      `SELECT DISTINCT mhr.model_id AS userId
+    const rows = await prisma.$queryRaw`
+      SELECT DISTINCT mhr.model_id AS userId
          FROM permissions p
          JOIN role_has_permissions rhp ON rhp.permission_id = p.id
          JOIN roles r ON r.id = rhp.role_id AND r.status = '1'
          JOIN model_has_roles mhr ON mhr.role_id = r.id AND mhr.model_type = 'users'
-        WHERE p.name = ?
+        WHERE p.name = ${permission}
        UNION
        SELECT DISTINCT mhp.model_id AS userId
          FROM permissions p
          JOIN model_has_permissions mhp ON mhp.permission_id = p.id AND mhp.model_type = 'users'
-        WHERE p.name = ?`,
-      permission, permission,
-    );
+        WHERE p.name = ${permission}`;
     const except = exceptUserId === null || exceptUserId === undefined ? null : String(exceptUserId);
     for (const row of rows) {
       if (except !== null && String(row.userId) === except) continue;

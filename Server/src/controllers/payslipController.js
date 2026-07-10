@@ -9,9 +9,9 @@ const { UPLOAD_DIR } = require('../middleware/upload');
 
 const { serialize } = require('../helpers/controllerHelpers');
 
-async function query(sql, ...params) {
-  const rows = await prisma.$queryRawUnsafe(sql, ...params);
-  return serialize(rows);
+// Tagged-template query helper — portable (Prisma emits the right placeholders per provider).
+async function query(strings, ...values) {
+  return serialize(await prisma.$queryRaw(strings, ...values));
 }
 
 function fmt(val) {
@@ -74,64 +74,55 @@ const downloadPayslip = asyncHandler(async (req, res) => {
     permissions.includes('export_reports');
 
   if (!canDownloadForOthers) {
-    const [self] = await query(
-      'SELECT id FROM employee WHERE email = ? OR work_email = ? OR employee_id = ? LIMIT 1',
-      req.user?.email || '',
-      req.user?.email || '',
-      req.user?.username || ''
-    );
+    const [self] = await query`SELECT id FROM employee WHERE email = ${req.user?.email || ''} OR work_email = ${req.user?.email || ''} OR employee_id = ${req.user?.username || ''} LIMIT 1`;
     if (!self || String(self.id) !== String(empId)) {
       return respond.badReq(res, 'You can only download your own payslip');
     }
   }
 
   // ── Fetch run, settings, employee ──────────────────────────────────────────
-  const [run] = await query(`
+  const [run] = await query`
     SELECT pr.id, pr.name, pr.date_start, pr.date_end, pr.status, pr.payment_type_id,
            pf.name AS freq_name
     FROM payrollruns pr
     LEFT JOIN payfrequencies pf ON pf.id = pr.pay_frequency
-    WHERE pr.id = ? LIMIT 1`, BigInt(runId));
+    WHERE pr.id = ${BigInt(runId)} LIMIT 1`;
   if (!run) return respond.notFound(res, 'Payroll run not found');
 
   if (run.payment_type_id) {
-    const [pt] = await query(
-      `SELECT generate_payslip FROM paymenttype WHERE id = ? LIMIT 1`,
-      BigInt(run.payment_type_id)
-    ).catch(() => [null]);
+    const [pt] = await query`SELECT generate_payslip FROM paymenttype WHERE id = ${BigInt(run.payment_type_id)} LIMIT 1`.catch(() => [null]);
     if (pt && !pt.generate_payslip) {
       return res.status(403).json({ success: false, message: 'Payslips are not generated for this payment type.' });
     }
   }
 
-  const [emp] = await query(`
+  const [emp] = await query`
     SELECT e.id, e.employee_id, e.firstName, e.lastName, e.email,
            e.bankAccount,
            COALESCE(jt.label, e.jobTitleId) AS designation,
-           COALESCE(dept.title, CAST(e.departmentId AS CHAR)) AS department
+           COALESCE(dept.title, CONCAT(e.departmentId, '')) AS department
     FROM employee e
     LEFT JOIN codelistvalue jt ON jt.id = e.jobTitleId
     LEFT JOIN companystructures dept ON dept.id = e.departmentId
-    WHERE e.id = ? LIMIT 1`, BigInt(empId));
+    WHERE e.id = ${BigInt(empId)} LIMIT 1`;
   if (!emp) return respond.notFound(res, 'Employee not found');
 
-  const payrollData = await query(`
+  const payrollData = await query`
     SELECT pc.id AS payroll_item_id,
            COALESCE(NULLIF(pc.payslip_label,''), pc.name) AS name,
            pc.payment_deduction, pc.visible, pc.include_in_net,
-           CAST(pd.amount AS CHAR) AS amount
+           CONCAT(pd.amount, '') AS amount
     FROM payrolldata pd
     JOIN payrollcolumns pc ON pc.id = pd.payroll_item
-    WHERE pd.payroll = ? AND pd.employee = ?
-    ORDER BY COALESCE(pc.colorder, 99999)`, BigInt(runId), BigInt(empId));
+    WHERE pd.payroll = ${BigInt(runId)} AND pd.employee = ${BigInt(empId)}
+    ORDER BY COALESCE(pc.colorder, 99999)`;
 
   // Find the best-matching template: payment type + group, then payment type,
   // then group, then the default template.
-  const allTemplates = await query(`
+  const allTemplates = await query`
     SELECT * FROM payslip_settings
-    ORDER BY payment_type_id IS NULL ASC, deduction_group_id IS NULL ASC, id ASC
-  `).catch(() => []);
-  const [empPe] = await query('SELECT deduction_group FROM payrollemployees WHERE employee = ? LIMIT 1', BigInt(empId)).catch(() => [null]);
+    ORDER BY payment_type_id IS NULL ASC, deduction_group_id IS NULL ASC, id ASC`.catch(() => []);
+  const [empPe] = await query`SELECT deduction_group FROM payrollemployees WHERE employee = ${BigInt(empId)} LIMIT 1`.catch(() => [null]);
   const empGroup = empPe?.deduction_group ? String(empPe.deduction_group) : null;
   const runPaymentType = run.payment_type_id ? String(run.payment_type_id) : null;
   const [settings] = allTemplates
@@ -166,7 +157,7 @@ const downloadPayslip = asyncHandler(async (req, res) => {
     : (netRow ? parseFloat(netRow.amount || '0') : (totalEarnings - totalDeductions));
 
   // Company branding: template first, then global App Setup (Settings → System → App Setup).
-  const setupRows = await query(`SELECT name, value FROM settings WHERE category='app_setup'`).catch(() => []);
+  const setupRows = await prisma.settings.findMany({ where: { category: 'app_setup' }, select: { name: true, value: true } }).catch(() => []);
   const setup = {};
   setupRows.forEach(r => { setup[r.name] = r.value; });
   const companyName = s.company_name || setup.company_name || 'Payslip';
@@ -289,25 +280,20 @@ const downloadPayslip = asyncHandler(async (req, res) => {
 
 // ── My payslips list (for employee self-service) ──────────────────────────────
 const getMyPayslips = asyncHandler(async (req, res) => {
-  const [self] = await query(
-    'SELECT id FROM employee WHERE email = ? OR work_email = ? OR employee_id = ? LIMIT 1',
-    req.user?.email || '',
-    req.user?.email || '',
-    req.user?.username || ''
-  );
+  const [self] = await query`SELECT id FROM employee WHERE email = ${req.user?.email || ''} OR work_email = ${req.user?.email || ''} OR employee_id = ${req.user?.username || ''} LIMIT 1`;
   if (!self) return respond.notFound(res, 'Employee record not found for this user');
-  const rows = await query(`
+  const rows = await query`
     SELECT pr.id AS run_id, pr.name, pr.date_start, pr.date_end, pr.status,
            pf.name AS freq_name
     FROM payrollruns pr
     LEFT JOIN payfrequencies pf ON pf.id = pr.pay_frequency
     LEFT JOIN paymenttype pt ON pt.id = pr.payment_type_id
     WHERE pr.status IN ('Completed','Approved')
-      AND COALESCE(pt.generate_payslip, 1) = 1
+      AND COALESCE(pt.generate_payslip, TRUE)
       AND EXISTS (
-        SELECT 1 FROM payrolldata pd WHERE pd.payroll = pr.id AND pd.employee = ?
+        SELECT 1 FROM payrolldata pd WHERE pd.payroll = pr.id AND pd.employee = ${BigInt(self.id)}
       )
-    ORDER BY pr.date_start DESC, pr.created_at DESC`, BigInt(self.id));
+    ORDER BY pr.date_start DESC, pr.created_at DESC`;
   respond.ok(res, 'My payslips retrieved', { employeeId: String(self.id), runs: rows });
 });
 
@@ -316,35 +302,32 @@ const getMyTaxSummary = asyncHandler(async (req, res) => {
   // Resolve own employee — prefer the users.employeeId link, fall back to email match
   let empId = req.user?.employeeId ? String(req.user.employeeId) : null;
   if (!empId) {
-    const [self] = await query(
-      'SELECT id FROM employee WHERE email = ? OR work_email = ? OR employee_id = ? LIMIT 1',
-      req.user?.email || '', req.user?.email || '', req.user?.username || ''
-    );
+    const [self] = await query`SELECT id FROM employee WHERE email = ${req.user?.email || ''} OR work_email = ${req.user?.email || ''} OR employee_id = ${req.user?.username || ''} LIMIT 1`;
     empId = self ? String(self.id) : null;
   }
   if (!empId) return respond.notFound(res, 'Employee record not found for this user');
 
-  const years = await query(`
-    SELECT DISTINCT YEAR(pr.date_start) AS y
+  const years = await query`
+    SELECT DISTINCT EXTRACT(YEAR FROM pr.date_start) AS y
     FROM payrolldata pd JOIN payrollruns pr ON pr.id = pd.payroll
-    WHERE pd.employee = ? AND pr.status IN ('Completed','Approved') AND pr.date_start IS NOT NULL
-    ORDER BY y DESC`, BigInt(empId));
+    WHERE pd.employee = ${BigInt(empId)} AND pr.status IN ('Completed','Approved') AND pr.date_start IS NOT NULL
+    ORDER BY y DESC`;
   const yearList = years.map(r => String(r.y)).filter(y => y && y !== 'null');
 
   const year = String(req.query.year ?? '').match(/^\d{4}$/)
     ? String(req.query.year)
     : (yearList[0] ?? String(new Date().getFullYear()));
 
-  const rows = await query(`
+  const rows = await query`
     SELECT pr.id AS run_id, pr.name AS run_name, pr.date_start, pr.date_end,
            COALESCE(NULLIF(pc.payslip_label,''), pc.name) AS item,
            pc.payment_deduction,
-           CAST(pd.amount AS CHAR) AS amount
+           CONCAT(pd.amount, '') AS amount
     FROM payrolldata pd
     JOIN payrollruns pr ON pr.id = pd.payroll
     JOIN payrollcolumns pc ON pc.id = pd.payroll_item
-    WHERE pd.employee = ? AND pr.status IN ('Completed','Approved') AND YEAR(pr.date_start) = ?
-    ORDER BY pr.date_start ASC`, BigInt(empId), Number(year));
+    WHERE pd.employee = ${BigInt(empId)} AND pr.status IN ('Completed','Approved') AND EXTRACT(YEAR FROM pr.date_start) = ${Number(year)}
+    ORDER BY pr.date_start ASC`;
 
   const isTax = name => /tax|paye/i.test(String(name ?? ''));
   const byRun = new Map();

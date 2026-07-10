@@ -82,13 +82,23 @@ const CODE_LISTS = [
   
   // ── Marital Status ───────────────────────────────────────────────────────────
   {
+    code: 'TIT',
+    name: 'Titles',
+    description: 'Employee titles',
+    values: [
+      { code: 'MR',   label: 'Mr' },
+      { code: 'MRS',  label: 'Mrs' },
+      { code: 'MS',   label: 'Ms' }
+    ],
+  },
+  {
     code: 'MARS',
     name: 'Marital Status',
     description: 'Employee marital statuses',
     values: [
-      { code: 'MARS',   label: 'Married' },
-      { code: 'MARS',  label: 'Single' },
-      { code: 'MARS',   label: 'Divorced' }
+      { code: 'MARRIED',   label: 'Married' },
+      { code: 'SINGLE',    label: 'Single' },
+      { code: 'DIVORCED',  label: 'Divorced' }
     ],
   },
   // ── Gender ─────────────────────────────────────────────────────────────────

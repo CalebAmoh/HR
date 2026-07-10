@@ -4,6 +4,7 @@ const respond      = require('../helpers/respondHelper');
 const { s }        = require('../helpers/controllerHelpers');
 const { notifyUsersWithPermission } = require('../helpers/notificationHelper');
 const { isFieldVisible } = require('../config/employeeFormFields');
+const { upsertSetting: upsertSettingShared } = require('../helpers/settingsHelper');
 const crypto       = require('crypto');
 const os           = require('os');
 
@@ -29,25 +30,14 @@ const PUBLIC_CODE_LISTS = ['TIT', 'GEN', 'NAT', 'REG', 'CT'];
 // ── settings helpers (category='onboarding') ─────────────────────────────────
 
 async function readSetting(name) {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT value FROM settings WHERE name=? AND category='onboarding' LIMIT 1`, name
-  ).catch(() => []);
-  return rows.length ? (rows[0].value ?? '') : null;
+  const row = await prisma.settings
+    .findFirst({ where: { name, category: 'onboarding' }, select: { value: true } })
+    .catch(() => null);
+  return row ? (row.value ?? '') : null;
 }
 
 async function writeSetting(name, value) {
-  const val = String(value ?? '');
-  const existing = await prisma.$queryRawUnsafe(
-    `SELECT id FROM settings WHERE name=? AND category='onboarding'`, name
-  ).catch(() => []);
-  if (existing.length) {
-    await prisma.$executeRawUnsafe(`UPDATE settings SET value=? WHERE name=? AND category='onboarding'`, val, name);
-  } else {
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO settings (id, name, value, category) VALUES (?,?,?,'onboarding')`,
-      BigInt(Date.now() + Math.floor(Math.random() * 9999)), name, val
-    );
-  }
+  await upsertSettingShared(null, name, 'onboarding', String(value ?? ''));
 }
 
 // Minimum fields needed to identify a submission — always shown and required.
@@ -62,11 +52,11 @@ const DEFAULT_CONFIG = {
 // Reads the employee-form field config (Settings → Controls → Employee Form). That config is the
 // master gate: a field hidden there is not available on self-onboarding either.
 async function readEmployeeFieldCfg() {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT value FROM settings WHERE name='employee_form_fields' AND category='app_controls' LIMIT 1`
-  ).catch(() => []);
-  if (!rows.length || !rows[0].value) return {};
-  try { return JSON.parse(rows[0].value); } catch { return {}; }
+  const row = await prisma.settings
+    .findFirst({ where: { name: 'employee_form_fields', category: 'app_controls' }, select: { value: true } })
+    .catch(() => null);
+  if (!row?.value) return {};
+  try { return JSON.parse(row.value); } catch { return {}; }
 }
 
 async function readConfig() {
@@ -98,10 +88,10 @@ async function getOrCreateToken() {
 }
 
 async function readBranding() {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT company_name, company_logo_url, accent_color FROM payslip_settings LIMIT 1`
-  ).catch(() => []);
-  return rows[0] ?? {};
+  const row = await prisma.payslip_settings
+    .findFirst({ select: { company_name: true, company_logo_url: true, accent_color: true } })
+    .catch(() => null);
+  return row ?? {};
 }
 
 async function readCodeLists() {
@@ -154,10 +144,9 @@ const regenerateToken = asyncHandler(async (req, res) => {
 
 // GET /onboarding/submissions
 const listSubmissions = asyncHandler(async (req, res) => {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT id, data, files, status, employee_id, created, updated
-       FROM onboarding_submission ORDER BY created DESC`
-  ).catch(() => []);
+  const rows = await prisma.$queryRaw`
+    SELECT id, data, files, status, employee_id, created, updated
+       FROM onboarding_submission ORDER BY created DESC`.catch(() => []);
   const list = rows.map(r => ({
     id:          String(r.id),
     status:      r.status,
@@ -174,16 +163,14 @@ const listSubmissions = asyncHandler(async (req, res) => {
 const convertSubmission = asyncHandler(async (req, res) => {
   const id  = BigInt(req.params.id);
   const eid = req.body.employee_id ? BigInt(req.body.employee_id) : null;
-  await prisma.$executeRawUnsafe(
-    `UPDATE onboarding_submission SET status='Converted', employee_id=? WHERE id=?`, eid, id
-  );
+  await prisma.$executeRaw`UPDATE onboarding_submission SET status='Converted', employee_id=${eid} WHERE id=${id}`;
   return respond.ok(res, 'Submission converted');
 });
 
 // DELETE /onboarding/submissions/:id
 const deleteSubmission = asyncHandler(async (req, res) => {
   const id = BigInt(req.params.id);
-  await prisma.$executeRawUnsafe(`DELETE FROM onboarding_submission WHERE id=?`, id);
+  await prisma.$executeRaw`DELETE FROM onboarding_submission WHERE id=${id}`;
   return respond.ok(res, 'Submission removed');
 });
 
@@ -238,11 +225,8 @@ const publicSubmit = asyncHandler(async (req, res) => {
     if (!data[key]) return respond.badReq(res, 'First name, last name and email are required.');
   }
 
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO onboarding_submission (data, files, status, created, updated)
-     VALUES (?, ?, 'New', NOW(), NOW())`,
-    JSON.stringify(data), JSON.stringify(files)
-  );
+  await prisma.$executeRaw`INSERT INTO onboarding_submission (data, files, status, created, updated)
+     VALUES (${JSON.stringify(data)}, ${JSON.stringify(files)}, 'New', NOW(), NOW())`;
 
   const who = [data.firstName, data.lastName].filter(Boolean).join(' ') || 'Someone';
   notifyUsersWithPermission('manage_onboarding', {

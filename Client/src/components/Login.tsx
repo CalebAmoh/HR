@@ -48,7 +48,7 @@ export function Login({ onLogin }: LoginProps) {
       {/* Left side: Branding & Animation (Hidden on mobile) */}
       <div 
         className="hidden lg:flex lg:w-[45%] relative overflow-hidden flex-col justify-between p-12 text-white bg-cover bg-center"
-        style={{ backgroundImage: "url('/login-bg.jpg')" }}
+        style={{ backgroundImage: `url('${import.meta.env.BASE_URL}login-bg.jpg')` }}
       >
         {/* Overlay to ensure text readability */}
         <div className="absolute inset-0 bg-[#003355]/80 mix-blend-multiply"></div>

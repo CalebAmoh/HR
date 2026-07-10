@@ -17,19 +17,22 @@ function toDecimalString(val) {
   return Number.isFinite(n) ? n.toFixed(2) : null;
 }
 
-async function query(sql, ...params) {
-  const rows = await prisma.$queryRawUnsafe(sql, ...params);
-  return serialize(rows);
+const { Prisma } = require('@prisma/client'); // Prisma.sql / Prisma.join for portable dynamic SQL
+
+// Tagged-template query helpers — portable (Prisma emits the right placeholders per provider).
+// Call as query`SELECT ... ${value}` (values become bound parameters).
+async function query(strings, ...values) {
+  return serialize(await prisma.$queryRaw(strings, ...values));
 }
 
-async function exec(sql, ...params) {
-  return prisma.$executeRawUnsafe(sql, ...params);
+async function exec(strings, ...values) {
+  return prisma.$executeRaw(strings, ...values);
 }
 
 // GET /salary/component-types — list all salary component type categories (e.g. Basic, Allowance, Deduction).
 // Uses raw SQL because the Prisma model for salarycomponenttype is @@ignore.
 const getSalaryComponentTypes = asyncHandler(async (_req, res) => {
-  const rows = await query('SELECT id, code, name, description FROM salarycomponenttype ORDER BY name ASC');
+  const rows = await query`SELECT id, code, name, description FROM salarycomponenttype ORDER BY name ASC`;
   respond.ok(res, 'Salary component types retrieved', rows);
 });
 
@@ -39,18 +42,13 @@ const createSalaryComponentType = asyncHandler(async (req, res) => {
   if (!code?.trim()) return respond.badReq(res, 'Code is required');
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
 
-  const dup = await query('SELECT id FROM salarycomponenttype WHERE UPPER(code) = UPPER(?) LIMIT 1', code.trim());
+  const dup = await query`SELECT id FROM salarycomponenttype WHERE UPPER(code) = UPPER(${code.trim()}) LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'Component type code already exists');
 
-  const [{ nextId }] = await query('SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM salarycomponenttype');
-  await exec(
-    'INSERT INTO salarycomponenttype (id, code, name, description) VALUES (?, ?, ?, ?)',
-    nextId,
-    code.trim().toUpperCase(),
-    name.trim(),
-    description?.trim() || null
-  );
-  const [created] = await query('SELECT id, code, name, description FROM salarycomponenttype WHERE id = ?', nextId);
+  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM salarycomponenttype`;
+  await exec`INSERT INTO salarycomponenttype (id, code, name, description)
+    VALUES (${nextId}, ${code.trim().toUpperCase()}, ${name.trim()}, ${description?.trim() || null})`;
+  const [created] = await query`SELECT id, code, name, description FROM salarycomponenttype WHERE id = ${nextId}`;
   respond.created(res, 'Salary component type created', created);
 });
 
@@ -62,19 +60,13 @@ const updateSalaryComponentType = asyncHandler(async (req, res) => {
   if (!code?.trim()) return respond.badReq(res, 'Code is required');
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
 
-  const existing = await query('SELECT id FROM salarycomponenttype WHERE id = ? LIMIT 1', id);
+  const existing = await query`SELECT id FROM salarycomponenttype WHERE id = ${id} LIMIT 1`;
   if (!existing.length) return respond.notFound(res, 'Salary component type not found');
-  const dup = await query('SELECT id FROM salarycomponenttype WHERE UPPER(code) = UPPER(?) AND id <> ? LIMIT 1', code.trim(), id);
+  const dup = await query`SELECT id FROM salarycomponenttype WHERE UPPER(code) = UPPER(${code.trim()}) AND id <> ${id} LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'Component type code already exists');
 
-  await exec(
-    'UPDATE salarycomponenttype SET code = ?, name = ?, description = ? WHERE id = ?',
-    code.trim().toUpperCase(),
-    name.trim(),
-    description?.trim() || null,
-    id
-  );
-  const [updated] = await query('SELECT id, code, name, description FROM salarycomponenttype WHERE id = ?', id);
+  await exec`UPDATE salarycomponenttype SET code = ${code.trim().toUpperCase()}, name = ${name.trim()}, description = ${description?.trim() || null} WHERE id = ${id}`;
+  const [updated] = await query`SELECT id, code, name, description FROM salarycomponenttype WHERE id = ${id}`;
   respond.ok(res, 'Salary component type updated', updated);
 });
 
@@ -84,20 +76,19 @@ const deleteSalaryComponentType = asyncHandler(async (req, res) => {
   if (!id) return respond.badReq(res, 'Invalid component type ID');
   const inUse = await prisma.salarycomponent.count({ where: { componentType: id } });
   if (inUse) return respond.badReq(res, 'Cannot delete: component type is used by salary components');
-  await exec('DELETE FROM salarycomponenttype WHERE id = ?', id);
+  await exec`DELETE FROM salarycomponenttype WHERE id = ${id}`;
   respond.ok(res, 'Salary component type deleted', null);
 });
 
 // GET /salary/components — list all salary components joined with their type name.
 const getSalaryComponents = asyncHandler(async (_req, res) => {
-  const rows = await query(`
+  const rows = await query`
     SELECT sc.id, sc.name, sc.salarycomp_gl, sc.branch, sc.summary, sc.processing_code,
            sc.componentType, sc.details, sc.is_notch_linked,
            sct.name AS componentTypeName
     FROM salarycomponent sc
     LEFT JOIN salarycomponenttype sct ON sct.id = sc.componentType
-    ORDER BY sc.name ASC
-  `);
+    ORDER BY sc.name ASC`;
   respond.ok(res, 'Salary components retrieved', rows);
 });
 
@@ -105,30 +96,21 @@ const getSalaryComponents = asyncHandler(async (_req, res) => {
 const createSalaryComponent = asyncHandler(async (req, res) => {
   const { name, componentType, details, salarycomp_gl, branch, summary, processing_code, is_notch_linked } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
-  const isNotchLinked = is_notch_linked ? 1 : 0;
+  const isNotchLinked = !!is_notch_linked; // Boolean column — pass a real boolean for PG portability
   if (isNotchLinked) {
-    await exec(`UPDATE salarycomponent SET is_notch_linked = 0`);
+    await exec`UPDATE salarycomponent SET is_notch_linked = FALSE`;
   }
-  await exec(
-    `INSERT INTO salarycomponent (name, componentType, details, salarycomp_gl, branch, summary, processing_code, is_notch_linked)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    name.trim(),
-    toBigInt(componentType),
-    details?.trim() || null,
-    salarycomp_gl?.trim() || null,
-    branch?.trim() || null,
-    summary?.trim() || null,
-    processing_code?.trim() || null,
-    isNotchLinked
-  );
-  const [row] = await query(
-    `SELECT sc.id, sc.name, sc.salarycomp_gl, sc.branch, sc.summary, sc.processing_code,
+  await exec`
+    INSERT INTO salarycomponent (name, componentType, details, salarycomp_gl, branch, summary, processing_code, is_notch_linked)
+     VALUES (${name.trim()}, ${toBigInt(componentType)}, ${details?.trim() || null}, ${salarycomp_gl?.trim() || null},
+             ${branch?.trim() || null}, ${summary?.trim() || null}, ${processing_code?.trim() || null}, ${isNotchLinked})`;
+  const [row] = await query`
+    SELECT sc.id, sc.name, sc.salarycomp_gl, sc.branch, sc.summary, sc.processing_code,
             sc.componentType, sc.details, sc.is_notch_linked,
             sct.name AS componentTypeName
      FROM salarycomponent sc
      LEFT JOIN salarycomponenttype sct ON sct.id = sc.componentType
-     ORDER BY sc.id DESC LIMIT 1`
-  );
+     ORDER BY sc.id DESC LIMIT 1`;
   respond.created(res, 'Salary component created', row);
 });
 
@@ -137,58 +119,46 @@ const createSalaryComponent = asyncHandler(async (req, res) => {
 const updateSalaryComponent = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid salary component ID');
-  const [existing] = await query(`SELECT id, name, is_notch_linked FROM salarycomponent WHERE id = ? LIMIT 1`, id);
+  const [existing] = await query`SELECT id, name, is_notch_linked FROM salarycomponent WHERE id = ${id} LIMIT 1`;
   if (!existing) return respond.notFound(res, 'Salary component not found');
   const { name, componentType, details, salarycomp_gl, branch, summary, processing_code, is_notch_linked } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Name is required');
 
-  const isNotchLinked = is_notch_linked ? 1 : 0;
+  const isNotchLinked = !!is_notch_linked; // Boolean column — pass a real boolean for PG portability
   if (isNotchLinked) {
-    await exec(`UPDATE salarycomponent SET is_notch_linked = 0 WHERE id != ?`, id);
+    await exec`UPDATE salarycomponent SET is_notch_linked = FALSE WHERE id != ${id}`;
   }
 
-  await exec(
-    `UPDATE salarycomponent
-     SET name=?, componentType=?, details=?, salarycomp_gl=?, branch=?, summary=?, processing_code=?, is_notch_linked=?
-     WHERE id=?`,
-    name.trim(),
-    toBigInt(componentType),
-    details?.trim() || null,
-    salarycomp_gl?.trim() || null,
-    branch?.trim() || null,
-    summary?.trim() || null,
-    processing_code?.trim() || null,
-    isNotchLinked,
-    id
-  );
+  await exec`
+    UPDATE salarycomponent
+     SET name=${name.trim()}, componentType=${toBigInt(componentType)}, details=${details?.trim() || null},
+         salarycomp_gl=${salarycomp_gl?.trim() || null}, branch=${branch?.trim() || null}, summary=${summary?.trim() || null},
+         processing_code=${processing_code?.trim() || null}, is_notch_linked=${isNotchLinked}
+     WHERE id=${id}`;
 
   // Cascade rename: update anywhere the old name is stored as a plain string.
   const oldName = existing.name;
   const newName = name.trim();
   if (oldName !== newName) {
     // Fix salary_components CSV on every payroll column that referenced the old name.
-    const cols = await query('SELECT id, salary_components FROM payrollcolumns WHERE salary_components IS NOT NULL');
+    const cols = await query`SELECT id, salary_components FROM payrollcolumns WHERE salary_components IS NOT NULL`;
     for (const col of cols) {
       const parts = col.salary_components.split(',').map(s => s.trim());
-      const updated = parts.map(p => p.toLowerCase() === oldName.toLowerCase() ? newName : p);
-      if (updated.some((p, i) => p !== parts[i])) {
-        await exec('UPDATE payrollcolumns SET salary_components = ? WHERE id = ?', updated.join(', '), BigInt(col.id));
+      const updatedParts = parts.map(p => p.toLowerCase() === oldName.toLowerCase() ? newName : p);
+      if (updatedParts.some((p, i) => p !== parts[i])) {
+        await exec`UPDATE payrollcolumns SET salary_components = ${updatedParts.join(', ')} WHERE id = ${BigInt(col.id)}`;
       }
     }
-    await exec(
-      `UPDATE savedcalculations SET target_name = ? WHERE target_type = 'component' AND LOWER(target_name) = LOWER(?)`,
-      newName, oldName
-    );
+    await exec`UPDATE savedcalculations SET target_name = ${newName} WHERE target_type = 'component' AND LOWER(target_name) = LOWER(${oldName})`;
   }
 
-  const [row] = await query(
-    `SELECT sc.id, sc.name, sc.salarycomp_gl, sc.branch, sc.summary, sc.processing_code,
+  const [row] = await query`
+    SELECT sc.id, sc.name, sc.salarycomp_gl, sc.branch, sc.summary, sc.processing_code,
             sc.componentType, sc.details, sc.is_notch_linked,
             sct.name AS componentTypeName
      FROM salarycomponent sc
      LEFT JOIN salarycomponenttype sct ON sct.id = sc.componentType
-     WHERE sc.id = ?`, id
-  );
+     WHERE sc.id = ${id}`;
   respond.ok(res, 'Salary component updated', row);
 });
 
@@ -205,19 +175,19 @@ const deleteSalaryComponent = asyncHandler(async (req, res) => {
 // GET /salary/employee-components — list all salary component assignments across every employee,
 // joined with employee name/ID and component name.
 const getEmployeeSalaryComponents = asyncHandler(async (_req, res) => {
-  const rows = await query(`
+  const rows = await query`
     SELECT es.id, es.employee, es.component, es.working_days, es.pay_frequency, es.currency,
            es.excluded,
-           CAST(es.amount AS CHAR) AS amount,
-           CAST(es.original_amount AS CHAR) AS original_amount,
-           TRIM(CONCAT(IFNULL(e.firstName,''), ' ', IFNULL(e.lastName,''))) AS emp_name,
+           CONCAT(es.amount, '') AS amount,
+           CONCAT(es.original_amount, '') AS original_amount,
+           TRIM(CONCAT(COALESCE(e.firstName,''), ' ', COALESCE(e.lastName,''))) AS emp_name,
            e.employee_id,
            sc.name AS component_name
     FROM employeesalary es
     LEFT JOIN employee e ON e.id = es.employee
     LEFT JOIN salarycomponent sc ON sc.id = es.component
     ORDER BY es.id DESC
-  `);
+  `;
   const data = rows.map(r => ({
     ...r,
     employeeName: r.emp_name ? (r.emp_name + (r.employee_id ? ` (${r.employee_id})` : '')) : null,
@@ -229,19 +199,19 @@ const getEmployeeSalaryComponents = asyncHandler(async (_req, res) => {
 async function enrichEmployeeSalaries(rows) {
   if (!rows.length) return [];
   const ids = rows.map(r => r.id);
-  const enriched = await query(`
+  const enriched = await query`
     SELECT es.id, es.employee, es.component, es.working_days, es.pay_frequency, es.currency,
            es.excluded,
-           CAST(es.amount AS CHAR) AS amount,
-           CAST(es.original_amount AS CHAR) AS original_amount,
-           TRIM(CONCAT(IFNULL(e.firstName,''), ' ', IFNULL(e.lastName,''))) AS emp_name,
+           CONCAT(es.amount, '') AS amount,
+           CONCAT(es.original_amount, '') AS original_amount,
+           TRIM(CONCAT(COALESCE(e.firstName,''), ' ', COALESCE(e.lastName,''))) AS emp_name,
            e.employee_id,
            sc.name AS component_name
     FROM employeesalary es
     LEFT JOIN employee e ON e.id = es.employee
     LEFT JOIN salarycomponent sc ON sc.id = es.component
-    WHERE es.id IN (${ids.map(() => '?').join(',')})
-  `, ...ids.map(BigInt));
+    WHERE es.id IN (${Prisma.join(ids.map(BigInt))})
+  `;
   return enriched.map(r => ({
     ...r,
     employeeName: r.emp_name ? (r.emp_name + (r.employee_id ? ` (${r.employee_id})` : '')) : null,
@@ -252,12 +222,11 @@ async function enrichEmployeeSalaries(rows) {
 // ── Salary history ────────────────────────────────────────────────────────────
 
 async function recordHistory({ employeeId, componentId, componentName, action, oldAmount, newAmount, oldCurrency, newCurrency, changedBy }) {
-  await exec(
-    `INSERT INTO salary_history (employee_id, component_id, component_name, action, old_amount, new_amount, old_currency, new_currency, changed_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    BigInt(employeeId), BigInt(componentId), componentName || null, action,
-    oldAmount || null, newAmount || null, oldCurrency || null, newCurrency || null, changedBy || null
-  ).catch(() => {});
+  await exec`
+    INSERT INTO salary_history (employee_id, component_id, component_name, action, old_amount, new_amount, old_currency, new_currency, changed_by)
+     VALUES (${BigInt(employeeId)}, ${BigInt(componentId)}, ${componentName || null}, ${action},
+             ${oldAmount || null}, ${newAmount || null}, ${oldCurrency || null}, ${newCurrency || null}, ${changedBy || null})`
+    .catch(() => {});
 }
 
 // GET /salary/employee-history/:employeeId — retrieve the last 200 salary change events (create/update/delete)
@@ -265,11 +234,9 @@ async function recordHistory({ employeeId, componentId, componentName, action, o
 const getEmployeeSalaryHistory = asyncHandler(async (req, res) => {
   const empId = toBigInt(req.params.employeeId);
   if (!empId) return respond.badReq(res, 'Invalid employee ID');
-  const rows = await query(
-    `SELECT id, employee_id, component_id, component_name, action, old_amount, new_amount, old_currency, new_currency, changed_by, created_at
-     FROM salary_history WHERE employee_id = ? ORDER BY created_at DESC LIMIT 200`,
-    empId
-  );
+  const rows = await query`
+    SELECT id, employee_id, component_id, component_name, action, old_amount, new_amount, old_currency, new_currency, changed_by, created_at
+     FROM salary_history WHERE employee_id = ${empId} ORDER BY created_at DESC LIMIT 200`;
   respond.ok(res, 'Salary history retrieved', rows);
 });
 
@@ -282,11 +249,7 @@ const createEmployeeSalaryComponent = asyncHandler(async (req, res) => {
   if (!employeeId) return respond.badReq(res, 'Employee is required');
   if (!componentId) return respond.badReq(res, 'Component is required');
 
-  const duplicate = await query(
-    'SELECT id FROM employeesalary WHERE employee = ? AND component = ? LIMIT 1',
-    employeeId,
-    componentId
-  );
+  const duplicate = await query`SELECT id FROM employeesalary WHERE employee = ${employeeId} AND component = ${componentId} LIMIT 1`;
   if (duplicate.length) return respond.conflict(res, 'There is already an exception for this employee and component');
 
   const isExcluded = excluded === true || excluded === 1 || excluded === '1';
@@ -327,12 +290,7 @@ const updateEmployeeSalaryComponent = asyncHandler(async (req, res) => {
   if (!employeeId) return respond.badReq(res, 'Employee is required');
   if (!componentId) return respond.badReq(res, 'Component is required');
 
-  const duplicate = await query(
-    'SELECT id FROM employeesalary WHERE employee = ? AND component = ? AND id <> ? LIMIT 1',
-    employeeId,
-    componentId,
-    id
-  );
+  const duplicate = await query`SELECT id FROM employeesalary WHERE employee = ${employeeId} AND component = ${componentId} AND id <> ${id} LIMIT 1`;
   if (duplicate.length) return respond.conflict(res, 'There is already an exception for this employee and component');
 
   const isExcluded = excluded === true || excluded === 1 || excluded === '1';
@@ -369,7 +327,7 @@ const deleteEmployeeSalaryComponent = asyncHandler(async (req, res) => {
   if (!id) return respond.badReq(res, 'Invalid employee salary component ID');
   const existing = await prisma.employeesalary.findUnique({ where: { id } });
   if (existing) {
-    const [comp] = await query('SELECT name FROM salarycomponent WHERE id = ? LIMIT 1', BigInt(existing.component));
+    const [comp] = await query`SELECT name FROM salarycomponent WHERE id = ${BigInt(existing.component)} LIMIT 1`;
     await recordHistory({
       employeeId: existing.employee, componentId: existing.component,
       componentName: comp?.name || null,
@@ -386,17 +344,20 @@ const deleteEmployeeSalaryComponent = asyncHandler(async (req, res) => {
 // ── Grade/Notch component assignment (inherited by employees) ───────────────────
 // Factory for the paygrade_components / notch_components CRUD (identical shape, different FK column).
 function makeGradeComponentHandlers(table, fkCol, label) {
+  // table / fkCol are fixed internal literals (see call sites below), safe to inline as identifiers.
+  const tbl = Prisma.raw(table);
+  const fk  = Prisma.raw(fkCol);
+
   const list = asyncHandler(async (req, res) => {
     const targetId = toBigInt(req.query.target_id);
-    const where = targetId ? `WHERE gc.${fkCol} = ?` : '';
-    const params = targetId ? [targetId] : [];
-    const rows = await query(`
-      SELECT gc.id, gc.${fkCol} AS target_id, gc.component_id, gc.working_days,
-             CAST(gc.amount AS CHAR) AS amount, sc.name AS component_name
-      FROM ${table} gc
+    const where = targetId ? Prisma.sql`WHERE gc.${fk} = ${targetId}` : Prisma.empty;
+    const rows = await query`
+      SELECT gc.id, gc.${fk} AS target_id, gc.component_id, gc.working_days,
+             CONCAT(gc.amount, '') AS amount, sc.name AS component_name
+      FROM ${tbl} gc
       LEFT JOIN salarycomponent sc ON sc.id = gc.component_id
       ${where}
-      ORDER BY sc.name ASC`, ...params);
+      ORDER BY sc.name ASC`;
     respond.ok(res, tmsg('salary.components_retrieved', { label }), rows.map(r => ({ ...r, componentName: r.component_name ?? null })));
   });
 
@@ -405,35 +366,34 @@ function makeGradeComponentHandlers(table, fkCol, label) {
     const componentId = toBigInt(req.body.component);
     if (!targetId) return respond.badReq(res, tmsg('salary.target_required', { label }));
     if (!componentId) return respond.badReq(res, 'Component is required');
-    const dup = await query(`SELECT id FROM ${table} WHERE ${fkCol} = ? AND component_id = ? LIMIT 1`, targetId, componentId);
+    const dup = await query`SELECT id FROM ${tbl} WHERE ${fk} = ${targetId} AND component_id = ${componentId} LIMIT 1`;
     if (dup.length) return respond.conflict(res, tmsg('salary.component_already_assigned', { target: label.toLowerCase() }));
     const amountValue = toDecimalString(req.body.amount);
-    await exec(`INSERT INTO ${table} (${fkCol}, component_id, amount, working_days) VALUES (?, ?, ?, ?)`,
-      targetId, componentId, amountValue, toInt(req.body.working_days));
-    const [created] = await query(`
-      SELECT gc.id, gc.${fkCol} AS target_id, gc.component_id, gc.working_days, CAST(gc.amount AS CHAR) AS amount,
-             sc.name AS component_name FROM ${table} gc LEFT JOIN salarycomponent sc ON sc.id = gc.component_id
-      WHERE gc.${fkCol} = ? AND gc.component_id = ?`, targetId, componentId);
+    await exec`INSERT INTO ${tbl} (${fk}, component_id, amount, working_days) VALUES (${targetId}, ${componentId}, ${amountValue === null ? null : Number(amountValue)}, ${toInt(req.body.working_days)})`;
+    const [created] = await query`
+      SELECT gc.id, gc.${fk} AS target_id, gc.component_id, gc.working_days, CONCAT(gc.amount, '') AS amount,
+             sc.name AS component_name FROM ${tbl} gc LEFT JOIN salarycomponent sc ON sc.id = gc.component_id
+      WHERE gc.${fk} = ${targetId} AND gc.component_id = ${componentId}`;
     respond.created(res, tmsg('salary.component_assigned', { label }), { ...created, componentName: created?.component_name ?? null });
   });
 
   const update = asyncHandler(async (req, res) => {
     const id = toBigInt(req.params.id);
     if (!id) return respond.badReq(res, 'Invalid ID');
-    const [existing] = await query(`SELECT id FROM ${table} WHERE id = ? LIMIT 1`, id);
+    const [existing] = await query`SELECT id FROM ${tbl} WHERE id = ${id} LIMIT 1`;
     if (!existing) return respond.notFound(res, tmsg('salary.component_not_found', { label }));
     const amountValue = toDecimalString(req.body.amount);
-    await exec(`UPDATE ${table} SET amount = ?, working_days = ? WHERE id = ?`, amountValue, toInt(req.body.working_days), id);
-    const [updated] = await query(`
-      SELECT gc.id, gc.${fkCol} AS target_id, gc.component_id, gc.working_days, CAST(gc.amount AS CHAR) AS amount,
-             sc.name AS component_name FROM ${table} gc LEFT JOIN salarycomponent sc ON sc.id = gc.component_id WHERE gc.id = ?`, id);
+    await exec`UPDATE ${tbl} SET amount = ${amountValue === null ? null : Number(amountValue)}, working_days = ${toInt(req.body.working_days)} WHERE id = ${id}`;
+    const [updated] = await query`
+      SELECT gc.id, gc.${fk} AS target_id, gc.component_id, gc.working_days, CONCAT(gc.amount, '') AS amount,
+             sc.name AS component_name FROM ${tbl} gc LEFT JOIN salarycomponent sc ON sc.id = gc.component_id WHERE gc.id = ${id}`;
     respond.ok(res, tmsg('salary.component_updated', { label }), { ...updated, componentName: updated?.component_name ?? null });
   });
 
   const remove = asyncHandler(async (req, res) => {
     const id = toBigInt(req.params.id);
     if (!id) return respond.badReq(res, 'Invalid ID');
-    await exec(`DELETE FROM ${table} WHERE id = ?`, id);
+    await exec`DELETE FROM ${tbl} WHERE id = ${id}`;
     respond.ok(res, tmsg('salary.component_removed', { label }), null);
   });
 
@@ -445,10 +405,9 @@ const notchComp = makeGradeComponentHandlers('notch_components', 'notch_id', 'No
 
 // GET /salary/notches — list all salary notches (named pay points within a paygrade band).
 const getNotches = asyncHandler(async (_req, res) => {
-  const rows = await query(
-    `SELECT n.id, n.name, n.paygradeId, p.name AS paygrade_name, n.currency, CAST(n.amount AS CHAR) AS amount
-     FROM notches n LEFT JOIN paygrades p ON p.id = n.paygradeId ORDER BY n.name ASC`
-  );
+  const rows = await query`
+    SELECT n.id, n.name, n.paygradeId, p.name AS paygrade_name, n.currency, CONCAT(n.amount, '') AS amount
+     FROM notches n LEFT JOIN paygrades p ON p.id = n.paygradeId ORDER BY n.name ASC`;
   respond.ok(res, 'Notches retrieved', rows);
 });
 
@@ -462,13 +421,11 @@ const createNotch = asyncHandler(async (req, res) => {
 
   const amountVal = toDecimalString(amount);
   if (amountVal !== null) {
-    const dup = await query('SELECT id FROM notches WHERE paygradeId = ? AND amount = ? LIMIT 1', pgId, amountVal);
+    const dup = await query`SELECT id FROM notches WHERE paygradeId = ${pgId} AND amount = ${Number(amountVal)} LIMIT 1`;
     if (dup.length) return respond.conflict(res, 'A notch with this amount already exists for this paygrade');
 
-    const [pg] = await query(
-      'SELECT name, CAST(min_salary AS CHAR) AS min_salary, CAST(max_salary AS CHAR) AS max_salary FROM paygrades WHERE id = ? LIMIT 1',
-      pgId
-    );
+    const [pg] = await query`
+      SELECT name, CONCAT(min_salary, '') AS min_salary, CONCAT(max_salary, '') AS max_salary FROM paygrades WHERE id = ${pgId} LIMIT 1`;
     if (!pg) return respond.badReq(res, 'Paygrade not found');
     if (pg.min_salary != null && pg.max_salary != null) {
       const amt = Number(amountVal);
@@ -497,13 +454,11 @@ const updateNotch = asyncHandler(async (req, res) => {
 
   const amountVal = toDecimalString(amount);
   if (amountVal !== null) {
-    const dup = await query('SELECT id FROM notches WHERE paygradeId = ? AND amount = ? AND id != ? LIMIT 1', pgId, amountVal, id);
+    const dup = await query`SELECT id FROM notches WHERE paygradeId = ${pgId} AND amount = ${Number(amountVal)} AND id != ${id} LIMIT 1`;
     if (dup.length) return respond.conflict(res, 'A notch with this amount already exists for this paygrade');
 
-    const [pg] = await query(
-      'SELECT name, CAST(min_salary AS CHAR) AS min_salary, CAST(max_salary AS CHAR) AS max_salary FROM paygrades WHERE id = ? LIMIT 1',
-      pgId
-    );
+    const [pg] = await query`
+      SELECT name, CONCAT(min_salary, '') AS min_salary, CONCAT(max_salary, '') AS max_salary FROM paygrades WHERE id = ${pgId} LIMIT 1`;
     if (!pg) return respond.badReq(res, 'Paygrade not found');
     if (pg.min_salary != null && pg.max_salary != null) {
       const amt = Number(amountVal);
@@ -534,9 +489,8 @@ const deleteNotch = asyncHandler(async (req, res) => {
 
 // GET /salary/paygrades — list all paygrade bands with their salary range and currency.
 const getPaygrades = asyncHandler(async (_req, res) => {
-  const rows = await query(
-    'SELECT id, name, currency, CAST(min_salary AS CHAR) AS min_salary, CAST(max_salary AS CHAR) AS max_salary FROM paygrades ORDER BY name ASC'
-  );
+  const rows = await query`
+    SELECT id, name, currency, CONCAT(min_salary, '') AS min_salary, CONCAT(max_salary, '') AS max_salary FROM paygrades ORDER BY name ASC`;
   respond.ok(res, 'Paygrades retrieved', rows);
 });
 
@@ -609,7 +563,7 @@ const deletePaygrade = asyncHandler(async (req, res) => {
 
 // GET /salary/payment-types — list all payment types (e.g. Bank Transfer, Cash) with their payslip generation flag.
 const getPaymentTypes = asyncHandler(async (_req, res) => {
-  const rows = await query('SELECT id, name, description, generate_payslip FROM paymenttype ORDER BY name ASC');
+  const rows = await query`SELECT id, name, description, generate_payslip FROM paymenttype ORDER BY name ASC`;
   respond.ok(res, 'Payment types retrieved', rows);
 });
 
@@ -618,10 +572,9 @@ const createPaymentType = asyncHandler(async (req, res) => {
   const { name, description, generate_payslip } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Payment type is required');
   const gp = generate_payslip === undefined ? 1 : (generate_payslip ? 1 : 0);
-  const [{ nextId }] = await query('SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM paymenttype');
-  await exec('INSERT INTO paymenttype (id, name, description, generate_payslip) VALUES (?, ?, ?, ?)',
-    nextId, name.trim(), description?.trim() || null, gp);
-  const [row] = await query('SELECT id, name, description, generate_payslip FROM paymenttype WHERE id = ?', nextId);
+  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM paymenttype`;
+  await exec`INSERT INTO paymenttype (id, name, description, generate_payslip) VALUES (${nextId}, ${name.trim()}, ${description?.trim() || null}, ${gp})`;
+  const [row] = await query`SELECT id, name, description, generate_payslip FROM paymenttype WHERE id = ${nextId}`;
   respond.created(res, 'Payment type created', row);
 });
 
@@ -632,9 +585,8 @@ const updatePaymentType = asyncHandler(async (req, res) => {
   const { name, description, generate_payslip } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Payment type is required');
   const gp = generate_payslip === undefined ? 1 : (generate_payslip ? 1 : 0);
-  await exec('UPDATE paymenttype SET name=?, description=?, generate_payslip=? WHERE id=?',
-    name.trim(), description?.trim() || null, gp, id);
-  const [row] = await query('SELECT id, name, description, generate_payslip FROM paymenttype WHERE id = ?', id);
+  await exec`UPDATE paymenttype SET name=${name.trim()}, description=${description?.trim() || null}, generate_payslip=${gp} WHERE id=${id}`;
+  const [row] = await query`SELECT id, name, description, generate_payslip FROM paymenttype WHERE id = ${id}`;
   respond.ok(res, 'Payment type updated', row);
 });
 
@@ -642,13 +594,13 @@ const updatePaymentType = asyncHandler(async (req, res) => {
 const deletePaymentType = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid payment type ID');
-  await exec('DELETE FROM paymenttype WHERE id = ?', id);
+  await exec`DELETE FROM paymenttype WHERE id = ${id}`;
   respond.ok(res, 'Payment type deleted', null);
 });
 
 // GET /salary/notch-movements — list all historical notch increment/decrement operations applied to salary levels.
 const getNotchMovements = asyncHandler(async (_req, res) => {
-  const rows = await query('SELECT id, date, employees, no_notches FROM notchmovement ORDER BY date DESC, id DESC');
+  const rows = await query`SELECT id, date, employees, no_notches FROM notchmovement ORDER BY date DESC, id DESC`;
   respond.ok(res, 'Salary increment/decrement records retrieved', rows);
 });
 
@@ -670,11 +622,11 @@ const createNotchMovement = asyncHandler(async (req, res) => {
   const next = operation === 'Increment' ? current + delta : current - delta;
   await prisma.notches.update({ where: { id }, data: { amount: next.toFixed(2) } });
 
-  const [{ nextId }] = await query('SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM notchmovement');
+  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM notchmovement`;
   const movementDate = date ? new Date(date) : new Date();
   const note = `${operation} ${pct}%`;
-  await exec('INSERT INTO notchmovement (id, date, employees, no_notches) VALUES (?, ?, ?, ?)', nextId, movementDate, notch.name, note);
-  const [created] = await query('SELECT id, date, employees, no_notches FROM notchmovement WHERE id = ?', nextId);
+  await exec`INSERT INTO notchmovement (id, date, employees, no_notches) VALUES (${nextId}, ${movementDate}, ${notch.name}, ${note})`;
+  const [created] = await query`SELECT id, date, employees, no_notches FROM notchmovement WHERE id = ${nextId}`;
   respond.created(res, 'Salary increment/decrement applied', created);
 });
 
@@ -684,10 +636,10 @@ const getSalaryRefs = asyncHandler(async (_req, res) => {
   const [employees, components, componentTypes, notches, paygrades, paymentTypes] = await Promise.all([
     prisma.employee.findMany({ where: { approvalStatus: 'APPROVED' }, select: { id: true, firstName: true, lastName: true, employee_id: true }, orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }] }),
     prisma.salarycomponent.findMany({ select: { id: true, name: true, is_notch_linked: true }, orderBy: { name: 'asc' } }),
-    query('SELECT id, code, name, description FROM salarycomponenttype ORDER BY name ASC'),
-    query(`SELECT n.id, n.name, n.paygradeId, p.name AS paygrade_name, n.currency, CAST(n.amount AS CHAR) AS amount
-           FROM notches n LEFT JOIN paygrades p ON p.id = n.paygradeId ORDER BY n.name ASC`),
-    query('SELECT id, name, currency, CAST(min_salary AS CHAR) AS min_salary, CAST(max_salary AS CHAR) AS max_salary FROM paygrades ORDER BY name ASC'),
+    query`SELECT id, code, name, description FROM salarycomponenttype ORDER BY name ASC`,
+    query`SELECT n.id, n.name, n.paygradeId, p.name AS paygrade_name, n.currency, CONCAT(n.amount, '') AS amount
+           FROM notches n LEFT JOIN paygrades p ON p.id = n.paygradeId ORDER BY n.name ASC`,
+    query`SELECT id, name, currency, CONCAT(min_salary, '') AS min_salary, CONCAT(max_salary, '') AS max_salary FROM paygrades ORDER BY name ASC`,
     prisma.paymenttype.findMany({ select: { id: true, name: true }, orderBy: { name: 'asc' } }),
   ]);
 

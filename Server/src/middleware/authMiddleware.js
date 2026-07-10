@@ -63,7 +63,7 @@ const checkToken = asyncHandler(async (req, res, next) => {
     FROM roles r
     INNER JOIN model_has_roles mhr ON mhr.role_id = r.id
     WHERE mhr.model_id = ? AND mhr.model_type = 'users' AND r.status = '1'
-  `, [user.id]);
+  `, [String(user.id)]);
 
   const roles = rolesResult.data ?? [];
 
@@ -87,7 +87,7 @@ const checkToken = asyncHandler(async (req, res, next) => {
     FROM permissions p
     INNER JOIN model_has_permissions mhp ON mhp.permission_id = p.id
     WHERE mhp.model_id = ? AND mhp.model_type = 'users'
-  `, [user.id]);
+  `, [String(user.id)]);
 
   const directPermissions = directPermsResult.data ?? [];
 

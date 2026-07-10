@@ -5,9 +5,7 @@ const nodemailer = require('nodemailer');
 async function resolveMailConfig() {
   try {
     const { prisma } = require('./dbQueryHelper');
-    const rows = await prisma.$queryRawUnsafe(
-      "SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'email_%'"
-    );
+    const rows = await prisma.$queryRaw`SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'email_%'`;
     const db = Object.fromEntries(rows.map(r => [r.setting_key, r.setting_value ?? '']));
     return {
       enabled: (db.email_enabled ?? '1') !== '0',
@@ -34,9 +32,7 @@ async function resolveMailConfig() {
 async function resolveBranding() {
   try {
     const { prisma } = require('./dbQueryHelper');
-    const [row] = await prisma.$queryRawUnsafe(
-      'SELECT company_name, company_address, company_logo_url, accent_color FROM payslip_settings LIMIT 1'
-    );
+    const [row] = await prisma.$queryRaw`SELECT company_name, company_address, company_logo_url, accent_color FROM payslip_settings LIMIT 1`;
     return {
       name:    row?.company_name    || 'HR System',
       address: row?.company_address || '',
@@ -64,10 +60,7 @@ async function makeTransporter() {
 async function notifyEnabled(moduleKey) {
   try {
     const { prisma } = require('./dbQueryHelper');
-    const rows = await prisma.$queryRawUnsafe(
-      "SELECT value FROM settings WHERE name=? AND category='notifications' LIMIT 1",
-      `notify_${moduleKey}`
-    );
+    const rows = await prisma.$queryRaw`SELECT value FROM settings WHERE name=${`notify_${moduleKey}`} AND category='notifications' LIMIT 1`;
     return !rows.length || rows[0].value !== '0';
   } catch {
     return true;

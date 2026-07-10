@@ -3,6 +3,7 @@ const asyncHandler  = require('../middleware/asyncHandler');
 const respond       = require('../helpers/respondHelper');
 const { tmsg }      = require('../helpers/messageStore');
 const { toBigInt, s, safeAlter } = require('../helpers/controllerHelpers');
+const { Prisma } = require('@prisma/client'); // Prisma.join for portable IN lists
 
 // Schema patches — per-slot seat cap; wider currency for CUR code-list labels (no-ops once applied)
 safeAlter(`ALTER TABLE trainingcatalogslot ADD COLUMN max_seats INT NULL`);
@@ -15,12 +16,14 @@ async function userMap(ids) {
   const unique = [...new Set(ids.filter(Boolean).map(Number).filter(n => !isNaN(n) && n > 0))];
   if (!unique.length) return {};
   try {
-    const rows = await prisma.$queryRawUnsafe(
-      `SELECT u.id, TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS name, u.username
-       FROM users u LEFT JOIN employee e ON e.id = u.employeeId
-       WHERE u.id IN (${unique.join(',')})`
-    );
-    return Object.fromEntries(rows.map(r => [String(r.id), r.name?.trim() || r.username || `User ${r.id}`]));
+    const users = await prisma.users.findMany({ where: { id: { in: unique.map(BigInt) } }, select: { id: true, username: true, employeeId: true } });
+    const empIds = [...new Set(users.map(u => u.employeeId).filter(Boolean))];
+    const emps = empIds.length ? await prisma.employee.findMany({ where: { id: { in: empIds } }, select: { id: true, firstName: true, lastName: true } }) : [];
+    const nameById = new Map(emps.map(e => [String(e.id), `${e.firstName ?? ''} ${e.lastName ?? ''}`.trim()]));
+    return Object.fromEntries(users.map(u => {
+      const name = (u.employeeId != null && nameById.get(String(u.employeeId))) || '';
+      return [String(u.id), name.trim() || u.username || `User ${u.id}`];
+    }));
   } catch { return {}; }
 }
 
@@ -43,18 +46,15 @@ const toDateStr = v => v instanceof Date ? v.toISOString().slice(0, 10) : (v ? S
 // True when the employee already has a nomination for the same training on the same start date.
 // Rejected and No Show nominations don't block a re-application.
 async function duplicateNominationExists(employee, trainingName, startDate, excludeId = null) {
-  const params = [BigInt(employee), String(trainingName).trim(), new Date(startDate)];
-  if (excludeId) params.push(excludeId);
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT id FROM trainingnomination
-     WHERE employee = ?
-       AND LOWER(training_name) = LOWER(?)
-       AND DATE(start_date) = DATE(?)
+  const excl = excludeId ? Prisma.sql`AND id != ${excludeId}` : Prisma.empty;
+  const rows = await prisma.$queryRaw`
+    SELECT id FROM trainingnomination
+     WHERE employee = ${BigInt(employee)}
+       AND LOWER(training_name) = LOWER(${String(trainingName).trim()})
+       AND CAST(start_date AS DATE) = CAST(${new Date(startDate)} AS DATE)
        AND status NOT IN ('Rejected', 'No Show')
-       ${excludeId ? 'AND id != ?' : ''}
-     LIMIT 1`,
-    ...params
-  ).catch(() => []);
+       ${excl}
+     LIMIT 1`.catch(() => []);
   return rows.length > 0;
 }
 
@@ -65,20 +65,16 @@ async function seatLimitViolation(catalogId, startDate) {
   const cat = await prisma.trainingcatalog.findUnique({ where: { id: catalogId } }).catch(() => null);
   if (!cat) return null;
 
-  const [slot] = await prisma.$queryRawUnsafe(
-    `SELECT * FROM trainingcatalogslot WHERE catalog_id = ? AND start_date = DATE(?) LIMIT 1`,
-    catalogId, new Date(startDate)
-  ).catch(() => []);
+  const [slot] = await prisma.$queryRaw`
+    SELECT * FROM trainingcatalogslot WHERE catalog_id = ${catalogId} AND CAST(start_date AS DATE) = CAST(${new Date(startDate)} AS DATE) LIMIT 1`.catch(() => []);
 
   const max = slot ? (slot.max_seats != null ? Number(slot.max_seats) : null)
                    : (cat.max_seats  != null ? Number(cat.max_seats)  : null);
   if (max == null) return null;
 
-  const [row] = await prisma.$queryRawUnsafe(
-    slot
-      ? `SELECT COUNT(*) AS cnt FROM trainingnomination WHERE training_catalog_id = ? AND DATE(start_date) = DATE(?) AND status = 'Approved'`
-      : `SELECT COUNT(*) AS cnt FROM trainingnomination WHERE training_catalog_id = ? AND status = 'Approved'`,
-    ...(slot ? [catalogId, new Date(startDate)] : [catalogId])
+  const [row] = await (slot
+    ? prisma.$queryRaw`SELECT COUNT(*) AS cnt FROM trainingnomination WHERE training_catalog_id = ${catalogId} AND CAST(start_date AS DATE) = CAST(${new Date(startDate)} AS DATE) AND status = 'Approved'`
+    : prisma.$queryRaw`SELECT COUNT(*) AS cnt FROM trainingnomination WHERE training_catalog_id = ${catalogId} AND status = 'Approved'`
   ).catch(() => []);
   const taken = Number(row?.cnt ?? 0);
 
@@ -102,17 +98,16 @@ exports.getCatalog = asyncHandler(async (req, res) => {
   if (!rows.length) return respond.ok(res, 'Training catalog', []);
 
   const ids = rows.map(r => r.id);
-  const allSlots = await prisma.$queryRawUnsafe(
-    `SELECT * FROM trainingcatalogslot WHERE catalog_id IN (${ids.join(',')}) ORDER BY start_date ASC`
-  ).catch(() => []);
+  const allSlots = await prisma.trainingcatalogslot
+    .findMany({ where: { catalog_id: { in: ids } }, orderBy: { start_date: 'asc' } })
+    .catch(() => []);
 
   // Approved-nomination counts per catalog course and start date (seats taken)
-  const counts = await prisma.$queryRawUnsafe(
-    `SELECT training_catalog_id AS cid, DATE(start_date) AS sd, COUNT(*) AS cnt
+  const counts = await prisma.$queryRaw`
+    SELECT training_catalog_id AS cid, CAST(start_date AS DATE) AS sd, COUNT(*) AS cnt
      FROM trainingnomination
-     WHERE training_catalog_id IN (${ids.join(',')}) AND status = 'Approved'
-     GROUP BY training_catalog_id, DATE(start_date)`
-  ).catch(() => []);
+     WHERE training_catalog_id IN (${Prisma.join(ids)}) AND status = 'Approved'
+     GROUP BY training_catalog_id, CAST(start_date AS DATE)`.catch(() => []);
   const slotTaken = {};
   const catTaken  = {};
   for (const c of counts) {
@@ -205,7 +200,7 @@ exports.updateCatalog = asyncHandler(async (req, res) => {
 exports.deleteCatalog = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  await prisma.$executeRawUnsafe(`DELETE FROM trainingcatalogslot WHERE catalog_id = ?`, id);
+  await prisma.trainingcatalogslot.deleteMany({ where: { catalog_id: id } });
   await prisma.trainingcatalog.delete({ where: { id } });
   respond.ok(res, 'Deleted');
 });
@@ -214,9 +209,9 @@ exports.deleteCatalog = asyncHandler(async (req, res) => {
 exports.getCatalogSlots = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const slots = await prisma.$queryRawUnsafe(
-    `SELECT * FROM trainingcatalogslot WHERE catalog_id = ? ORDER BY start_date ASC`, id
-  ).catch(() => []);
+  const slots = await prisma.trainingcatalogslot
+    .findMany({ where: { catalog_id: id }, orderBy: { start_date: 'asc' } })
+    .catch(() => []);
   respond.ok(res, 'Slots', slots.map(sl => ({
     id:         String(sl.id),
     catalog_id: String(sl.catalog_id),
@@ -237,19 +232,18 @@ exports.saveCatalogSlots = asyncHandler(async (req, res) => {
     return respond.badReq(res, 'Venue is required for each date slot');
   }
 
-  await prisma.$executeRawUnsafe(`DELETE FROM trainingcatalogslot WHERE catalog_id = ?`, id);
+  await prisma.trainingcatalogslot.deleteMany({ where: { catalog_id: id } });
 
-  for (const sl of slots.filter(sl => sl.start_date)) {
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO trainingcatalogslot (catalog_id, start_date, end_date, venue, max_seats, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, NOW(), NOW())`,
-      id,
-      new Date(sl.start_date),
-      sl.end_date ? new Date(sl.end_date) : null,
-      sl.venue    ? String(sl.venue).trim() : null,
-      sl.max_seats ? parseInt(sl.max_seats, 10) : null
-    );
-  }
+  const toInsert = slots.filter(sl => sl.start_date).map(sl => ({
+    catalog_id: id,
+    start_date: new Date(sl.start_date),
+    end_date:   sl.end_date ? new Date(sl.end_date) : null,
+    venue:      sl.venue    ? String(sl.venue).trim() : null,
+    max_seats:  sl.max_seats ? parseInt(sl.max_seats, 10) : null,
+    created_at: new Date(),
+    updated_at: new Date(),
+  }));
+  if (toInsert.length) await prisma.trainingcatalogslot.createMany({ data: toInsert });
   respond.ok(res, 'Slots saved');
 });
 
@@ -264,18 +258,14 @@ exports.getNominations = asyncHandler(async (req, res) => {
 
   if (!personalView) {
     // Approval list: never show Drafts (they are private to the originator)
-    rows = await prisma.$queryRawUnsafe(
-      `SELECT * FROM trainingnomination WHERE status != 'Draft' ORDER BY id DESC`
-    );
+    rows = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE status != 'Draft' ORDER BY id DESC`;
   } else {
     // Personal view: join on users table; Drafts only visible when self-originated
-    rows = await prisma.$queryRawUnsafe(
-      `SELECT tn.* FROM trainingnomination tn
+    rows = await prisma.$queryRaw`
+      SELECT tn.* FROM trainingnomination tn
        INNER JOIN users u ON u.employeeId = tn.employee
-       WHERE u.id = ? AND (tn.status != 'Draft' OR tn.nomination_type = 'Self')
-       ORDER BY tn.id DESC`,
-      Number(req.user?.id || 0)
-    ).catch(err => { console.error('getNominations personal query failed:', err); return []; });
+       WHERE u.id = ${toBigInt(req.user?.id)} AND (tn.status != 'Draft' OR tn.nomination_type = 'Self')
+       ORDER BY tn.id DESC`.catch(err => { console.error('getNominations personal query failed:', err); return []; });
   }
 
   const em = await empMap(rows.map(r => r.employee));
@@ -311,10 +301,7 @@ exports.createNomination = asyncHandler(async (req, res) => {
   if (!start_date)    return respond.badReq(res, 'Start date is required');
 
   // Look up employee_id string
-  const [emp] = await prisma.$queryRawUnsafe(
-    `SELECT employee_id FROM employee WHERE id = ? LIMIT 1`,
-    BigInt(employee)
-  ).catch(() => []);
+  const emp = await prisma.employee.findUnique({ where: { id: BigInt(employee) }, select: { employee_id: true } }).catch(() => null);
   const empId = emp?.employee_id ?? '';
 
   // Back-fill from catalog if linked
@@ -433,9 +420,7 @@ exports.deleteNomination = asyncHandler(async (req, res) => {
 
 async function readApprovalFlow() {
   try {
-    const [row] = await prisma.$queryRawUnsafe(
-      `SELECT setting_value FROM app_settings WHERE setting_key = 'training_approval_flow' LIMIT 1`
-    );
+    const row = await prisma.app_settings.findUnique({ where: { setting_key: 'training_approval_flow' }, select: { setting_value: true } });
     return row?.setting_value ?? 'direct';
   } catch { return 'direct'; }
 }
@@ -448,24 +433,22 @@ exports.getTrainingSettings = asyncHandler(async (req, res) => {
 exports.saveTrainingSettings = asyncHandler(async (req, res) => {
   const flow = ['direct', 'supervisor_first'].includes(req.body.approval_flow)
     ? req.body.approval_flow : 'direct';
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?)
-     ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-    'training_approval_flow', flow
-  );
+  await prisma.app_settings.upsert({
+    where:  { setting_key: 'training_approval_flow' },
+    update: { setting_value: flow },
+    create: { setting_key: 'training_approval_flow', setting_value: flow },
+  });
   respond.ok(res, 'Training settings saved');
 });
 
 // GET /training/subordinates
 exports.getSubordinates = asyncHandler(async (req, res) => {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT e.id, e.employee_id, TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS name
+  const rows = await prisma.$queryRaw`
+    SELECT e.id, e.employee_id, TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS name
      FROM employee e
-     WHERE e.supervisorid = (SELECT employeeId FROM users WHERE id = ? LIMIT 1)
+     WHERE e.supervisorid = (SELECT employeeId FROM users WHERE id = ${toBigInt(req.user?.id)} LIMIT 1)
      AND e.status = '1'
-     ORDER BY name ASC`,
-    Number(req.user?.id || 0)
-  ).catch(() => []);
+     ORDER BY name ASC`.catch(() => []);
   respond.ok(res, 'Subordinates', rows.map(r => ({
     id: String(r.id),
     employee_id: r.employee_id,
@@ -487,11 +470,8 @@ exports.submitNomination = asyncHandler(async (req, res) => {
   const flow = isBypassNom ? 'direct' : await readApprovalFlow();
   const nextStatus = flow === 'supervisor_first' ? 'Pending Supervisor Approval' : 'Pending HR Approval';
 
-  await prisma.$executeRawUnsafe(
-    `UPDATE trainingnomination SET status = ?, updated_at = NOW() WHERE id = ?`,
-    nextStatus, id
-  );
-  const [updated] = await prisma.$queryRawUnsafe(`SELECT * FROM trainingnomination WHERE id = ?`, id);
+  await prisma.$executeRaw`UPDATE trainingnomination SET status = ${nextStatus}, updated_at = NOW() WHERE id = ${id}`;
+  const [updated] = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE id = ${id}`;
   respond.ok(res, 'Submitted for approval', s(updated ?? {}));
 });
 
@@ -507,11 +487,8 @@ exports.approveNomination = asyncHandler(async (req, res) => {
   const seatErr = await seatLimitViolation(existing.training_catalog_id, existing.start_date);
   if (seatErr) return respond.badReq(res, tmsg('training.approve_seat_error', { reason: seatErr.charAt(0).toLowerCase() + seatErr.slice(1) }));
 
-  await prisma.$executeRawUnsafe(
-    `UPDATE trainingnomination SET status = ?, approved_by = ?, approved_at = NOW(), updated_at = NOW() WHERE id = ?`,
-    'Approved', String(req.user?.id ?? ''), id
-  );
-  const [updated] = await prisma.$queryRawUnsafe(`SELECT * FROM trainingnomination WHERE id = ?`, id);
+  await prisma.$executeRaw`UPDATE trainingnomination SET status = 'Approved', approved_by = ${String(req.user?.id ?? '')}, approved_at = NOW(), updated_at = NOW() WHERE id = ${id}`;
+  const [updated] = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE id = ${id}`;
   respond.ok(res, 'Nomination approved', s(updated ?? {}));
 });
 
@@ -526,11 +503,8 @@ exports.rejectNomination = asyncHandler(async (req, res) => {
 
   const reason = req.body?.reason ? String(req.body.reason).trim() : null;
 
-  await prisma.$executeRawUnsafe(
-    `UPDATE trainingnomination SET status = ?, approved_by = ?, rejection_reason = ?, updated_at = NOW() WHERE id = ?`,
-    'Rejected', String(req.user?.id ?? ''), reason, id
-  );
-  const [updated] = await prisma.$queryRawUnsafe(`SELECT * FROM trainingnomination WHERE id = ?`, id);
+  await prisma.$executeRaw`UPDATE trainingnomination SET status = 'Rejected', approved_by = ${String(req.user?.id ?? '')}, rejection_reason = ${reason}, updated_at = NOW() WHERE id = ${id}`;
+  const [updated] = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE id = ${id}`;
   respond.ok(res, 'Nomination rejected', s(updated ?? {}));
 });
 
@@ -546,11 +520,8 @@ exports.completeNomination = asyncHandler(async (req, res) => {
   const score       = req.body?.score       != null ? parseFloat(req.body.score) : null;
   const certificate = req.body?.certificate ? String(req.body.certificate).trim() : null;
 
-  await prisma.$executeRawUnsafe(
-    `UPDATE trainingnomination SET status = ?, score = ?, certificate = ?, completed_at = NOW(), updated_at = NOW() WHERE id = ?`,
-    'Completed', isNaN(score) ? null : score, certificate, id
-  );
-  const [updated] = await prisma.$queryRawUnsafe(`SELECT * FROM trainingnomination WHERE id = ?`, id);
+  await prisma.$executeRaw`UPDATE trainingnomination SET status = 'Completed', score = ${isNaN(score) ? null : score}, certificate = ${certificate}, completed_at = NOW(), updated_at = NOW() WHERE id = ${id}`;
+  const [updated] = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE id = ${id}`;
   respond.ok(res, 'Marked as completed', s(updated ?? {}));
 });
 
@@ -563,11 +534,8 @@ exports.noShowNomination = asyncHandler(async (req, res) => {
   if (!existing) return respond.notFound(res, 'Nomination not found');
   if (existing.status !== 'Approved') return respond.badReq(res, 'Only Approved nominations can be marked as No Show');
 
-  await prisma.$executeRawUnsafe(
-    `UPDATE trainingnomination SET status = ?, updated_at = NOW() WHERE id = ?`,
-    'No Show', id
-  );
-  const [updated] = await prisma.$queryRawUnsafe(`SELECT * FROM trainingnomination WHERE id = ?`, id);
+  await prisma.$executeRaw`UPDATE trainingnomination SET status = 'No Show', updated_at = NOW() WHERE id = ${id}`;
+  const [updated] = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE id = ${id}`;
   respond.ok(res, 'Marked as No Show', s(updated ?? {}));
 });
 
@@ -581,11 +549,8 @@ exports.supervisorApproveNomination = asyncHandler(async (req, res) => {
   if (existing.status !== 'Pending Supervisor Approval')
     return respond.badReq(res, 'Only Pending Supervisor Approval nominations can be approved here');
 
-  await prisma.$executeRawUnsafe(
-    `UPDATE trainingnomination SET status = ?, updated_at = NOW() WHERE id = ?`,
-    'Pending HR Approval', id
-  );
-  const [updated] = await prisma.$queryRawUnsafe(`SELECT * FROM trainingnomination WHERE id = ?`, id);
+  await prisma.$executeRaw`UPDATE trainingnomination SET status = 'Pending HR Approval', updated_at = NOW() WHERE id = ${id}`;
+  const [updated] = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE id = ${id}`;
   respond.ok(res, 'Approved — forwarded to HR for final approval', s(updated ?? {}));
 });
 
@@ -601,28 +566,21 @@ exports.supervisorRejectNomination = asyncHandler(async (req, res) => {
 
   const reason = req.body?.reason ? String(req.body.reason).trim() : null;
 
-  await prisma.$executeRawUnsafe(
-    `UPDATE trainingnomination SET status = ?, rejection_reason = ?, updated_at = NOW() WHERE id = ?`,
-    'Rejected', reason, id
-  );
-  const [updated] = await prisma.$queryRawUnsafe(`SELECT * FROM trainingnomination WHERE id = ?`, id);
+  await prisma.$executeRaw`UPDATE trainingnomination SET status = 'Rejected', rejection_reason = ${reason}, updated_at = NOW() WHERE id = ${id}`;
+  const [updated] = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE id = ${id}`;
   respond.ok(res, 'Nomination rejected', s(updated ?? {}));
 });
 
 // GET /training/nominations/subordinate — nominations for the current user's direct reports
 exports.getSubordinateNominations = asyncHandler(async (req, res) => {
-  const subordinates = await prisma.$queryRawUnsafe(
-    `SELECT id FROM employee WHERE supervisorid = (SELECT employeeId FROM users WHERE id = ? LIMIT 1)`,
-    Number(req.user?.id || 0)
-  ).catch(() => []);
+  const subordinates = await prisma.$queryRaw`
+    SELECT id FROM employee WHERE supervisorid = (SELECT employeeId FROM users WHERE id = ${toBigInt(req.user?.id)} LIMIT 1)`.catch(() => []);
 
   if (!subordinates.length) return respond.ok(res, 'Subordinate nominations', []);
 
   const ids = subordinates.map(r => r.id);
   // Show all submitted records; Drafts only when supervisor originated them
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT * FROM trainingnomination WHERE employee IN (${ids.join(',')}) AND (status != 'Draft' OR nomination_type = 'Supervisor') ORDER BY id DESC`
-  );
+  const rows = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE employee IN (${Prisma.join(ids)}) AND (status != 'Draft' OR nomination_type = 'Supervisor') ORDER BY id DESC`;
 
   const em = await empMap(rows.map(r => r.employee));
   const um = await userMap([

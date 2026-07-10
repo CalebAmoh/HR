@@ -1,4 +1,5 @@
 const { prisma } = require('../lib/prisma');
+const { Prisma } = require('@prisma/client'); // Prisma.sql for portable parameterized raw queries
 
 /***********************************************************************************************************
  * Prisma-based helper functions
@@ -212,12 +213,22 @@ const selectRecordsWithCondition = async (modelName, whereConditions, options = 
       ...options
     });
 
-    // 🔥 Convert BigInt to Number
-    const serializedRecords = JSON.parse(
-      JSON.stringify(records, (key, value) =>
-        typeof value === 'bigint' ? Number(value) : value
-      )
-    );
+    // Convert BigInt → Number via a direct walk (NOT JSON.stringify: a global
+    // BigInt.prototype.toJSON in app.js would emit bigints as strings, breaking `col = ?`
+    // comparisons against bigint columns on Postgres — e.g. role.id used as rhp.role_id = ?).
+    const conv = (v) => {
+      if (typeof v === 'bigint') return Number(v);
+      if (v instanceof Date) return v.toISOString();
+      if (Array.isArray(v)) return v.map(conv);
+      if (v !== null && typeof v === 'object') {
+        if (v.constructor?.name === 'Decimal' || typeof v.toFixed === 'function') return Number(v.toString());
+        const o = {};
+        for (const [k, val] of Object.entries(v)) o[k] = conv(val);
+        return o;
+      }
+      return v;
+    };
+    const serializedRecords = (records || []).map(conv);
 
     if (serializedRecords.length === 0) {
       return {
@@ -430,15 +441,30 @@ const selectRecordsWithQuery = async (query, params = []) => {
     console.log("Executing query:", query);
     console.log("With parameters:", params);
 
-    // Use Prisma's $queryRawUnsafe for parameterized queries
-    const results = await prisma.$queryRawUnsafe(query, ...params);
+    // Portable: rebuild the `?`-placeholder string into a Prisma.sql fragment so Prisma emits the
+    // correct placeholder per provider (MySQL `?`, Postgres `$1`…). Splitting on `?` mirrors the old
+    // $queryRawUnsafe(query, ...params) semantics (every `?` is a positional bind). Keeps the
+    // (queryString, paramsArray) API so all ~40 call sites remain unchanged.
+    const results = await prisma.$queryRaw(Prisma.sql(String(query).split('?'), ...params));
 
-    // Convert BigInt to Number for JSON serialization
-    const serializedResults = JSON.parse(
-      JSON.stringify(results, (key, value) =>
-        typeof value === 'bigint' ? Number(value) : value
-      )
-    );
+    // Convert BigInt → Number and normalise lower-cased Postgres result keys → camelCase field
+    // names (no-op on MySQL). Done with a direct recursive walk rather than JSON.stringify: a global
+    // `BigInt.prototype.toJSON` (set in app.js) makes JSON.stringify emit bigints as STRINGS, which
+    // then break `col = ?` / `IN (?)` comparisons against bigint columns on Postgres.
+    const { fieldFor } = require('./pgKeyMap');
+    const conv = (v) => {
+      if (typeof v === 'bigint') return Number(v);
+      if (v instanceof Date) return v.toISOString();
+      if (Array.isArray(v)) return v.map(conv);
+      if (v !== null && typeof v === 'object') {
+        if (v.constructor?.name === 'Decimal' || typeof v.toFixed === 'function') return Number(v.toString());
+        const o = {};
+        for (const [k, val] of Object.entries(v)) o[fieldFor(k)] = conv(val);
+        return o;
+      }
+      return v;
+    };
+    const serializedResults = (results || []).map(conv);
 
     if (serializedResults.length === 0) {
       return {

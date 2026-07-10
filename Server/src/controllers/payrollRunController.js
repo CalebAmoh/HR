@@ -9,21 +9,23 @@ const { getApiConfig } = require('./apiIntegrationController');
 const _parser = new Parser({ operators: { logical: false, comparison: false, conditional: false } });
 
 const { serialize } = require('../helpers/controllerHelpers');
+const { Prisma } = require('@prisma/client'); // Prisma.sql / Prisma.join for portable dynamic SQL
 
-async function query(sql, ...params) {
-  const rows = await prisma.$queryRawUnsafe(sql, ...params);
-  return serialize(rows);
+// Tagged-template query helpers — portable (Prisma emits the right placeholders per provider).
+// Call as query`SELECT ... ${value}` (values become bound parameters). Reusable SQL fragments
+// are built with Prisma.sql`...` and interpolated into a tagged query.
+async function query(strings, ...values) {
+  return serialize(await prisma.$queryRaw(strings, ...values));
 }
 
-async function exec(sql, ...params) {
-  return prisma.$executeRawUnsafe(sql, ...params);
+async function exec(strings, ...values) {
+  return prisma.$executeRaw(strings, ...values);
 }
 
 /** Read an app-control toggle from the settings table. Returns `defaultOn` when never saved. */
 async function readControlSetting(name, defaultOn) {
-  const [row] = await query(
-    `SELECT value FROM settings WHERE name=? AND category='app_controls' LIMIT 1`, name
-  ).catch(() => []);
+  const [row] = await query`SELECT value FROM settings WHERE name=${name} AND category='app_controls' LIMIT 1`
+    .catch(() => []);
   return row ? row.value === '1' : defaultOn;
 }
 
@@ -31,7 +33,7 @@ async function readControlSetting(name, defaultOn) {
  *  payrollcolumn_groups junction table. Empty array = the column is universal (runs for everyone). */
 async function attachColumnGroups(cols) {
   if (!cols.length) return cols;
-  const rows = await query('SELECT payrollcolumn_id, group_id FROM payrollcolumn_groups');
+  const rows = await query`SELECT payrollcolumn_id, group_id FROM payrollcolumn_groups`;
   const map = {};
   for (const r of rows) (map[String(r.payrollcolumn_id)] ??= []).push(String(r.group_id));
   for (const c of cols) c.groupIds = map[String(c.id)] ?? [];
@@ -42,10 +44,10 @@ async function attachColumnGroups(cols) {
  *  to each payroll column from the junction tables, and return `compNameById` (id→name) for resolving
  *  {comp:id} tokens in formulas. Replaces the old salary_components / add_columns / sub_columns CSVs. */
 async function attachColumnRefs(cols) {
-  const compNameById = new Map((await query('SELECT id, name FROM salarycomponent')).map(c => [String(c.id), c.name]));
+  const compNameById = new Map((await query`SELECT id, name FROM salarycomponent`).map(c => [String(c.id), c.name]));
   if (!cols.length) return { compNameById };
-  const compRows = await query('SELECT payrollcolumn_id, component_id FROM payrollcolumn_components');
-  const linkRows = await query('SELECT payrollcolumn_id, target_column_id, operation FROM payrollcolumn_links');
+  const compRows = await query`SELECT payrollcolumn_id, component_id FROM payrollcolumn_components`;
+  const linkRows = await query`SELECT payrollcolumn_id, target_column_id, operation FROM payrollcolumn_links`;
   const compMap = {}; for (const r of compRows) (compMap[String(r.payrollcolumn_id)] ??= []).push(String(r.component_id));
   const linkMap = {}; for (const r of linkRows) (linkMap[String(r.payrollcolumn_id)] ??= []).push({ target_column_id: Number(r.target_column_id), operation: r.operation });
   for (const c of cols) {
@@ -68,20 +70,20 @@ async function attachColumnRefs(cols) {
  */
 async function buildSalaryByEmp(empIdBigs) {
   const salaryByEmp = {};
-  const [notchLinkedComp] = await query(`SELECT name FROM salarycomponent WHERE is_notch_linked = 1 LIMIT 1`);
+  const [notchLinkedComp] = await query`SELECT name FROM salarycomponent WHERE is_notch_linked = TRUE LIMIT 1`;
   const notchCompKey = notchLinkedComp?.name?.toUpperCase() || null;
   if (!empIdBigs.length) return { salaryByEmp, notchLinkedComp, notchWarning: null, salaryRowsFound: 0, notchRowsFound: 0 };
 
-  const ph = empIdBigs.map(() => '?').join(',');
-  const compNameById = new Map((await query('SELECT id, name FROM salarycomponent')).map(c => [String(c.id), c.name]));
-  const emps = await query(`SELECT id, paygradeId, notcheId FROM employee WHERE id IN (${ph})`, ...empIdBigs);
+  const empIn = Prisma.join(empIdBigs);
+  const compNameById = new Map((await query`SELECT id, name FROM salarycomponent`).map(c => [String(c.id), c.name]));
+  const emps = await query`SELECT id, paygradeId, notcheId FROM employee WHERE id IN (${empIn})`;
 
   const pgIds = [...new Set(emps.map(e => e.paygradeId).filter(v => v != null).map(String))];
   const ntIds = [...new Set(emps.map(e => e.notcheId).filter(v => v != null).map(String))];
-  const pgComps = pgIds.length ? await query(`SELECT paygrade_id, component_id, CAST(amount AS CHAR) amount FROM paygrade_components WHERE paygrade_id IN (${pgIds.map(() => '?').join(',')})`, ...pgIds.map(BigInt)) : [];
-  const ntComps = ntIds.length ? await query(`SELECT notch_id, component_id, CAST(amount AS CHAR) amount FROM notch_components WHERE notch_id IN (${ntIds.map(() => '?').join(',')})`, ...ntIds.map(BigInt)) : [];
-  const exceptions = await query(`SELECT employee, component, CAST(amount AS CHAR) amount, excluded FROM employeesalary WHERE employee IN (${ph})`, ...empIdBigs);
-  const notchRows = await query(`SELECT e.id AS employee, CAST(n.amount AS CHAR) amount, n.name AS notch_name FROM employee e JOIN notches n ON n.id = e.notcheId WHERE e.id IN (${ph})`, ...empIdBigs);
+  const pgComps = pgIds.length ? await query`SELECT paygrade_id, component_id, CONCAT(amount, '') amount FROM paygrade_components WHERE paygrade_id IN (${Prisma.join(pgIds.map(BigInt))})` : [];
+  const ntComps = ntIds.length ? await query`SELECT notch_id, component_id, CONCAT(amount, '') amount FROM notch_components WHERE notch_id IN (${Prisma.join(ntIds.map(BigInt))})` : [];
+  const exceptions = await query`SELECT employee, component, CONCAT(amount, '') amount, excluded FROM employeesalary WHERE employee IN (${empIn})`;
+  const notchRows = await query`SELECT e.id AS employee, CONCAT(n.amount, '') amount, n.name AS notch_name FROM employee e JOIN notches n ON n.id = e.notcheId WHERE e.id IN (${empIn})`;
 
   const byKey = (rows, k) => { const m = {}; for (const r of rows) (m[String(r[k])] ??= []).push(r); return m; };
   const pgByGrade = byKey(pgComps, 'paygrade_id');
@@ -270,14 +272,15 @@ async function logAudit(runId, action, req, details = null) {
   try {
     const userId   = req.user?.id   ? BigInt(req.user.id)   : null;
     const userName = req.user?.username || null;
-    await exec(
-      `INSERT INTO payrollrunaudit (run_id, action, user_id, user_name, details) VALUES (?, ?, ?, ?, ?)`,
-      BigInt(runId), action, userId, userName, details ? JSON.stringify(details) : null
-    );
+    await exec`
+      INSERT INTO payrollrunaudit (run_id, action, user_id, user_name, details)
+       VALUES (${BigInt(runId)}, ${action}, ${userId}, ${userName}, ${details ? JSON.stringify(details) : null})`;
   } catch (e) { console.error('[payroll audit]', e.message); }
 }
 
-const RUNS_SELECT = `
+// Reusable SELECT fragment. Built with Prisma.sql so it composes into tagged queries:
+//   query`${RUNS_SELECT} WHERE pr.id = ${id}`
+const RUNS_SELECT = Prisma.sql`
   SELECT pr.id, pr.name, pr.pay_frequency, pf.name AS freq_name,
          pr.date_start, pr.date_end, pr.deduction_group,
          cg.name AS group_name, pr.payment_type_id, pt.name AS type_name,
@@ -292,7 +295,7 @@ const RUNS_SELECT = `
 
 // GET /payroll/runs — list all payroll runs with frequency, deduction group, payment type, and approval status.
 const getPayrollRuns = asyncHandler(async (_req, res) => {
-  const rows = await query(RUNS_SELECT + ' ORDER BY pr.created_at DESC');
+  const rows = await query`${RUNS_SELECT} ORDER BY pr.created_at DESC`;
   respond.ok(res, 'Payroll runs retrieved', rows);
 });
 
@@ -301,16 +304,11 @@ const createPayrollRun = asyncHandler(async (req, res) => {
   const { name, pay_frequency, date_start, date_end, deduction_group, payment_type } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Run name is required');
   if (!pay_frequency)  return respond.badReq(res, 'Pay frequency is required');
-  await exec(
-    `INSERT INTO payrollruns (name, pay_frequency, date_start, date_end, deduction_group, payment_type_id) VALUES (?, ?, ?, ?, ?, ?)`,
-    name.trim(),
-    parseInt(pay_frequency),
-    date_start || null,
-    date_end || null,
-    deduction_group ? BigInt(deduction_group) : null,
-    payment_type ? BigInt(payment_type) : null
-  );
-  const rows = await query(RUNS_SELECT + ' ORDER BY pr.created_at DESC LIMIT 1');
+  await exec`
+    INSERT INTO payrollruns (name, pay_frequency, date_start, date_end, deduction_group, payment_type_id)
+     VALUES (${name.trim()}, ${parseInt(pay_frequency)}, ${date_start || null}, ${date_end || null},
+             ${deduction_group ? BigInt(deduction_group) : null}, ${payment_type ? BigInt(payment_type) : null})`;
+  const rows = await query`${RUNS_SELECT} ORDER BY pr.created_at DESC LIMIT 1`;
   respond.created(res, 'Payroll run created', rows[0] || null);
 });
 
@@ -318,31 +316,31 @@ const createPayrollRun = asyncHandler(async (req, res) => {
 const updatePayrollRun = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { name, pay_frequency, date_start, date_end, deduction_group, payment_type } = req.body;
-  const [run] = await query(`SELECT status FROM payrollruns WHERE id = ?`, BigInt(id));
+  const [run] = await query`SELECT status FROM payrollruns WHERE id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status === 'Completed') return respond.badReq(res, 'Cannot edit a completed payroll run');
-  await exec(
-    `UPDATE payrollruns SET name=?, pay_frequency=?, date_start=?, date_end=?, deduction_group=?, payment_type_id=?, updated_at=NOW() WHERE id=?`,
-    name?.trim() || run.name,
-    pay_frequency ? parseInt(pay_frequency) : null,
-    date_start || null,
-    date_end || null,
-    deduction_group ? BigInt(deduction_group) : null,
-    payment_type ? BigInt(payment_type) : null,
-    BigInt(id)
-  );
-  const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+  await exec`
+    UPDATE payrollruns SET
+      name=${name?.trim() || run.name},
+      pay_frequency=${pay_frequency ? parseInt(pay_frequency) : null},
+      date_start=${date_start || null},
+      date_end=${date_end || null},
+      deduction_group=${deduction_group ? BigInt(deduction_group) : null},
+      payment_type_id=${payment_type ? BigInt(payment_type) : null},
+      updated_at=NOW()
+     WHERE id=${BigInt(id)}`;
+  const rows = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
   respond.ok(res, 'Updated', rows[0] || null);
 });
 
 // DELETE /payroll/runs/:id — delete a Draft or Processing run and its payroll data; blocked on Completed runs.
 const deletePayrollRun = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const [run] = await query(`SELECT status FROM payrollruns WHERE id = ?`, BigInt(id));
+  const [run] = await query`SELECT status FROM payrollruns WHERE id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status === 'Completed') return respond.badReq(res, 'Cannot delete a completed payroll run');
-  await exec(`DELETE FROM payrolldata WHERE payroll = ?`, BigInt(id));
-  await exec(`DELETE FROM payrollruns WHERE id = ?`, BigInt(id));
+  await exec`DELETE FROM payrolldata WHERE payroll = ${BigInt(id)}`;
+  await exec`DELETE FROM payrollruns WHERE id = ${BigInt(id)}`;
   respond.ok(res, 'Deleted');
 });
 
@@ -352,48 +350,40 @@ const deletePayrollRun = asyncHandler(async (req, res) => {
 // Reports missing salary components and employees with no salary setup for diagnostics.
 const generatePayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const [run] = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+  const [run] = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status === 'Completed')        return respond.badReq(res, 'Cannot regenerate a completed payroll run');
   if (run.status === 'Pending Approval') return respond.badReq(res, 'Withdraw the approval request before regenerating');
   if (run.status === 'Approved')         return respond.badReq(res, 'Cannot regenerate an approved payroll run');
 
   // Mark as Processing and clear any prior approval state
-  await exec(
-    `UPDATE payrollruns SET status='Processing', submitted_by=NULL, approved_by=NULL, approved_at=NULL, rejection_reason=NULL, updated_at=NOW() WHERE id=?`,
-    BigInt(id)
-  );
+  await exec`UPDATE payrollruns SET status='Processing', submitted_by=NULL, approved_by=NULL, approved_at=NULL, rejection_reason=NULL, updated_at=NOW() WHERE id=${BigInt(id)}`;
 
   // Load all enabled columns — no pay_frequency filter; columns are not per-frequency.
   // A column's calculation groups (payrollcolumn_groups) mean "only run for employees in those
   // groups"; no groups = universal.
-  const allCols = await query(
-    `SELECT id, name, calculation_function,
+  const allCols = await query`
+    SELECT id, name, calculation_function,
             payment_deduction, colorder, default_value, calculation_rule
      FROM payrollcolumns
      WHERE enabled='Yes'
-     ORDER BY COALESCE(colorder, 99999), id`
-  );
+     ORDER BY COALESCE(colorder, 99999), id`;
   if (!allCols.length) return respond.ok(res, 'No enabled payroll columns found', []);
   await attachColumnGroups(allCols);
   const { compNameById } = await attachColumnRefs(allCols);
 
-  // Load payroll employees
-  let empQuery = `SELECT pe.id, pe.employee, pe.deduction_group, pe.deduction_exemptions FROM payrollemployees pe WHERE pe.pay_frequency = ?`;
-  const empParams = [parseInt(run.pay_frequency)];
-  if (run.deduction_group) {
-    empQuery += ` AND pe.deduction_group = ?`;
-    empParams.push(BigInt(run.deduction_group));
-  }
-  const payrollEmps = await query(empQuery, ...empParams);
+  // Load payroll employees (optionally scoped to the run's deduction group)
+  const groupFilter = run.deduction_group ? Prisma.sql`AND pe.deduction_group = ${BigInt(run.deduction_group)}` : Prisma.empty;
+  const payrollEmps = await query`
+    SELECT pe.id, pe.employee, pe.deduction_group, pe.deduction_exemptions
+     FROM payrollemployees pe WHERE pe.pay_frequency = ${parseInt(run.pay_frequency)} ${groupFilter}`;
   if (!payrollEmps.length) return respond.ok(res, 'No employees found for this pay frequency', []);
 
   // Load all saved calculations with their items
-  const savedCalcs = await query(`
+  const savedCalcs = await query`
     SELECT sc.id, sc.name, sc.target_type, sc.target_name, sc.calculation_group_id
-    FROM savedcalculations sc
-  `);
-  const calcItems = await query(`SELECT * FROM calculationprocessitems ORDER BY sort_order`);
+    FROM savedcalculations sc`;
+  const calcItems = await query`SELECT * FROM calculationprocessitems ORDER BY sort_order`;
   savedCalcs.forEach(sc => {
     sc.items = calcItems.filter(i => String(i.saved_calculation_id) === String(sc.id));
   });
@@ -429,10 +419,9 @@ const generatePayroll = asyncHandler(async (req, res) => {
   const missingComponents = [...neededComponents].filter(name => !foundComponents.has(name));
 
   // Delete previous data for this run
-  await exec(`DELETE FROM payrolldata WHERE payroll = ?`, BigInt(id));
+  await exec`DELETE FROM payrolldata WHERE payroll = ${BigInt(id)}`;
 
   // Calculate and insert
-  const insertSql = `INSERT INTO payrolldata (payroll, employee, payroll_item, amount) VALUES (?, ?, ?, ?)`;
   for (const pe of payrollEmps) {
     const eid = String(Number(pe.employee));
     const salaryMap = salaryByEmp[eid] || {};
@@ -442,7 +431,7 @@ const generatePayroll = asyncHandler(async (req, res) => {
       // A column with no groups is universal and always runs.
       if (col.groupIds.length && !col.groupIds.includes(String(pe.deduction_group ?? ''))) continue;
       const amount = calcColumn(col, salaryMap, allCols, savedCalcs, pe.employee, pe.deduction_exemptions, cache, { compNameById });
-      await exec(insertSql, BigInt(id), BigInt(pe.employee), parseInt(col.id), String(amount));
+      await exec`INSERT INTO payrolldata (payroll, employee, payroll_item, amount) VALUES (${BigInt(id)}, ${BigInt(pe.employee)}, ${parseInt(col.id)}, ${String(amount)})`;
     }
   }
 
@@ -463,19 +452,18 @@ const generatePayroll = asyncHandler(async (req, res) => {
 // GET /payroll/runs/:id/data — retrieve all payroll cells for a run (employee × column), with stale-column warning count.
 const getPayrollData = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const cells = await query(`
+  const cells = await query`
     SELECT pd.id, pd.employee, pd.payroll_item, pd.amount,
-           TRIM(CONCAT(IFNULL(e.firstName,''), ' ', IFNULL(e.lastName,''))) AS emp_name,
+           TRIM(CONCAT(COALESCE(e.firstName,''), ' ', COALESCE(e.lastName,''))) AS emp_name,
            pc.name AS column_name, pc.colorder, pc.payment_deduction,
-           COALESCE(pc.visible, 1) AS visible
+           COALESCE(pc.visible, TRUE) AS visible
     FROM   payrolldata pd
     LEFT JOIN employee       e  ON e.id  = pd.employee
     LEFT JOIN payrollcolumns pc ON pc.id = pd.payroll_item
-    WHERE  pd.payroll = ?
-    ORDER BY emp_name, COALESCE(pc.colorder, 99999), pc.id
-  `, BigInt(id));
+    WHERE  pd.payroll = ${BigInt(id)}
+    ORDER BY emp_name, COALESCE(pc.colorder, 99999), pc.id`;
 
-  const [{ totalEnabled }] = await query(`SELECT COUNT(*) AS totalEnabled FROM payrollcolumns WHERE enabled='Yes'`);
+  const [{ totalEnabled }] = await query`SELECT COUNT(*) AS totalEnabled FROM payrollcolumns WHERE enabled='Yes'`;
   const colsInRun = new Set(cells.map(r => String(r.payroll_item))).size;
   const staleColumnCount = Math.max(0, Number(totalEnabled) - colsInRun);
 
@@ -486,27 +474,26 @@ const getPayrollData = asyncHandler(async (req, res) => {
 // plus each column's computed value per employee; used for troubleshooting incorrect payroll results.
 const debugPayrollRun = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const [run] = await query(`SELECT id, pay_frequency, deduction_group FROM payrollruns WHERE id = ? LIMIT 1`, BigInt(id));
+  const [run] = await query`SELECT id, pay_frequency, deduction_group FROM payrollruns WHERE id = ${BigInt(id)} LIMIT 1`;
   if (!run) return respond.notFound(res, 'Run not found');
 
-  const allCols = await query(
-    `SELECT id, name, calculation_function,
+  const allCols = await query`
+    SELECT id, name, calculation_function,
             payment_deduction, colorder, default_value, calculation_rule
-     FROM payrollcolumns WHERE enabled='Yes' ORDER BY COALESCE(colorder, 99999), id`
-  );
+     FROM payrollcolumns WHERE enabled='Yes' ORDER BY COALESCE(colorder, 99999), id`;
   await attachColumnGroups(allCols);
   const { compNameById } = await attachColumnRefs(allCols);
 
-  let empQuery = `SELECT pe.id, pe.employee, pe.deduction_group, pe.deduction_exemptions FROM payrollemployees pe WHERE pe.pay_frequency = ?`;
-  const empParams = [parseInt(run.pay_frequency)];
-  if (run.deduction_group) { empQuery += ` AND pe.deduction_group = ?`; empParams.push(BigInt(run.deduction_group)); }
-  const payrollEmps = await query(empQuery, ...empParams);
+  const groupFilter = run.deduction_group ? Prisma.sql`AND pe.deduction_group = ${BigInt(run.deduction_group)}` : Prisma.empty;
+  const payrollEmps = await query`
+    SELECT pe.id, pe.employee, pe.deduction_group, pe.deduction_exemptions
+     FROM payrollemployees pe WHERE pe.pay_frequency = ${parseInt(run.pay_frequency)} ${groupFilter}`;
 
   const empIdBigs = payrollEmps.map(e => BigInt(e.employee));
   const { salaryByEmp, notchLinkedComp } = await buildSalaryByEmp(empIdBigs);
 
-  const savedCalcs = await query(`SELECT sc.id, sc.name, sc.target_type, sc.target_name FROM savedcalculations sc`);
-  const calcItems = await query(`SELECT * FROM calculationprocessitems ORDER BY sort_order`);
+  const savedCalcs = await query`SELECT sc.id, sc.name, sc.target_type, sc.target_name FROM savedcalculations sc`;
+  const calcItems = await query`SELECT * FROM calculationprocessitems ORDER BY sort_order`;
   savedCalcs.forEach(sc => { sc.items = calcItems.filter(i => String(i.saved_calculation_id) === String(sc.id)); });
 
   const result = payrollEmps.map(pe => {
@@ -529,10 +516,10 @@ const debugPayrollRun = asyncHandler(async (req, res) => {
 const updatePayrollDataItem = asyncHandler(async (req, res) => {
   const { id, itemId } = req.params;
   const { amount } = req.body;
-  const [run] = await query(`SELECT status FROM payrollruns WHERE id = ?`, BigInt(id));
+  const [run] = await query`SELECT status FROM payrollruns WHERE id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status === 'Completed') return respond.badReq(res, 'Cannot edit a completed payroll run');
-  await exec(`UPDATE payrolldata SET amount = ? WHERE id = ? AND payroll = ?`, String(amount ?? ''), parseInt(itemId), BigInt(id));
+  await exec`UPDATE payrolldata SET amount = ${String(amount ?? '')} WHERE id = ${parseInt(itemId)} AND payroll = ${BigInt(id)}`;
   respond.ok(res, 'Updated');
 });
 
@@ -544,19 +531,18 @@ async function buildAndPostGL(id, req) {
   const defaultCurrency = glExtra.currency || 'SLL';
   const defaultBranch   = glExtra.branch   || '000';
 
-  const postingRows = await query(`
+  const postingRows = await query`
     SELECT pd.employee, pd.amount,
            pc.name AS col_name, pc.payment_deduction, pc.salarycomponent_gl, pc.posting_branch,
-           TRIM(CONCAT(IFNULL(e.firstName,''), ' ', IFNULL(e.lastName,''))) AS emp_name,
+           TRIM(CONCAT(COALESCE(e.firstName,''), ' ', COALESCE(e.lastName,''))) AS emp_name,
            e.bankAccount,
-           COALESCE(pe.currency, ?) AS currency
+           COALESCE(pe.currency, ${defaultCurrency}) AS currency
     FROM   payrolldata pd
     JOIN   payrollcolumns    pc ON pc.id       = pd.payroll_item
     JOIN   employee           e  ON e.id        = pd.employee
     LEFT JOIN payrollemployees pe ON pe.employee = pd.employee
-    WHERE  pd.payroll = ? AND pc.posting_column = 'Yes'
-    ORDER  BY pd.employee, COALESCE(pc.colorder, 99999)
-  `, defaultCurrency, BigInt(id));
+    WHERE  pd.payroll = ${BigInt(id)} AND pc.posting_column = 'Yes'
+    ORDER  BY pd.employee, COALESCE(pc.colorder, 99999)`;
 
   const debitAccounts  = [];
   const creditAccounts = [];
@@ -604,7 +590,7 @@ async function buildAndPostGL(id, req) {
 // Sets status to 'GL Failed' (not Completed) when GL posting errors, allowing a retry without re-generating.
 const finalizePayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const [run] = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+  const [run] = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status === 'Draft')            return respond.badReq(res, 'Generate the payroll before finalizing');
   if (run.status === 'Completed')        return respond.badReq(res, 'Already finalized');
@@ -634,13 +620,15 @@ const finalizePayroll = asyncHandler(async (req, res) => {
     }
   }
 
-  await exec(
-    `UPDATE payrollruns SET status=?, document_ref=?, payment_log=?, finalized_at=NOW(), updated_at=NOW() WHERE id=?`,
-    finalStatus, documentRef, paymentLog, BigInt(id)
-  );
+  // status is an @map'd enum ('GL Failed' has a space); a bound text param won't cast to the enum on
+  // Postgres, so inline it as a SQL literal chosen from the known 2-value set.
+  const statusSql = finalStatus === 'GL Failed' ? Prisma.sql`'GL Failed'` : Prisma.sql`'Completed'`;
+  await exec`
+    UPDATE payrollruns SET status=${statusSql}, document_ref=${documentRef}, payment_log=${paymentLog},
+      finalized_at=NOW(), updated_at=NOW() WHERE id=${BigInt(id)}`;
   await logAudit(id, 'finalize', req, { documentRef });
   logActivity({ module: 'Payroll', action: 'finalize', entityId: String(id), entityName: run.name, ...fromReq(req), details: { documentRef } });
-  const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+  const rows = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
   respond.ok(res, 'Payroll finalized', rows[0] || null);
 });
 
@@ -648,7 +636,7 @@ const finalizePayroll = asyncHandler(async (req, res) => {
 // POST /payroll/runs/:id/retry-gl — re-attempt GL posting for a 'GL Failed' run; transitions to Completed on success.
 const retryGLPosting = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const [run] = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+  const [run] = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status !== 'GL Failed') return respond.badReq(res, 'Only a GL Failed run can retry GL posting');
   if (run.document_ref) return respond.badReq(res, 'GL already posted for this run');
@@ -657,21 +645,17 @@ const retryGLPosting = asyncHandler(async (req, res) => {
 
   try {
     const result = await buildAndPostGL(id, req);
-    await exec(
-      `UPDATE payrollruns SET status='Completed', document_ref=?, payment_log=?, updated_at=NOW() WHERE id=?`,
-      result.documentRef, JSON.stringify(result.raw), BigInt(id)
-    );
+    await exec`
+      UPDATE payrollruns SET status='Completed', document_ref=${result.documentRef}, payment_log=${JSON.stringify(result.raw)},
+        updated_at=NOW() WHERE id=${BigInt(id)}`;
     logActivity({ module: 'Payroll', action: 'gl_retry_success', entityId: String(id), entityName: run.name, ...fromReq(req), details: { documentRef: result.documentRef } });
-    const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+    const rows = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
     respond.ok(res, 'GL posted successfully', rows[0] || null);
   } catch (e) {
     const errData = e.glResponse || e.response?.data || e.message;
     console.error('[gl retry] error:', errData);
-    await exec(
-      `UPDATE payrollruns SET payment_log=?, updated_at=NOW() WHERE id=?`,
-      JSON.stringify({ error: errData }), BigInt(id)
-    );
-    const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+    await exec`UPDATE payrollruns SET payment_log=${JSON.stringify({ error: errData })}, updated_at=NOW() WHERE id=${BigInt(id)}`;
+    const rows = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
     respond.ok(res, 'GL posting failed', rows[0] || null);
   }
 });
@@ -680,46 +664,43 @@ const retryGLPosting = asyncHandler(async (req, res) => {
 // POST /payroll/runs/:id/submit — move a Processing run to 'Pending Approval' for sign-off before finalization.
 const submitPayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const [run] = await query(`SELECT status FROM payrollruns WHERE id = ?`, BigInt(id));
+  const [run] = await query`SELECT status FROM payrollruns WHERE id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status !== 'Processing') return respond.badReq(res, 'Only a Processing run can be submitted for approval');
   const userId = req.user?.id ? BigInt(req.user.id) : null;
-  await exec(`UPDATE payrollruns SET status='Pending Approval', submitted_by=?, updated_at=NOW() WHERE id=?`, userId, BigInt(id));
+  await exec`UPDATE payrollruns SET status='Pending Approval', submitted_by=${userId}, updated_at=NOW() WHERE id=${BigInt(id)}`;
   await logAudit(id, 'submit', req);
   logActivity({ module: 'Payroll', action: 'submit', entityId: String(id), entityName: run.name, ...fromReq(req) });
   notifyUsersWithPermission('approve_payroll', {
     message: 'A payroll run awaits your approval', action: 'Payroll', type: 'payroll', fromUser: req.user?.id,
   }, req.user?.id);
-  const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+  const rows = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
   respond.ok(res, 'Submitted for approval', rows[0] || null);
 });
 
 // POST /payroll/runs/:id/approve — approve a Pending Approval run, transitioning it to Approved status.
 const approvePayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const [run] = await query(`SELECT status, submitted_by FROM payrollruns WHERE id = ?`, BigInt(id));
+  const [run] = await query`SELECT status, submitted_by FROM payrollruns WHERE id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status !== 'Pending Approval') return respond.badReq(res, 'Run is not pending approval');
 
   // Self-approval guard: the user who submitted the run may approve it only when the
   // "Allow Self-Approval" payroll control is on (defaults off).
   if (String(run.submitted_by ?? '') === String(req.user?.id ?? '')) {
-    const [s] = await query(`SELECT value FROM settings WHERE name='approval_payroll_self' AND category='app_controls' LIMIT 1`).catch(() => []);
+    const [s] = await query`SELECT value FROM settings WHERE name='approval_payroll_self' AND category='app_controls' LIMIT 1`.catch(() => []);
     const selfAllowed = s ? s.value === '1' : false;
     if (!selfAllowed) return respond.forbidden(res, 'Self-approval is disabled — a different approver must review this payroll run');
   }
 
   const userId = req.user?.id ? BigInt(req.user.id) : null;
-  await exec(
-    `UPDATE payrollruns SET status='Approved', approved_by=?, approved_at=NOW(), updated_at=NOW() WHERE id=?`,
-    userId, BigInt(id)
-  );
+  await exec`UPDATE payrollruns SET status='Approved', approved_by=${userId}, approved_at=NOW(), updated_at=NOW() WHERE id=${BigInt(id)}`;
   await logAudit(id, 'approve', req);
   logActivity({ module: 'Payroll', action: 'approve', entityId: String(id), entityName: run.name, ...fromReq(req) });
   if (run.submitted_by && String(run.submitted_by) !== String(req.user?.id ?? '')) {
     notifyUser(run.submitted_by, { message: 'Your payroll run was approved', action: 'Payroll', type: 'payroll', fromUser: req.user?.id });
   }
-  const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+  const rows = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
   respond.ok(res, 'Payroll approved', rows[0] || null);
 });
 
@@ -727,19 +708,16 @@ const approvePayroll = asyncHandler(async (req, res) => {
 const rejectPayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { reason } = req.body;
-  const [run] = await query(`SELECT status, submitted_by FROM payrollruns WHERE id = ?`, BigInt(id));
+  const [run] = await query`SELECT status, submitted_by FROM payrollruns WHERE id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status !== 'Pending Approval') return respond.badReq(res, 'Run is not pending approval');
-  await exec(
-    `UPDATE payrollruns SET status='Rejected', rejection_reason=?, updated_at=NOW() WHERE id=?`,
-    reason?.trim() || null, BigInt(id)
-  );
+  await exec`UPDATE payrollruns SET status='Rejected', rejection_reason=${reason?.trim() || null}, updated_at=NOW() WHERE id=${BigInt(id)}`;
   await logAudit(id, 'reject', req, { reason: reason?.trim() || null });
   if (run.submitted_by && String(run.submitted_by) !== String(req.user?.id ?? '')) {
     notifyUser(run.submitted_by, { message: `Your payroll run was rejected${reason?.trim() ? ': ' + reason.trim() : ''}`, action: 'Payroll', type: 'payroll', fromUser: req.user?.id });
   }
   logActivity({ module: 'Payroll', action: 'reject', entityId: String(id), entityName: run.name, details: { reason: reason?.trim() || null }, ...fromReq(req) });
-  const rows = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+  const rows = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
   respond.ok(res, 'Payroll rejected', rows[0] || null);
 });
 
@@ -747,10 +725,8 @@ const rejectPayroll = asyncHandler(async (req, res) => {
 // GET /payroll/runs/:id/audit — retrieve the chronological audit trail of all actions taken on a payroll run.
 const getPayrollAudit = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const entries = await query(
-    `SELECT id, run_id, action, user_id, user_name, details, created_at FROM payrollrunaudit WHERE run_id = ? ORDER BY created_at ASC`,
-    BigInt(id)
-  );
+  const entries = await query`
+    SELECT id, run_id, action, user_id, user_name, details, created_at FROM payrollrunaudit WHERE run_id = ${BigInt(id)} ORDER BY created_at ASC`;
   respond.ok(res, 'Audit log retrieved', entries);
 });
 
@@ -758,19 +734,14 @@ const getPayrollAudit = asyncHandler(async (req, res) => {
 // named "<original> (Copy)", without copying the payroll data.
 const duplicatePayrollRun = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const [run] = await query(RUNS_SELECT + ' WHERE pr.id = ?', BigInt(id));
+  const [run] = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
-  await exec(
-    `INSERT INTO payrollruns (name, pay_frequency, date_start, date_end, deduction_group, payment_type_id, status)
-     VALUES (?, ?, ?, ?, ?, ?, 'Draft')`,
-    `${run.name} (Copy)`,
-    run.pay_frequency ? parseInt(run.pay_frequency) : null,
-    run.date_start ? run.date_start.slice(0, 10) : null,
-    run.date_end   ? run.date_end.slice(0, 10)   : null,
-    run.deduction_group  ? BigInt(run.deduction_group)  : null,
-    run.payment_type_id  ? BigInt(run.payment_type_id)  : null,
-  );
-  const rows = await query(RUNS_SELECT + ' ORDER BY pr.created_at DESC LIMIT 1');
+  await exec`
+    INSERT INTO payrollruns (name, pay_frequency, date_start, date_end, deduction_group, payment_type_id, status)
+     VALUES (${`${run.name} (Copy)`}, ${run.pay_frequency ? parseInt(run.pay_frequency) : null},
+             ${run.date_start ? run.date_start.slice(0, 10) : null}, ${run.date_end ? run.date_end.slice(0, 10) : null},
+             ${run.deduction_group ? BigInt(run.deduction_group) : null}, ${run.payment_type_id ? BigInt(run.payment_type_id) : null}, 'Draft')`;
+  const rows = await query`${RUNS_SELECT} ORDER BY pr.created_at DESC LIMIT 1`;
   logActivity({ module: 'Payroll', action: 'duplicate_run', entityId: String(id), entityName: run.name, ...fromReq(req) });
   respond.created(res, 'Run duplicated', rows[0] || null);
 });
