@@ -33,7 +33,8 @@ the React/Vite client (`Client/`) — from scratch on a fresh machine.
 Install these on the server first:
 
 - **Node.js 20+** and npm (`node -v`, `npm -v`)
-- **MySQL 8+** (or MariaDB 10.5+) reachable from the server
+- **MySQL 8+** (or MariaDB 10.5+) — the default database — reachable from the server.
+  PostgreSQL 14+ is also supported (see [Switching between MySQL and Postgres](#switching-between-mysql-and-postgres)).
 - **Git**
 - A reverse proxy for production (nginx, IIS, Caddy, …) — optional for local
 
@@ -133,6 +134,65 @@ npm run dev          # development (nodemon, auto-restart)
 The API now listens on `http://<server>:3040`. Uploaded files are stored under
 `Server/uploads/` and served from there — make sure that folder is writable and
 persisted (back it up / mount a volume).
+
+### Switching between MySQL and Postgres
+
+The API runs on **either MySQL or PostgreSQL** — the query layer is database-agnostic. Which one is
+"live" is decided by **which Prisma client is generated**, not by editing `.env`. Each schema file
+hardwires its own provider *and* which env var it reads:
+
+| Schema file                          | Provider     | Reads env var  |
+|--------------------------------------|--------------|----------------|
+| `src/prisma/schema.prisma`           | `mysql`      | `DATABASE_URL` |
+| `src/prisma/schema.postgres.prisma`  | `postgresql` | `PG_URL`       |
+
+Keep **both** connection strings in `Server/.env` at all times — you do **not** edit them to switch:
+
+```dotenv
+DATABASE_URL="mysql://hr:password@localhost:3306/xhrm"
+PG_URL="postgresql://postgres:password@localhost:5432/xhrm"
+```
+
+Switch by regenerating the client (helper scripts in `Server/package.json`):
+
+```bash
+npm run db:which        # show the currently active provider
+npm run db:use-mysql    # regenerate the Prisma client for MySQL
+npm run db:use-pg       # regenerate the Prisma client for Postgres
+```
+
+**Full switch procedure:**
+
+1. **Stop the server** (Ctrl+C) — on Windows a running server locks the Prisma client file.
+2. `npm run db:use-pg`  (or `npm run db:use-mysql`)
+3. **Restart** the server (`npm run dev` / `npm run start`).
+
+> The MySQL client only ever reads `DATABASE_URL`; the Postgres client only ever reads `PG_URL`.
+> So changing `PG_URL` has **no effect** while the MySQL client is active — you must regenerate.
+> Unsure which DB you're on? Run `npm run db:which`.
+
+**First-time Postgres setup.** Postgres does not auto-create the database, so create it, then push the
+Postgres schema and seed it:
+
+```bash
+# 1. create the empty database (run once)
+psql -h <host> -U postgres -c "CREATE DATABASE xhrm;"
+
+# 2. generate the PG client and create all tables
+npm run db:use-pg
+npx prisma db push --schema=src/prisma/schema.postgres.prisma
+
+# 3. seed baseline + reference data
+node src/prisma/seed.js
+node src/prisma/seedCodeLists.js
+```
+
+Notes:
+- `schema.postgres.prisma` is derived from `schema.prisma` with Postgres-compatible adjustments
+  (native types, lower-cased column maps, globally-unique constraint names). **If you change the MySQL
+  schema, mirror the change in the Postgres schema** (or regenerate it from `schema.prisma`).
+- Runtime schema/DDL patches (`safeAlter`, some seed scripts) are MySQL-specific and are skipped
+  automatically on Postgres — the tables already exist from `prisma db push`.
 
 ## 5. Set up the client (`Client/`)
 
