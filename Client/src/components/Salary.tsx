@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Edit, Trash2, Tag, DollarSign, Users, BarChart2, GitBranch, CreditCard, TrendingUp, Clock, X, AlertTriangle, Layers } from 'lucide-react';
+import { Plus, Edit, Trash2, DollarSign, Users, BarChart2, GitBranch, CreditCard, TrendingUp, Clock, X, AlertTriangle, Layers } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
@@ -17,7 +17,6 @@ import { useCan } from '@/hooks/useCan';
 
 // Action permission required to manage each salary tab
 const SALARY_TAB_PERM: Record<string, string> = {
-  'Component Types':      'manage_salary_component_types',
   'Components':           'manage_salary_components',
   'Component Assignment': 'manage_notch_setup',
   'Exceptions':           'manage_employee_salary_components',
@@ -27,7 +26,6 @@ const SALARY_TAB_PERM: Record<string, string> = {
 };
 
 const SALARY_TABS = [
-  { label: 'Component Types',     icon: Tag        },
   { label: 'Components',          icon: DollarSign },
   { label: 'Component Assignment', icon: Layers    },
   { label: 'Exceptions',          icon: Users      },
@@ -37,7 +35,6 @@ const SALARY_TABS = [
 ];
 
 const ENDPOINTS: Record<string, string> = {
-  'Component Types':     '/salary/component-types',
   'Components':          '/salary/components',
   'Exceptions': '/salary/employee-components',
   'Payment Types':       '/salary/payment-types',
@@ -46,7 +43,6 @@ const ENDPOINTS: Record<string, string> = {
 
 const blankForm = (tab: string) => {
   switch (tab) {
-    case 'Component Types':     return { code: '', name: '', description: '' };
     case 'Components':          return { name: '', details: '', is_notch_linked: 0 };
     case 'Exceptions': return { employees: [], component: '', working_days: '', amount: '', excluded: false };
     case 'Payment Types':       return { name: '', description: '', generate_payslip: 1 };
@@ -611,7 +607,6 @@ export function Salary() {
   };
 
   const validate = () => {
-    if (activeTab === 'Component Types' && (!form.code?.trim() || !form.name?.trim())) return 'Code and name are required';
     if (activeTab === 'Components' && !form.name?.trim()) return 'Component name is required';
     if (activeTab === 'Exceptions' && (!form.employees?.length || !form.component)) return 'Employee and component are required';
     if (activeTab === 'Exceptions') {
@@ -711,14 +706,6 @@ export function Salary() {
 
   const renderModalContent = () => {
     switch (activeTab) {
-      case 'Component Types':
-        return (
-          <>
-            <div className="mb-4"><label className="label">Code <span className="text-[var(--danger)]">*</span></label><input value={form.code} onChange={(e) => set('code', e.target.value.toUpperCase())} placeholder="e.g. EARN" /></div>
-            <div className="mb-4"><label className="label">Name <span className="text-[var(--danger)]">*</span></label><input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Earning" /></div>
-            <div className="mb-4"><label className="label">Description</label><CountedTextarea rows={3} maxChars={500} value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="Optional description" /></div>
-          </>
-        );
       case 'Components': {
         const linkedComp = rows.find((c: any) => c.is_notch_linked);
         const isCurrentlyLinked = selectedRow ? String(linkedComp?.id) === String(selectedRow.id) : false;
@@ -815,7 +802,6 @@ export function Salary() {
   };
 
   const renderHead = () => {
-    if (activeTab === 'Component Types')     return ['Code', 'Name', 'Description'];
     if (activeTab === 'Components')          return ['Name', 'Details'];
     if (activeTab === 'Exceptions') return ['Employee', 'Component', 'Working Days', 'Amount / Effect'];
     if (activeTab === 'Payment Types')       return ['Payment Type', 'Description'];
@@ -823,7 +809,6 @@ export function Salary() {
   };
 
   const renderCells = (row: any) => {
-    if (activeTab === 'Component Types')     return [row.code, row.name, row.description ?? '-'];
     if (activeTab === 'Components')          return [
       <span key="name" className="flex items-center gap-1.5">
         {row.name}

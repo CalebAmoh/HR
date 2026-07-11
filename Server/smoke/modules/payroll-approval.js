@@ -42,7 +42,7 @@ module.exports.run = async (t) => {
 
     // ── login carries the stage-approver flag when the user's role is named in the flow ──
     // (this is what surfaces Central Approval to a stage approver who lacks a blanket approve_* perm)
-    const creds = { email: t.EMAIL, password: process.env.SMOKE_PASSWORD || 'pass1234' };
+    const creds = { email: t.email, password: process.env.SMOKE_PASSWORD || 'pass1234' };
     let li = await api.post('/login', creds, { auth: false });
     t.check('login → isStageApprover true (role named in flow)', li.status === 200 && li.body?.data?.isStageApprover === true, { flag: li.body?.data?.isStageApprover });
 
@@ -52,6 +52,11 @@ module.exports.run = async (t) => {
 
     r = await api.get(`/payroll/runs/${runId}/stages`);
     t.check('run has 2 snapshotted stages, first Pending', r.status === 200 && r.body?.data?.length === 2 && r.body.data[0].status === 'Pending', { n: r.body?.data?.length, s0: r.body?.data?.[0]?.status });
+
+    // the runs list exposes the current pending stage so Central Approval can build a per-approver queue
+    r = await api.get('/payroll/runs');
+    const listed = (r.body?.data || []).find(x => String(x.id) === String(runId));
+    t.check('runs list carries current-stage approver (Finance)', !!listed && listed.cur_stage_name === 'Finance' && String(listed.cur_approver_label) === 'super-admin', { stage: listed?.cur_stage_name, label: listed?.cur_approver_label });
 
     r = await api.post(`/payroll/runs/${runId}/approve`, {});
     t.check('approve stage 1 → still Pending Approval', r.status === 200 && r.body?.data?.status === 'Pending Approval', { status: r.status, run: r.body?.data?.status });
@@ -65,6 +70,11 @@ module.exports.run = async (t) => {
     // ── authorization: a stage the signed-in user can't approve → 403 ──
     r = await api.put('/payroll/approval-flow', { stages: [{ name: 'Locked', approverType: 'role', approverId: '999', approverLabel: 'ZZ_nobody_role' }] });
     t.check('PUT single locked-stage flow → 200', r.status === 200, { status: r.status });
+
+    // the flow now names only a role the smoke user lacks → login flag flips back to false
+    li = await api.post('/login', creds, { auth: false });
+    t.check('login → isStageApprover false (user not in flow)', li.status === 200 && li.body?.data?.isStageApprover === false, { flag: li.body?.data?.isStageApprover });
+
     const runId2 = await mkRun('LockedRun');
     r = await api.post(`/payroll/runs/${runId2}/submit`, {});
     t.check('submit locked run → Pending Approval', r.status === 200 && r.body?.data?.status === 'Pending Approval', { runId2, status: r.status, body: JSON.stringify(r.body).slice(0, 160) });

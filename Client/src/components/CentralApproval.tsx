@@ -8,6 +8,8 @@ import { FormField, inputClass } from './ui/FormField';
 import { CountedTextarea } from './ui/CountedTextarea';
 import api from '../../lib/api';
 import { getCurrentUser } from '../../lib/auth';
+import { canAccessNav } from '../../lib/permissions';
+import { PayrollReviewModal } from './PayrollReviewModal';
 import { PageHeader } from './ui/PageHeader';
 
 type ApprovalModule = 'Employee' | 'Payroll' | 'Medical' | 'Leave';
@@ -631,30 +633,61 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
   );
 }
 
+// ── Payroll review modal wrapper (owns busy state + approve/reject calls) ──────
+function PayrollReviewController({ item, onClose, onDone }: { item: ApprovalItem; onClose: () => void; onDone: (id: string) => void }) {
+  const [busy, setBusy] = useState(false);
+
+  async function approve() {
+    setBusy(true);
+    try {
+      await api.post(`/payroll/runs/${item.id}/approve`);
+      toast.success('Payroll run approved');
+      onDone(item.id);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Approval failed');
+    } finally { setBusy(false); }
+  }
+
+  async function reject(reason: string) {
+    setBusy(true);
+    try {
+      await api.post(`/payroll/runs/${item.id}/reject`, { reason });
+      toast.success('Payroll run rejected');
+      onDone(item.id);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Rejection failed');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <PayrollReviewModal run={item.raw} onApprove={approve} onReject={reject} onClose={onClose} busy={busy} />
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) => void }) {
   const [items, setItems]           = useState<ApprovalItem[]>([]);
   const [loading, setLoading]       = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedItem, setSelectedItem] = useState<ApprovalItem | null>(null);
+  const [reviewItem, setReviewItem]   = useState<ApprovalItem | null>(null);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
       const currentUser = getCurrentUser();
       const isAdmin = currentUser?.allRoles?.some(r => ['admin', 'super-admin', 'hr'].includes(r.name)) ?? false;
+      // A payroll stage approver reaches this screen without an admin/hr role — they still need the
+      // payroll queue (the server only lets them action runs where they're the current stage's approver).
+      const canSeePayroll = isAdmin || currentUser?.isStageApprover === true;
 
-      // Employee/Payroll/Medical queues are only for HR/admin users
-      const adminFetches = isAdmin ? [
-        api.get('/employees'),
-        api.get('/payroll/runs'),
-        api.get('/medical/staff'),
-        api.get('/medical/dependents-requests'),
-      ] : [
-        Promise.resolve({ data: { data: [] } }),
-        Promise.resolve({ data: { data: [] } }),
-        Promise.resolve({ data: { data: [] } }),
-        Promise.resolve({ data: { data: [] } }),
+      const noop = Promise.resolve({ data: { data: [] } });
+      // Employee/Medical queues stay HR/admin-only; payroll opens up to stage approvers too.
+      const adminFetches = [
+        isAdmin       ? api.get('/employees')                     : noop,
+        canSeePayroll ? api.get('/payroll/runs')                  : noop,
+        isAdmin       ? api.get('/medical/staff')                 : noop,
+        isAdmin       ? api.get('/medical/dependents-requests')   : noop,
       ];
 
       const [empRes, runRes, staffMedRes, depMedRes, leaveRes] = await Promise.allSettled([
@@ -690,8 +723,16 @@ export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) =>
 
       if (runRes.status === 'fulfilled') {
         const runs: any[] = runRes.value.data.data ?? [];
+        // Non-admin stage approvers only see runs whose CURRENT stage is theirs (by user id or role name);
+        // admins/HR see every pending run. Matches the server's per-stage approve authority.
+        const myId = currentUser?.id != null ? String(currentUser.id) : '';
+        const myRoles = new Set((currentUser?.allRoles ?? []).map(r => r.name));
+        const isMyStage = (r: any) => r.cur_approver_type === 'user'
+          ? String(r.cur_approver_id) === myId
+          : (myRoles.has(String(r.cur_approver_label)) || myRoles.has(String(r.cur_approver_id)));
         runs
           .filter((r: any) => r.status === 'Pending Approval')
+          .filter((r: any) => isAdmin || isMyStage(r))
           .forEach((r: any) => {
             pending.push({
               id:          String(r.id),
@@ -771,6 +812,7 @@ export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) =>
   function handleDone(id: string) {
     setItems(prev => prev.filter(i => i.id !== id));
     setSelectedItem(null);
+    setReviewItem(null);
   }
 
   function handleView(item: ApprovalItem) {
@@ -781,9 +823,18 @@ export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) =>
       return;
     }
     if (item.module === 'Payroll') {
-      sessionStorage.setItem('centralApproval.payrollRunId', item.id);
-      if (onNavigate) onNavigate('Payroll');
-      else setSelectedItem(item);
+      // Stage approvers reach this screen without access to the full Payroll module — sending them there
+      // renders Access Denied. Only jump to the module when they can actually open it; otherwise show the
+      // read-only run detail (with Approve/Reject) in the slide-over.
+      const user = getCurrentUser();
+      const canOpenPayroll = user ? canAccessNav(user, 'Payroll') : false;
+      if (onNavigate && canOpenPayroll) {
+        sessionStorage.setItem('centralApproval.payrollRunId', item.id);
+        onNavigate('Payroll');
+      } else {
+        // Stage approver without the full module — open the read-only review with the figures + actions.
+        setReviewItem(item);
+      }
       return;
     }
     // Medical and Leave — always handled in-panel
@@ -893,6 +944,13 @@ export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) =>
           <SlideOver
             item={selectedItem}
             onClose={() => setSelectedItem(null)}
+            onDone={handleDone}
+          />
+        )}
+        {reviewItem && (
+          <PayrollReviewController
+            item={reviewItem}
+            onClose={() => setReviewItem(null)}
             onDone={handleDone}
           />
         )}

@@ -23,6 +23,12 @@ module.exports.run = async (t) => {
 
     r = await api.get(`/payroll/runs/${runId}/data`);
     t.check('GET /payroll/runs/:id/data', r.status === 200, { status: r.status });
+    // A just-generated run has cells for every currently-relevant column, so nothing is stale. (The count
+    // is scoped to the run's report template, not every enabled column — new off-template columns don't nag.)
+    t.check('fresh run reports no stale columns', r.body?.data?.staleColumnCount === 0, { stale: r.body?.data?.staleColumnCount });
+    // Template column sets are exposed (null or array) so the approver review shows the run's report columns.
+    const tv = r.body?.data?.templateVisibleCols;
+    t.check('data carries template column sets', tv === null || Array.isArray(tv), { templateVisibleCols: tv });
 
     r = await api.get(`/payroll/runs/${runId}/audit`);
     t.check('GET /payroll/runs/:id/audit', r.status === 200, { status: r.status });

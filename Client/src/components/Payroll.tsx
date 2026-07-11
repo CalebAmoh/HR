@@ -789,7 +789,7 @@ function PayrollGrid({
     Completed:          'pill pill-success',
   };
   const statusStyle: Record<string, Record<string, string>> = {
-    'Pending Approval': { background: 'rgba(245,158,11,0.12)', color: '#b45309', border: '1px solid #f59e0b' },
+    'Pending Approval': { background: 'var(--warning-dim)', color: 'var(--warning)', border: '1px solid var(--warning)' },
     Rejected:           { background: 'var(--danger-dim)', color: 'var(--danger)', border: '1px solid var(--danger)' },
     Approved:           { background: 'rgba(16,185,129,0.10)', color: '#059669', border: '1px solid #10b981' },
   };
@@ -845,7 +845,7 @@ function PayrollGrid({
           {/* Submit for Approval — Processing, approval workflow on, data exists */}
           {activeRun.status === 'Processing' && approvalSettings.payrollApproval && gridData.length > 0 && can('process_payroll') && (
             <button className="secondary-btn" onClick={onSubmit} disabled={submitting}
-              style={{ borderColor: '#f59e0b', color: '#b45309' }}>
+              style={{ borderColor: 'var(--warning)', color: 'var(--warning)', background: 'var(--warning-dim)' }}>
               <Send size={14} /> {submitting ? 'Submitting…' : 'Submit for Approval'}
             </button>
           )}
@@ -864,7 +864,7 @@ function PayrollGrid({
                 : 'a different approver';
               return (
                 <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
-                  style={{ background: 'rgba(245,158,11,0.1)', color: '#b45309', border: '1px solid #f59e0b' }}>
+                  style={{ background: 'var(--warning-dim)', color: 'var(--warning)', border: '1px solid var(--warning)' }}>
                   <Clock size={13} className="shrink-0" />
                   {hasFlow && currentStage ? `Awaiting ${who} — "${currentStage.stage_name}"` : `Awaiting ${who}`}
                 </div>
@@ -916,7 +916,7 @@ function PayrollGrid({
               const isCurrent = !done && !rejected && currentStage?.id === st.id;
               const tone = rejected ? { bg: 'rgba(239,68,68,0.1)', bd: '#ef4444', fg: 'var(--danger)' }
                 : done ? { bg: 'rgba(34,197,94,0.1)', bd: '#22c55e', fg: 'var(--success)' }
-                : isCurrent ? { bg: 'rgba(245,158,11,0.12)', bd: '#f59e0b', fg: '#b45309' }
+                : isCurrent ? { bg: 'var(--warning-dim)', bd: 'var(--warning)', fg: 'var(--warning)' }
                 : { bg: 'transparent', bd: 'var(--border)', fg: 'var(--text-muted)' };
               return (
                 <div key={st.id} className="flex items-center gap-2">
@@ -974,9 +974,9 @@ function PayrollGrid({
       {/* ── Pending approval banner ── */}
       {isPendingApproval && (
         <div className="px-4 py-3 border rounded-[12px] flex items-center gap-3 text-[13px]"
-          style={{ borderColor: '#f59e0b', background: 'rgba(245,158,11,0.08)' }}>
-          <Clock size={15} style={{ color: '#b45309', flexShrink: 0 }} />
-          <span style={{ color: '#b45309', fontWeight: 600 }}>Awaiting approval — this run is locked until approved or rejected.</span>
+          style={{ borderColor: 'var(--warning)', background: 'var(--warning-dim)' }}>
+          <Clock size={15} style={{ color: 'var(--warning)', flexShrink: 0 }} />
+          <span style={{ color: 'var(--warning)', fontWeight: 600 }}>Awaiting approval — this run is locked until approved or rejected.</span>
         </div>
       )}
 
@@ -1318,7 +1318,7 @@ function PayrollGrid({
                 const meta: Record<string, { label: string; color: string }> = {
                   generate: { label: 'Payroll Generated',        color: 'text-[var(--accent)]'   },
                   finalize: { label: 'Finalized & Locked',       color: 'text-[var(--success)]'  },
-                  submit:   { label: 'Submitted for Approval',   color: 'text-[#b45309]'         },
+                  submit:   { label: 'Submitted for Approval',   color: 'text-[var(--warning)]'  },
                   approve:  { label: 'Approved',                 color: 'text-[var(--success)]'  },
                   reject:   { label: 'Rejected',                 color: 'text-[var(--danger)]'   },
                 };
@@ -1392,7 +1392,6 @@ export function Payroll() {
   const [pcDeleting,  setPcDeleting]  = useState<string | null>(null);
   const [pcSearch,     setPcSearch]     = useState('');
   const [pcTypeFilter, setPcTypeFilter] = useState<'all' | 'payment' | 'deduction' | 'hidden' | 'excluded'>('all');
-  const [componentTypes, setComponentTypes] = useState<RefItem[]>([]);
 
   // ── Pay Frequencies ─────────────────────────────────────────────────────────
   const [pfRows,      setPfRows]      = useState<PayFreq[]>([]);
@@ -1755,13 +1754,14 @@ export function Payroll() {
   }
 
   function openRunDuplicate(run: PayrollRun) {
+    // Coerce numeric ids to strings so the Combobox fields pre-select (value must equal option.id).
     setRunForm({
       name: `${run.name} (Copy)`,
-      pay_frequency: run.pay_frequency ?? '',
+      pay_frequency: run.pay_frequency != null ? String(run.pay_frequency) : '',
       date_start:    run.date_start?.slice(0, 10) ?? '',
       date_end:      run.date_end?.slice(0, 10)   ?? '',
-      deduction_group: run.deduction_group ?? '',
-      payment_type: run.payment_type_id ?? '',
+      deduction_group: run.deduction_group != null ? String(run.deduction_group) : '',
+      payment_type: run.payment_type_id != null ? String(run.payment_type_id) : '',
     });
     setEditingRun(null);
     setRunModalOpen(true);
@@ -2054,15 +2054,13 @@ export function Payroll() {
   async function loadPcData() {
     setPcLoading(true);
     try {
-      const [res, ctRes, cgRes, scRes, compRes] = await Promise.all([
+      const [res, cgRes, scRes, compRes] = await Promise.all([
         api.get('/payroll/columns'),
-        api.get('/salary/component-types').catch(() => ({ data: { data: [] } })),
         api.get('/payroll/calc-groups').catch(() => ({ data: { data: [] } })),
         api.get('/payroll/saved-calculations').catch(() => ({ data: { data: [] } })),
         api.get('/salary/components').catch(() => ({ data: { data: [] } })),
       ]);
       setPcRows(res.data.data || []);
-      setComponentTypes((ctRes.data.data || []).map((c: any) => ({ id: String(c.id), name: c.name })));
       setCgRows(cgRes.data.data || []);
       setScRows(scRes.data.data || []);
       setComponents((compRes.data.data || []).map((c: any) => ({ id: String(c.id), name: c.name })));
@@ -3188,6 +3186,7 @@ export function Payroll() {
                 <tr>
                   <th className="th text-left">Run Name</th>
                   <th className="th text-left">Pay Frequency</th>
+                  <th className="th text-left">Calculation Group</th>
                   <th className="th text-left">Period</th>
                   <th className="th text-left">Type</th>
                   <th className="th text-left">Status</th>
@@ -3196,9 +3195,9 @@ export function Payroll() {
               </thead>
               <tbody>
                 {runLoading ? (
-                  <tr><td colSpan={6} className="td text-center py-10 text-[var(--text-muted)]">Loading…</td></tr>
+                  <tr><td colSpan={7} className="td text-center py-10 text-[var(--text-muted)]">Loading…</td></tr>
                 ) : filteredRuns.length === 0 ? (
-                  <tr><td colSpan={6} className="td text-center py-12 text-[var(--text-muted)]">
+                  <tr><td colSpan={7} className="td text-center py-12 text-[var(--text-muted)]">
                     No payroll runs yet. Click <b>New Run</b> to get started.
                   </td></tr>
                 ) : pagedRuns.map((run, i) => {
@@ -3209,6 +3208,11 @@ export function Payroll() {
                       onClick={() => openRun(run)}>
                       <td className="td font-medium text-[var(--text-primary)] hover:text-[var(--accent)]">{run.name}</td>
                       <td className="td text-[var(--text-muted)]">{run.freq_name ?? '—'}</td>
+                      <td className="td">
+                        {run.group_name
+                          ? <span className="pill pill-accent text-[11px]">{run.group_name}</span>
+                          : <span className="text-[var(--text-muted)] opacity-50">All groups</span>}
+                      </td>
                       <td className="td text-[var(--text-muted)]">
                         {run.date_start ? run.date_start.slice(0, 10) : '—'}
                         {run.date_end   ? ` → ${run.date_end.slice(0, 10)}` : ''}
@@ -3228,12 +3232,15 @@ export function Payroll() {
                               label: 'Edit', icon: Edit,
                               hidden: !(can('process_payroll') && run.status !== 'Completed' && run.status !== 'GL Failed'),
                               onClick: () => {
+                                // Combobox matches value === option.id (a String), so coerce the run's
+                                // numeric ids to strings or the fields render empty.
                                 setRunForm({
-                                  name: run.name, pay_frequency: run.pay_frequency ?? '',
+                                  name: run.name,
+                                  pay_frequency: run.pay_frequency != null ? String(run.pay_frequency) : '',
                                   date_start: run.date_start?.slice(0, 10) ?? '',
                                   date_end:   run.date_end?.slice(0, 10) ?? '',
-                                  deduction_group: run.deduction_group ?? '',
-                                  payment_type: run.payment_type_id ?? '',
+                                  deduction_group: run.deduction_group != null ? String(run.deduction_group) : '',
+                                  payment_type: run.payment_type_id != null ? String(run.payment_type_id) : '',
                                 });
                                 setEditingRun(run);
                                 setRunModalOpen(true);

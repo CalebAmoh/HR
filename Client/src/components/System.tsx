@@ -4,7 +4,7 @@ import { codeLists, CodeList, CodeListValue } from '../../lib/codeLists';
 import { TablePagination } from './ui/TablePagination';
 import { SearchSelect } from './ui/SearchSelect';
 import { RowActions } from './ui/RowActions';
-import { Search, FileEdit, Trash2, Filter, Plus, Download, X, Building2, Tag, List, ChevronDown, RefreshCw } from 'lucide-react';
+import { Search, FileEdit, Trash2, Filter, Plus, Download, X, Building2, Tag, List, ChevronDown, RefreshCw, CheckCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ConfirmAlert } from './ConfirmAlert';
 import { useCan } from '@/hooks/useCan';
@@ -306,7 +306,7 @@ export function System() {
     setIsFormOpen(true);
   };
 
-  const handleDeleteValueClick = (item: CodeListValue) => {
+  const handleToggleValueClick = (item: CodeListValue) => {
     setSelectedItem(item);
     setIsAlertOpen(true);
   };
@@ -351,14 +351,21 @@ export function System() {
     }
   };
 
-  const handleConfirmDeactivateValue = async () => {
+  const handleConfirmToggleValue = async () => {
     if (!selectedItem) return;
+    const deactivating = selectedItem.isActive;
     try {
-      await codeLists.deactivateValue(selectedItem.codeListId, selectedItem.id);
-      setCodeValues((prev) => prev.filter((v) => v.id !== selectedItem.id));
-      toast.success(`"${selectedItem.label}" deactivated`);
+      const res = deactivating
+        ? await codeLists.deactivateValue(selectedItem.codeListId, selectedItem.id)
+        : await codeLists.activateValue(selectedItem.codeListId, selectedItem.id);
+      const updated = res.data?.data;
+      // Keep the row visible and flip its status in place, so it can be toggled back.
+      setCodeValues((prev) => prev.map((v) =>
+        v.id === selectedItem.id ? { ...v, ...(updated ?? {}), isActive: !deactivating } : v
+      ));
+      toast.success(`"${selectedItem.label}" ${deactivating ? 'deactivated' : 'activated'}`);
     } catch (err: any) {
-      const msg = err?.response?.data?.message ?? 'Failed to deactivate value';
+      const msg = err?.response?.data?.message ?? `Failed to ${deactivating ? 'deactivate' : 'activate'} value`;
       toast.error(msg);
     } finally {
       setIsAlertOpen(false);
@@ -405,8 +412,13 @@ export function System() {
       ? (selectedItem ? 'Edit Code List' : 'Add Code List')
       : (selectedItem ? 'Edit Code Value' : 'Add Code Value');
 
-  const deleteTitle   = 'Deactivate Code Value';
-  const deleteMessage = 'This will deactivate the value. It will no longer appear in selection lists but existing records are preserved.';
+  // The confirm alert is dual-purpose — it deactivates an active value or reactivates an inactive one,
+  // driven by the selected row's current status.
+  const isDeactivating = selectedItem?.isActive ?? true;
+  const toggleTitle   = isDeactivating ? 'Deactivate Code Value' : 'Activate Code Value';
+  const toggleMessage = isDeactivating
+    ? 'This will deactivate the value. It will no longer appear in selection lists but existing records are preserved.'
+    : 'This will reactivate the value so it appears in selection lists again.';
 
   const hasActiveFilter = codeFilter !== '';
 
@@ -622,6 +634,7 @@ export function System() {
                       <th scope="col" className="th">Code</th>
                       <th scope="col" className="th">Label</th>
                       <th scope="col" className="th">Description</th>
+                      <th scope="col" className="th">Status</th>
                     </>
                   )}
 
@@ -734,11 +747,18 @@ export function System() {
                         </td>
                         <td className="td text-[var(--text-secondary)]">{row.description ?? '—'}</td>
                         <td className="td">
+                          {row.isActive
+                            ? <span className="pill pill-success text-[11px]">Active</span>
+                            : <span className="pill text-[11px]" style={{ background: 'var(--danger-dim)', color: 'var(--danger)', border: '1px solid var(--danger)' }}>Inactive</span>}
+                        </td>
+                        <td className="td">
                           <div className="flex justify-end">
                             {canManage
                               ? <RowActions actions={[
                                   { label: 'Edit', icon: FileEdit, onClick: () => handleEditValue(row) },
-                                  { label: 'Deactivate', icon: Trash2, danger: true, onClick: () => handleDeleteValueClick(row) },
+                                  row.isActive
+                                    ? { label: 'Deactivate', icon: Trash2, danger: true, onClick: () => handleToggleValueClick(row) }
+                                    : { label: 'Activate', icon: CheckCircle, onClick: () => handleToggleValueClick(row) },
                                 ]} />
                               : <span className="text-[var(--text-muted)]">—</span>}
                           </div>
@@ -747,7 +767,7 @@ export function System() {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={5} className="td text-center py-10 text-[var(--text-muted)]">
+                      <td colSpan={6} className="td text-center py-10 text-[var(--text-muted)]">
                         No code values found.
                       </td>
                     </tr>
@@ -908,15 +928,15 @@ export function System() {
         )}
       </AnimatePresence>
 
-      {/* Confirm deactivate alert */}
+      {/* Confirm activate / deactivate alert */}
       <ConfirmAlert
         isOpen={isAlertOpen}
-        title={deleteTitle}
-        message={deleteMessage}
-        confirmText="Yes, Deactivate"
-        onConfirm={handleConfirmDeactivateValue}
+        title={toggleTitle}
+        message={toggleMessage}
+        confirmText={isDeactivating ? 'Yes, Deactivate' : 'Yes, Activate'}
+        onConfirm={handleConfirmToggleValue}
         onCancel={() => { setIsAlertOpen(false); setSelectedItem(null); }}
-        variant="danger"
+        variant={isDeactivating ? 'danger' : 'info'}
       />
     </div>
   );

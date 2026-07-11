@@ -56,4 +56,9 @@ export const codeLists = {
     api.put<{ status: string; data: CodeListValue }>(
       `/system/code-lists/${codeListId}/values/${valueId}/deactivate`
     ),
+
+  activateValue: (codeListId: string, valueId: string) =>
+    api.put<{ status: string; data: CodeListValue }>(
+      `/system/code-lists/${codeListId}/values/${valueId}/activate`
+    ),
 };

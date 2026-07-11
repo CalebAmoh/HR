@@ -82,6 +82,7 @@ class Suite {
     this.failures = [];
     this._cleanups = []; // { path, label } — deleted in reverse (LIFO) at the end
     this.api = api;
+    this.email = EMAIL;            // the smoke user's login email
     this.tag = RUN_TAG;             // e.g. name things `${t.tag}_Foo`
     this.uniq = (base) => `${RUN_TAG}_${base}`;
   }

@@ -287,8 +287,22 @@ const RUNS_SELECT = Prisma.sql`
          cg.name AS group_name, pr.payment_type_id, pt.name AS type_name,
          pr.status, pr.created_at,
          pr.submitted_by, pr.approved_by, pr.approved_at, pr.rejection_reason,
-         pr.document_ref, pr.payment_log, pr.finalized_at
+         pr.document_ref, pr.payment_log, pr.finalized_at,
+         cs.approver_type  AS cur_approver_type,
+         cs.approver_id    AS cur_approver_id,
+         cs.approver_label AS cur_approver_label,
+         cs.stage_name     AS cur_stage_name
   FROM   payrollruns pr
+  -- current pending stage per run (lowest stage_order still Pending). Portable to MariaDB 10.4 + Postgres:
+  -- join the stages to the per-run minimum pending order rather than using LATERAL (unsupported on MariaDB).
+  LEFT JOIN (
+    SELECT s.run_id, s.approver_type, s.approver_id, s.approver_label, s.stage_name, s.stage_order
+    FROM   payrollrun_stages s
+    JOIN  (SELECT run_id, MIN(stage_order) AS min_order
+           FROM payrollrun_stages WHERE status = 'Pending' GROUP BY run_id) m
+      ON  m.run_id = s.run_id AND m.min_order = s.stage_order
+    WHERE  s.status = 'Pending'
+  ) cs ON cs.run_id = pr.id
   LEFT JOIN payfrequencies     pf ON pf.id = pr.pay_frequency
   LEFT JOIN calculationgroups  cg ON cg.id = pr.deduction_group
   LEFT JOIN paymenttype        pt ON pt.id = pr.payment_type_id
@@ -404,9 +418,16 @@ const generatePayroll = asyncHandler(async (req, res) => {
 
   // Detect salary components that applicable payroll columns need but no selected employee has.
   // Columns with a default value can still calculate without an employee salary row, so skip them.
-  const applicableCols = allCols.filter(col =>
-    !col.groupIds.length || payrollEmps.some(pe => col.groupIds.includes(String(pe.deduction_group ?? '')))
-  );
+  // Scope the check to columns that actually appear on THIS run's report template — a column that is
+  // enabled system-wide but not shown on this run (e.g. an ungrouped "Union Dues" deduction the template
+  // omits) must not trip a "no salary values" warning for a figure the user never sees. Fall back to the
+  // group-scoped applicability rule when the run has no report template.
+  const runTemplate = await resolveRunTemplate(id);
+  const templateColIds = new Set(parseTemplateColumns(runTemplate?.visible_columns));
+  const applicableCols = allCols.filter(col => {
+    if (templateColIds.size) return templateColIds.has(String(col.id));
+    return !col.groupIds.length || payrollEmps.some(pe => col.groupIds.includes(String(pe.deduction_group ?? '')));
+  });
   const neededComponents = new Set();
   applicableCols.forEach(col => {
     const hasDefault = (parseFloat(col.default_value || '0') || 0) > 0;
@@ -452,6 +473,36 @@ const generatePayroll = asyncHandler(async (req, res) => {
 });
 
 // ── Grid data ─────────────────────────────────────────────────────────────────
+/** Parse a payslip template's visible_columns (JSON array of column ids) into a string[] — tolerant of null,
+ *  already-parsed arrays, or malformed JSON. */
+function parseTemplateColumns(raw) {
+  if (raw == null) return [];
+  let arr = raw;
+  if (typeof raw === 'string') { try { arr = JSON.parse(raw); } catch { return []; } }
+  return Array.isArray(arr) ? arr.map(String).filter(v => v !== '') : [];
+}
+
+/**
+ * Resolve the report template (payslip_settings row) that applies to a run, mirroring the client's
+ * precedence: exact payment-type + deduction-group match, then payment-type-only, then group-only, then a
+ * global default (neither set). Returns null when nothing matches.
+ */
+async function resolveRunTemplate(runId) {
+  const [run] = await query`SELECT payment_type_id, deduction_group FROM payrollruns WHERE id = ${BigInt(runId)} LIMIT 1`;
+  if (!run) return null;
+  const pt = run.payment_type_id != null ? String(run.payment_type_id) : '';
+  const dg = run.deduction_group != null ? String(run.deduction_group) : '';
+  const templates = await query`SELECT payment_type_id, deduction_group_id, visible_columns, net_columns FROM payslip_settings`;
+  const eq = (a, b) => String(a ?? '') === String(b ?? '');
+  return (
+    (pt && dg && templates.find(t => eq(t.payment_type_id, pt) && eq(t.deduction_group_id, dg))) ||
+    (pt && templates.find(t => eq(t.payment_type_id, pt) && (t.deduction_group_id == null || t.deduction_group_id === ''))) ||
+    (dg && templates.find(t => (t.payment_type_id == null || t.payment_type_id === '') && eq(t.deduction_group_id, dg))) ||
+    templates.find(t => (t.payment_type_id == null || t.payment_type_id === '') && (t.deduction_group_id == null || t.deduction_group_id === '')) ||
+    null
+  );
+}
+
 // GET /payroll/runs/:id/data — retrieve all payroll cells for a run (employee × column), with stale-column warning count.
 const getPayrollData = asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -466,11 +517,41 @@ const getPayrollData = asyncHandler(async (req, res) => {
     WHERE  pd.payroll = ${BigInt(id)}
     ORDER BY emp_name, COALESCE(pc.colorder, 99999), pc.id`;
 
-  const [{ totalEnabled }] = await query`SELECT COUNT(*) AS totalEnabled FROM payrollcolumns WHERE enabled='Yes'`;
-  const colsInRun = new Set(cells.map(r => String(r.payroll_item))).size;
-  const staleColumnCount = Math.max(0, Number(totalEnabled) - colsInRun);
+  // Stale-column warning: only columns that would actually appear in THIS run's report count. A run resolves
+  // to a report template (payslip_settings) by payment type + deduction group; its `visible_columns` is the
+  // set the report shows. So we warn only when a *template* column is missing from the run's stored cells —
+  // brand-new enabled columns that aren't in the template are irrelevant and must not nag "recalculate".
+  // When a run has no matching template, fall back to all enabled columns (the report shows them all).
+  const template = await resolveRunTemplate(id);
+  const colsInRun = new Set(cells.map(r => String(r.payroll_item)));
+  const enabledCols = await query`SELECT id FROM payrollcolumns WHERE enabled='Yes'`;
+  const enabledIds = new Set(enabledCols.map(c => String(c.id)));
 
-  respond.ok(res, 'Payroll data retrieved', { cells, staleColumnCount, totalEnabledCols: Number(totalEnabled) });
+  let staleColumnCount;
+  let relevantColCount;
+  const templateCols = parseTemplateColumns(template?.visible_columns);
+  if (templateCols.length) {
+    // Only template columns that are currently enabled can appear in a recalculated run — a template entry
+    // for a disabled column can never be filled, so it must not count as "stale".
+    const relevant = templateCols.filter(cid => enabledIds.has(String(cid)));
+    relevantColCount = relevant.length;
+    staleColumnCount = relevant.filter(cid => !colsInRun.has(String(cid))).length;
+  } else {
+    relevantColCount = enabledIds.size;
+    staleColumnCount = Math.max(0, relevantColCount - colsInRun.size);
+  }
+
+  // Expose the run's resolved report-template column sets so any consumer (e.g. the approver's review)
+  // renders exactly the columns this run's report shows, not a general all-columns view. Null when the run
+  // has no matching template — consumers then fall back to each column's own visible/include_in_net flags.
+  const templateVisibleCols = templateCols.length ? templateCols : null;
+  const templateNetCols = template ? parseTemplateColumns(template.net_columns) : [];
+
+  respond.ok(res, 'Payroll data retrieved', {
+    cells, staleColumnCount, totalEnabledCols: relevantColCount,
+    templateVisibleCols,
+    templateNetCols: templateNetCols.length ? templateNetCols : null,
+  });
 });
 
 // GET /payroll/runs/:id/debug — re-run the calculation engine in read-only mode and return the raw salary map
