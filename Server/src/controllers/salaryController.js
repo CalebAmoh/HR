@@ -45,7 +45,7 @@ const createSalaryComponentType = asyncHandler(async (req, res) => {
   const dup = await query`SELECT id FROM salarycomponenttype WHERE UPPER(code) = UPPER(${code.trim()}) LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'Component type code already exists');
 
-  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM salarycomponenttype`;
+  const nextId = Number((await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM salarycomponenttype`)[0].nextId);
   await exec`INSERT INTO salarycomponenttype (id, code, name, description)
     VALUES (${nextId}, ${code.trim().toUpperCase()}, ${name.trim()}, ${description?.trim() || null})`;
   const [created] = await query`SELECT id, code, name, description FROM salarycomponenttype WHERE id = ${nextId}`;
@@ -136,19 +136,12 @@ const updateSalaryComponent = asyncHandler(async (req, res) => {
          processing_code=${processing_code?.trim() || null}, is_notch_linked=${isNotchLinked}
      WHERE id=${id}`;
 
-  // Cascade rename: update anywhere the old name is stored as a plain string.
+  // Cascade rename into places that still store the component name as a plain string.
+  // (Payroll columns link components by id via payrollcolumn_components — no name stored there —
+  // so only saved-calculation targets need updating.)
   const oldName = existing.name;
   const newName = name.trim();
   if (oldName !== newName) {
-    // Fix salary_components CSV on every payroll column that referenced the old name.
-    const cols = await query`SELECT id, salary_components FROM payrollcolumns WHERE salary_components IS NOT NULL`;
-    for (const col of cols) {
-      const parts = col.salary_components.split(',').map(s => s.trim());
-      const updatedParts = parts.map(p => p.toLowerCase() === oldName.toLowerCase() ? newName : p);
-      if (updatedParts.some((p, i) => p !== parts[i])) {
-        await exec`UPDATE payrollcolumns SET salary_components = ${updatedParts.join(', ')} WHERE id = ${BigInt(col.id)}`;
-      }
-    }
     await exec`UPDATE savedcalculations SET target_name = ${newName} WHERE target_type = 'component' AND LOWER(target_name) = LOWER(${oldName})`;
   }
 
@@ -571,8 +564,8 @@ const getPaymentTypes = asyncHandler(async (_req, res) => {
 const createPaymentType = asyncHandler(async (req, res) => {
   const { name, description, generate_payslip } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Payment type is required');
-  const gp = generate_payslip === undefined ? 1 : (generate_payslip ? 1 : 0);
-  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM paymenttype`;
+  const gp = generate_payslip === undefined ? true : !!generate_payslip; // Boolean column — pass a real boolean for PG
+  const nextId = Number((await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM paymenttype`)[0].nextId);
   await exec`INSERT INTO paymenttype (id, name, description, generate_payslip) VALUES (${nextId}, ${name.trim()}, ${description?.trim() || null}, ${gp})`;
   const [row] = await query`SELECT id, name, description, generate_payslip FROM paymenttype WHERE id = ${nextId}`;
   respond.created(res, 'Payment type created', row);
@@ -584,7 +577,7 @@ const updatePaymentType = asyncHandler(async (req, res) => {
   if (!id) return respond.badReq(res, 'Invalid payment type ID');
   const { name, description, generate_payslip } = req.body;
   if (!name?.trim()) return respond.badReq(res, 'Payment type is required');
-  const gp = generate_payslip === undefined ? 1 : (generate_payslip ? 1 : 0);
+  const gp = generate_payslip === undefined ? true : !!generate_payslip; // Boolean column — pass a real boolean for PG
   await exec`UPDATE paymenttype SET name=${name.trim()}, description=${description?.trim() || null}, generate_payslip=${gp} WHERE id=${id}`;
   const [row] = await query`SELECT id, name, description, generate_payslip FROM paymenttype WHERE id = ${id}`;
   respond.ok(res, 'Payment type updated', row);
@@ -622,7 +615,7 @@ const createNotchMovement = asyncHandler(async (req, res) => {
   const next = operation === 'Increment' ? current + delta : current - delta;
   await prisma.notches.update({ where: { id }, data: { amount: next.toFixed(2) } });
 
-  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM notchmovement`;
+  const nextId = Number((await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM notchmovement`)[0].nextId);
   const movementDate = date ? new Date(date) : new Date();
   const note = `${operation} ${pct}%`;
   await exec`INSERT INTO notchmovement (id, date, employees, no_notches) VALUES (${nextId}, ${movementDate}, ${notch.name}, ${note})`;

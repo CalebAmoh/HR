@@ -9,6 +9,7 @@ import {
   MessageSquare, RotateCcw, Search, Check,
 } from 'lucide-react';
 import { Modules } from './Modules';
+import { PayrollApprovalFlow } from './PayrollApprovalFlow';
 import {
   aiGetConfig, aiSaveConfig, aiHealth, aiReindex, type AiHealth,
   aiListKnowledge, aiSaveKnowledge, aiSetKnowledgeEnabled, aiDeleteKnowledge, type KnowledgeEntry,
@@ -488,6 +489,7 @@ function ApprovalsSection({
   supervisorApproval, setSupervisorApproval, saveFlowSettings,
   trainingApprovalFlow, setTrainingApprovalFlow, saveTrainingFlowSettings,
 }: any) {
+  const [showFlowEditor, setShowFlowEditor] = useState(false);
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 auto-rows-min">
       <SectionCard icon={<ShieldCheck size={13} />} title="Employee Approval">
@@ -534,7 +536,23 @@ function ApprovalsSection({
           checked={selfApproval}
           onChange={(v) => { setSelfApproval(v); saveSetting('approvals', { selfApproval: v }); }}
         />
+        {payrollApproval && (
+          <div className="px-5 py-3 border-t border-[var(--border)]">
+            <p className="text-[12px] text-[var(--text-muted)] mb-2 leading-relaxed">
+              Define the sign-off chain — the stages a submitted run passes through, and who approves each.
+              With no stages, one approval (any user who can approve payroll) is enough.
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowFlowEditor(true)}
+              className="secondary-btn text-[13px]"
+            >
+              <ShieldCheck size={14} /> Configure Approval Flow
+            </button>
+          </div>
+        )}
       </SectionCard>
+      {showFlowEditor && <PayrollApprovalFlow onClose={() => setShowFlowEditor(false)} />}
 
       <SectionCard icon={<Stethoscope size={13} />} title="Medical Approval">
         <ControlRow

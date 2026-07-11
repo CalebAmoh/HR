@@ -310,9 +310,14 @@ router.post  ('/payroll/runs/:id/generate',       permissionGuard('process_payro
 router.post  ('/payroll/runs/:id/finalize',       permissionGuard('approve_payroll'), run.finalizePayroll);
 router.post  ('/payroll/runs/:id/retry-gl',       permissionGuard('approve_payroll'), run.retryGLPosting);
 router.post  ('/payroll/runs/:id/submit',         permissionGuard('process_payroll'), run.submitPayroll);
-router.post  ('/payroll/runs/:id/approve',        permissionGuard('approve_payroll'), run.approvePayroll);
-router.post  ('/payroll/runs/:id/reject',         permissionGuard('approve_payroll'), run.rejectPayroll);
+// approve/reject are authorised inside the controller: a blanket `approve_payroll` holder OR the run's
+// current-stage assigned approver may act (stage assignment grants authority for that run).
+router.post  ('/payroll/runs/:id/approve',        run.approvePayroll);
+router.post  ('/payroll/runs/:id/reject',         run.rejectPayroll);
 router.get   ('/payroll/runs/:id/audit',          run.getPayrollAudit);
+router.get   ('/payroll/runs/:id/stages',         run.getRunStages);
+router.get   ('/payroll/approval-flow',           run.getApprovalFlow);
+router.put   ('/payroll/approval-flow',           permissionGuard('process_payroll'), run.saveApprovalFlow);
 router.get   ('/payroll/runs/:id/data',           run.getPayrollData);
 router.get   ('/payroll/runs/:id/debug',          run.debugPayrollRun);
 router.put   ('/payroll/runs/:id/data/:itemId',   permissionGuard('process_payroll'), run.updatePayrollDataItem);

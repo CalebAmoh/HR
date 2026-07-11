@@ -8,6 +8,32 @@ const { tmsg } = require('../helpers/messageStore');
 const { sendWelcomeEmail } = require('../helpers/emailHelper');
 const { logActivity, fromReq } = require('./auditController');
 
+/**
+ * Is this user named in the payroll approval flow? True when a `user` stage targets their id, or a
+ * `role` stage targets one of their role names (matched by label or id). Used to surface Central Approval
+ * to stage approvers who lack a blanket `approve_*` permission. Never throws — a missing/invalid config
+ * just means "not a stage approver".
+ */
+async function isPayrollStageApprover(userId, roleNames) {
+  try {
+    const res = await helper.selectRecordsWithQuery(
+      `SELECT value FROM settings WHERE name = 'payroll_approval_flow' AND category = 'app_controls' LIMIT 1`,
+      [],
+    );
+    const raw = res?.data?.[0]?.value;
+    if (!raw) return false;
+    const stages = JSON.parse(raw);
+    if (!Array.isArray(stages)) return false;
+    const roles = new Set((roleNames || []).map(String));
+    return stages.some(s => {
+      if (!s) return false;
+      if (s.approverType === 'user') return String(s.approverId) === String(userId);
+      if (s.approverType === 'role') return roles.has(String(s.approverLabel)) || roles.has(String(s.approverId));
+      return false;
+    });
+  } catch { return false; }
+}
+
 
 
 // ─────────────────────────────────────────────
@@ -281,6 +307,11 @@ const loginUser = asyncHandler(async (req, res) => {
 
   const { password: _, ...userWithoutPassword } = user;
 
+  // ── Payroll stage-approver flag ─────────────────────────
+  // A user named in the payroll approval flow (by user id, or by one of their role names) can reach
+  // Central Approval even without a blanket `approve_*` permission — stage assignment grants access.
+  const isStageApprover = await isPayrollStageApprover(String(user.id), roles.map(r => r.name));
+
   res.status(200).json({
     status:  '200',
     message: 'Login successful',
@@ -290,6 +321,7 @@ const loginUser = asyncHandler(async (req, res) => {
       userType:    userWithoutPassword.employeeId ? 'employee' : 'admin',
       roles:       roles.map(r => r.name),
       permissions: allPermissions,
+      isStageApprover,
     },
   });
 });

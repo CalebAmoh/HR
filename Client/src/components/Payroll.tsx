@@ -4,7 +4,7 @@ import {
   TrendingUp, Users, DollarSign, ArrowLeft, ChevronDown,
   ChevronsRight, RefreshCw, Lock, Send, ThumbsUp, ThumbsDown,
   ClipboardList, GitCompare, Clock, AlertTriangle, CheckSquare, Square, Copy,
-  Palette, AlignLeft, LayoutGrid, User,
+  Palette, AlignLeft, LayoutGrid, User, ShieldCheck,
   X, Columns2, Tag, Zap,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -71,6 +71,13 @@ interface PayrollRun {
   approved_at: string | null; rejection_reason: string | null;
   document_ref: string | null; finalized_at: string | null;
   payment_log: string | null;
+}
+// One stage of a run's snapshotted multi-stage approval flow.
+interface RunStage {
+  id: string; stage_order: number; stage_name: string;
+  approver_type: 'role' | 'user'; approver_id: string; approver_label: string | null;
+  status: 'Pending' | 'Approved' | 'Rejected';
+  acted_by: string | null; acted_at: string | null; comment: string | null;
 }
 interface AuditEntry {
   id: string; run_id: string;
@@ -611,7 +618,7 @@ function PayslipSlideOver({
 
 function PayrollGrid({
   gridData, activeRun, editMode, generating, finalizing, retryingGL, submitting, approving, rejecting,
-  staleColumnCount, hiddenColIds, netExcludedIds, approvalSettings, currentUserId,
+  staleColumnCount, hiddenColIds, netExcludedIds, approvalSettings, currentUserId, currentUserRoles, runStages,
   auditLog, auditLoading, payslipEnabled, colLabelMap, payslipSettings,
   onBack, onGenerate, onFinalize, onRetryGL, onExport, onToggleEdit, onCellUpdate, onReorderCols,
   onSubmit, onApprove, onReject, onLoadAudit,
@@ -630,6 +637,8 @@ function PayrollGrid({
   netExcludedIds: Set<string>;
   approvalSettings: { payrollApproval: boolean; selfApproval: boolean };
   currentUserId: string | null;
+  currentUserRoles: string[];
+  runStages: RunStage[];
   auditLog: AuditEntry[];
   auditLoading: boolean;
   payslipEnabled: boolean;
@@ -661,6 +670,14 @@ function PayrollGrid({
   const isApproved        = activeRun.status === 'Approved';
   const isRejected        = activeRun.status === 'Rejected';
   const canEdit           = !isLocked && !isPendingApproval && !isApproved;
+
+  // ── Multi-stage approval flow ──
+  const hasFlow      = runStages.length > 0;
+  const currentStage = runStages.find(s => s.status === 'Pending') ?? null;
+  const matchesStage = (st: RunStage) => st.approver_type === 'user'
+    ? String(currentUserId ?? '') === String(st.approver_id)
+    : (currentUserRoles || []).includes(String(st.approver_label));
+  const isCurrentApprover = currentStage ? matchesStage(currentStage) : true; // no flow → any approver
 
   const [showAudit, setShowAudit] = useState(false);
 
@@ -837,14 +854,19 @@ function PayrollGrid({
           {isPendingApproval && can('approve_payroll') && (() => {
             const isSelf = currentUserId != null && activeRun.submitted_by != null
               && String(activeRun.submitted_by) === String(currentUserId);
-            const canAct = approvalSettings.selfApproval || !isSelf;
+            const selfOk = approvalSettings.selfApproval || !isSelf;
+            const stageOk = !hasFlow || isCurrentApprover; // multi-stage: only the current stage's approver
+            const canAct = selfOk && stageOk;
 
             if (!canAct) {
+              const who = hasFlow && currentStage
+                ? (currentStage.approver_label || (currentStage.approver_type === 'user' ? 'the assigned approver' : 'the assigned role'))
+                : 'a different approver';
               return (
                 <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
                   style={{ background: 'rgba(245,158,11,0.1)', color: '#b45309', border: '1px solid #f59e0b' }}>
                   <Clock size={13} className="shrink-0" />
-                  Awaiting a different approver
+                  {hasFlow && currentStage ? `Awaiting ${who} — "${currentStage.stage_name}"` : `Awaiting ${who}`}
                 </div>
               );
             }
@@ -880,6 +902,42 @@ function PayrollGrid({
           </button>
         </div>
       </div>
+
+      {/* ── Approval flow progress ── */}
+      {runStages.length > 0 && (isPendingApproval || isApproved || isRejected) && (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+          <div className="flex items-center gap-1.5 mb-2 text-[12px] font-semibold text-[var(--text-muted)]">
+            <ShieldCheck size={13} /> Approval flow
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {runStages.map((st, i) => {
+              const done = st.status === 'Approved';
+              const rejected = st.status === 'Rejected';
+              const isCurrent = !done && !rejected && currentStage?.id === st.id;
+              const tone = rejected ? { bg: 'rgba(239,68,68,0.1)', bd: '#ef4444', fg: 'var(--danger)' }
+                : done ? { bg: 'rgba(34,197,94,0.1)', bd: '#22c55e', fg: 'var(--success)' }
+                : isCurrent ? { bg: 'rgba(245,158,11,0.12)', bd: '#f59e0b', fg: '#b45309' }
+                : { bg: 'transparent', bd: 'var(--border)', fg: 'var(--text-muted)' };
+              return (
+                <div key={st.id} className="flex items-center gap-2">
+                  {i > 0 && <span className="text-[var(--text-muted)]">→</span>}
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px]"
+                    style={{ background: tone.bg, border: `1px solid ${tone.bd}`, color: tone.fg }}>
+                    {done ? <CheckCircle size={13} /> : rejected ? <ThumbsDown size={13} /> : <Clock size={13} />}
+                    <div className="leading-tight">
+                      <div className="font-semibold">{st.stage_name}</div>
+                      <div className="opacity-75">
+                        {st.approver_type === 'user' ? '' : 'Role: '}{st.approver_label || (st.approver_type === 'user' ? 'user' : 'role')}
+                        {st.status !== 'Pending' && ` · ${st.status}`}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── Summary cards ── */}
       {gridData.length > 0 && (
@@ -1402,6 +1460,18 @@ export function Payroll() {
     const u = getCurrentUser();
     return u?.id != null ? String(u.id) : null;
   });
+  const [currentUserRoles]                        = useState<string[]>(() => (getCurrentUser()?.allRoles ?? []).map(r => r.name));
+  // Snapshot of the active run's multi-stage approval progress (empty when no flow / not submitted).
+  const [runStages, setRunStages]                 = useState<RunStage[]>([]);
+  async function loadRunStages(runId: string) {
+    try { const r = await api.get(`/payroll/runs/${runId}/stages`); setRunStages(Array.isArray(r.data?.data) ? r.data.data : []); }
+    catch { setRunStages([]); }
+  }
+  // Load the stage snapshot whenever a run in an approval state is opened.
+  useEffect(() => {
+    if (activeRun && ['Pending Approval', 'Approved', 'Rejected'].includes(activeRun.status)) loadRunStages(String(activeRun.id));
+    else setRunStages([]);
+  }, [activeRun?.id, activeRun?.status]);
 
   // ── Audit log ────────────────────────────────────────────────────────────────
   const [auditLog,     setAuditLog]     = useState<AuditEntry[]>([]);
@@ -1780,6 +1850,7 @@ export function Payroll() {
       toast.success('Submitted for approval');
       setRunRows(r => r.map(x => x.id === activeRunId ? res.data.data : x));
       setActiveRun(res.data.data);
+      await loadRunStages(activeRunId);
     } catch (e: any) { toast.error(e.response?.data?.message || 'Submit failed'); }
     finally { setSubmitting(false); }
   }
@@ -1789,9 +1860,10 @@ export function Payroll() {
     setApproving(true);
     try {
       const res = await api.post(`/payroll/runs/${activeRunId}/approve`);
-      toast.success('Payroll approved');
+      toast.success(res.data?.message || 'Payroll approved'); // "…awaiting next stage" or "Payroll approved"
       setRunRows(r => r.map(x => x.id === activeRunId ? res.data.data : x));
       setActiveRun(res.data.data);
+      await loadRunStages(activeRunId);
     } catch (e: any) { toast.error(e.response?.data?.message || 'Approve failed'); }
     finally { setApproving(false); }
   }
@@ -1804,6 +1876,7 @@ export function Payroll() {
       toast.success('Payroll rejected');
       setRunRows(r => r.map(x => x.id === activeRunId ? res.data.data : x));
       setActiveRun(res.data.data);
+      await loadRunStages(activeRunId);
       setRejectOpen(false); setRejectReason('');
     } catch (e: any) { toast.error(e.response?.data?.message || 'Reject failed'); }
     finally { setRejecting(false); }
@@ -3039,6 +3112,8 @@ export function Payroll() {
           netExcludedIds={netExcludedIds}
           approvalSettings={approvalSettings}
           currentUserId={currentUserId}
+          currentUserRoles={currentUserRoles}
+          runStages={runStages}
           auditLog={auditLog}
           auditLoading={auditLoading}
           payslipEnabled={payslipEnabled}

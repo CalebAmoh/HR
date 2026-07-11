@@ -3002,6 +3002,25 @@ model payrollruns {
   finalized_at     DateTime?           @db.DateTime(0)
 }
 
+// Per-run snapshot of the configured multi-stage approval flow + each stage's outcome. Written when a
+// run is submitted for approval; the "current" stage is the lowest stage_order still Pending.
+model payrollrun_stages {
+  id            BigInt    @id @default(autoincrement())
+  run_id        BigInt
+  stage_order   Int
+  stage_name    String    @db.VarChar(150)
+  approver_type String    @db.VarChar(10) // 'role' | 'user'
+  approver_id   String    @db.VarChar(64)
+  approver_label String?  @db.VarChar(200)
+  status        String    @default("Pending") @db.VarChar(20) // Pending | Approved | Rejected
+  acted_by      BigInt?
+  acted_at      DateTime? @db.DateTime(0)
+  comment       String?   @db.Text
+  created_at    DateTime? @default(now()) @db.DateTime(0)
+
+  @@index([run_id], map: "idx_prs_run")
+}
+
 model payslip_settings {
   id                 Int       @id @default(autoincrement())
   company_name       String?   @db.VarChar(200)

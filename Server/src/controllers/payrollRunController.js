@@ -8,7 +8,8 @@ const { postToGL }    = require('../helpers/glHelper');
 const { getApiConfig } = require('./apiIntegrationController');
 const _parser = new Parser({ operators: { logical: false, comparison: false, conditional: false } });
 
-const { serialize } = require('../helpers/controllerHelpers');
+const { serialize, toDate } = require('../helpers/controllerHelpers');
+const { upsertSetting } = require('../helpers/settingsHelper');
 const { Prisma } = require('@prisma/client'); // Prisma.sql / Prisma.join for portable dynamic SQL
 
 // Tagged-template query helpers — portable (Prisma emits the right placeholders per provider).
@@ -306,9 +307,9 @@ const createPayrollRun = asyncHandler(async (req, res) => {
   if (!pay_frequency)  return respond.badReq(res, 'Pay frequency is required');
   await exec`
     INSERT INTO payrollruns (name, pay_frequency, date_start, date_end, deduction_group, payment_type_id)
-     VALUES (${name.trim()}, ${parseInt(pay_frequency)}, ${date_start || null}, ${date_end || null},
+     VALUES (${name.trim()}, ${parseInt(pay_frequency)}, ${toDate(date_start)}, ${toDate(date_end)},
              ${deduction_group ? BigInt(deduction_group) : null}, ${payment_type ? BigInt(payment_type) : null})`;
-  const rows = await query`${RUNS_SELECT} ORDER BY pr.created_at DESC LIMIT 1`;
+  const rows = await query`${RUNS_SELECT} ORDER BY pr.id DESC LIMIT 1`;
   respond.created(res, 'Payroll run created', rows[0] || null);
 });
 
@@ -323,8 +324,8 @@ const updatePayrollRun = asyncHandler(async (req, res) => {
     UPDATE payrollruns SET
       name=${name?.trim() || run.name},
       pay_frequency=${pay_frequency ? parseInt(pay_frequency) : null},
-      date_start=${date_start || null},
-      date_end=${date_end || null},
+      date_start=${toDate(date_start)},
+      date_end=${toDate(date_end)},
       deduction_group=${deduction_group ? BigInt(deduction_group) : null},
       payment_type_id=${payment_type ? BigInt(payment_type) : null},
       updated_at=NOW()
@@ -340,6 +341,7 @@ const deletePayrollRun = asyncHandler(async (req, res) => {
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status === 'Completed') return respond.badReq(res, 'Cannot delete a completed payroll run');
   await exec`DELETE FROM payrolldata WHERE payroll = ${BigInt(id)}`;
+  await exec`DELETE FROM payrollrun_stages WHERE run_id = ${BigInt(id)}`;
   await exec`DELETE FROM payrollruns WHERE id = ${BigInt(id)}`;
   respond.ok(res, 'Deleted');
 });
@@ -358,6 +360,7 @@ const generatePayroll = asyncHandler(async (req, res) => {
 
   // Mark as Processing and clear any prior approval state
   await exec`UPDATE payrollruns SET status='Processing', submitted_by=NULL, approved_by=NULL, approved_at=NULL, rejection_reason=NULL, updated_at=NOW() WHERE id=${BigInt(id)}`;
+  await exec`DELETE FROM payrollrun_stages WHERE run_id = ${BigInt(id)}`; // clear any prior approval progress
 
   // Load all enabled columns — no pay_frequency filter; columns are not per-frequency.
   // A column's calculation groups (payrollcolumn_groups) mean "only run for employees in those
@@ -660,59 +663,207 @@ const retryGLPosting = asyncHandler(async (req, res) => {
   }
 });
 
+// ── Multi-stage approval flow ─────────────────────────────────────────────────
+// The flow is a global config (an ordered list of stages, each approved by a role OR a specific user),
+// stored as the `payroll_approval_flow` app-control (JSON). When a run is submitted it is snapshotted
+// into payrollrun_stages so editing the flow can't corrupt an in-flight run; the "current" stage is the
+// lowest stage_order still Pending. With no flow configured, approval stays single-stage (legacy).
+
+/** Read + normalise the configured approval flow (array; [] when unset/invalid). */
+async function readApprovalFlow() {
+  const rows = await query`SELECT value FROM settings WHERE name='payroll_approval_flow' AND category='app_controls' LIMIT 1`.catch(() => []);
+  if (!rows[0]?.value) return [];
+  try {
+    const arr = JSON.parse(rows[0].value);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter(s => s && String(s.name || '').trim() && (s.approverType === 'role' || s.approverType === 'user') && s.approverId != null && String(s.approverId).trim() !== '')
+      .map(s => ({ name: String(s.name).trim(), approverType: s.approverType, approverId: String(s.approverId), approverLabel: s.approverLabel != null ? String(s.approverLabel) : null }));
+  } catch { return []; }
+}
+
+/** Does the signed-in user satisfy a stage? role → they hold that role; user → they ARE that user. */
+function actorMatchesStage(req, stage) {
+  const type = stage.approver_type ?? stage.approverType;
+  const idv = stage.approver_id ?? stage.approverId;
+  const label = stage.approver_label ?? stage.approverLabel;
+  if (type === 'user') return String(req.user?.id ?? '') === String(idv);
+  if (type === 'role') {
+    const roles = (req.user?.roles || []).map(String);
+    return roles.includes(String(label)) || roles.includes(String(idv));
+  }
+  return false;
+}
+
+/**
+ * May this actor act on the run's approval at all? Being named as the current stage's approver grants
+ * authority for THIS run even without the blanket `approve_payroll` permission — that is the whole point
+ * of assigning specific people/roles per stage. Blanket approvers can always act (they cover the no-flow
+ * single-stage path and any stage). `currentStage` is the lowest-order Pending stage, or null when there
+ * is no configured flow.
+ */
+function canActOnApproval(req, currentStage) {
+  if ((req.user?.permissions || []).includes('approve_payroll')) return true;
+  return currentStage ? actorMatchesStage(req, currentStage) : false;
+}
+
+/** Notify a stage's approver(s): a user stage pings that user; a role stage pings all payroll approvers. */
+function notifyStageApprovers(stage, runName, req) {
+  const type = stage.approver_type ?? stage.approverType;
+  const idv = stage.approver_id ?? stage.approverId;
+  const stageName = stage.stage_name ?? stage.name;
+  const payload = { message: `Payroll run "${runName}" awaits your approval (${stageName})`, action: 'Payroll', type: 'payroll', fromUser: req.user?.id };
+  if (type === 'user' && idv) notifyUser(idv, payload);
+  else notifyUsersWithPermission('approve_payroll', payload, req.user?.id);
+}
+
+// GET /payroll/approval-flow — the configured stages (empty array when none set).
+const getApprovalFlow = asyncHandler(async (_req, res) => {
+  respond.ok(res, 'Approval flow retrieved', await readApprovalFlow());
+});
+
+// PUT /payroll/approval-flow — replace the flow. Body: { stages: [{ name, approverType, approverId, approverLabel? }] }
+const saveApprovalFlow = asyncHandler(async (req, res) => {
+  const input = Array.isArray(req.body?.stages) ? req.body.stages : [];
+  const clean = [];
+  for (const s of input) {
+    const name = String(s?.name ?? '').trim();
+    const approverType = s?.approverType === 'user' ? 'user' : s?.approverType === 'role' ? 'role' : null;
+    const approverId = s?.approverId != null && String(s.approverId).trim() !== '' ? String(s.approverId).trim() : null;
+    if (!name) return respond.badReq(res, 'Every stage needs a name');
+    if (!approverType) return respond.badReq(res, `Stage "${name}" needs an approver type (role or user)`);
+    if (!approverId) return respond.badReq(res, `Stage "${name}" needs an approver`);
+    clean.push({ name, approverType, approverId, approverLabel: s?.approverLabel != null ? String(s.approverLabel) : null });
+  }
+  await upsertSetting(null, 'payroll_approval_flow', 'app_controls', JSON.stringify(clean));
+  logActivity({ module: 'Payroll', action: 'save_approval_flow', entityName: `${clean.length} stage(s)`, ...fromReq(req) });
+  respond.ok(res, 'Approval flow saved', clean);
+});
+
+// GET /payroll/runs/:id/stages — a run's stage snapshot + per-stage progress.
+const getRunStages = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const stages = await query`
+    SELECT id, stage_order, stage_name, approver_type, approver_id, approver_label, status, acted_by, acted_at, comment
+    FROM payrollrun_stages WHERE run_id = ${BigInt(id)} ORDER BY stage_order ASC`;
+  respond.ok(res, 'Run stages retrieved', stages);
+});
+
 // ── Approval workflow ─────────────────────────────────────────────────────────
 // POST /payroll/runs/:id/submit — move a Processing run to 'Pending Approval' for sign-off before finalization.
 const submitPayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const [run] = await query`SELECT status FROM payrollruns WHERE id = ${BigInt(id)}`;
+  const [run] = await query`SELECT status, name FROM payrollruns WHERE id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status !== 'Processing') return respond.badReq(res, 'Only a Processing run can be submitted for approval');
   const userId = req.user?.id ? BigInt(req.user.id) : null;
-  await exec`UPDATE payrollruns SET status='Pending Approval', submitted_by=${userId}, updated_at=NOW() WHERE id=${BigInt(id)}`;
+
+  // Snapshot the configured multi-stage flow onto this run (all Pending). No flow → single-stage.
+  const flow = await readApprovalFlow();
+  await exec`DELETE FROM payrollrun_stages WHERE run_id = ${BigInt(id)}`;
+  for (let i = 0; i < flow.length; i++) {
+    const st = flow[i];
+    await exec`
+      INSERT INTO payrollrun_stages (run_id, stage_order, stage_name, approver_type, approver_id, approver_label, status)
+       VALUES (${BigInt(id)}, ${i}, ${st.name}, ${st.approverType}, ${String(st.approverId)}, ${st.approverLabel}, 'Pending')`;
+  }
+
+  await exec`UPDATE payrollruns SET status='Pending Approval', submitted_by=${userId}, approved_by=NULL, approved_at=NULL, updated_at=NOW() WHERE id=${BigInt(id)}`;
   await logAudit(id, 'submit', req);
   logActivity({ module: 'Payroll', action: 'submit', entityId: String(id), entityName: run.name, ...fromReq(req) });
-  notifyUsersWithPermission('approve_payroll', {
-    message: 'A payroll run awaits your approval', action: 'Payroll', type: 'payroll', fromUser: req.user?.id,
-  }, req.user?.id);
+
+  if (flow.length) notifyStageApprovers(flow[0], run.name, req);
+  else notifyUsersWithPermission('approve_payroll', { message: 'A payroll run awaits your approval', action: 'Payroll', type: 'payroll', fromUser: req.user?.id }, req.user?.id);
+
   const rows = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
   respond.ok(res, 'Submitted for approval', rows[0] || null);
 });
 
-// POST /payroll/runs/:id/approve — approve a Pending Approval run, transitioning it to Approved status.
+// POST /payroll/runs/:id/approve — approve the current approval stage; when the last stage clears,
+// the run transitions to 'Approved'. With no configured flow it stays single-stage (one approval).
 const approvePayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const [run] = await query`SELECT status, submitted_by FROM payrollruns WHERE id = ${BigInt(id)}`;
+  const [run] = await query`SELECT status, submitted_by, name FROM payrollruns WHERE id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status !== 'Pending Approval') return respond.badReq(res, 'Run is not pending approval');
 
-  // Self-approval guard: the user who submitted the run may approve it only when the
-  // "Allow Self-Approval" payroll control is on (defaults off).
+  const userId = req.user?.id ? BigInt(req.user.id) : null;
+  const stages = await query`
+    SELECT id, stage_order, stage_name, approver_type, approver_id, approver_label, status
+    FROM payrollrun_stages WHERE run_id = ${BigInt(id)} ORDER BY stage_order ASC`;
+  const pending = stages.filter(st => st.status === 'Pending');
+
+  // Authority: the route is no longer permission-guarded, so gate here — a blanket `approve_payroll`
+  // holder, or the current stage's assigned approver, may act. Everyone else is denied.
+  if (!canActOnApproval(req, pending[0] || null))
+    return respond.forbidden(res, 'You are not authorised to approve this payroll run');
+
+  // Self-approval guard: the user who submitted the run may approve only when the control is on.
   if (String(run.submitted_by ?? '') === String(req.user?.id ?? '')) {
-    const [s] = await query`SELECT value FROM settings WHERE name='approval_payroll_self' AND category='app_controls' LIMIT 1`.catch(() => []);
-    const selfAllowed = s ? s.value === '1' : false;
-    if (!selfAllowed) return respond.forbidden(res, 'Self-approval is disabled — a different approver must review this payroll run');
+    if (!(await readControlSetting('approval_payroll_self', false)))
+      return respond.forbidden(res, 'Self-approval is disabled — a different approver must review this payroll run');
   }
 
-  const userId = req.user?.id ? BigInt(req.user.id) : null;
+  if (pending.length) {
+    // ── multi-stage ──
+    const stage = pending[0]; // current stage = lowest-order Pending
+    if (!actorMatchesStage(req, stage)) {
+      const who = stage.approver_label || (stage.approver_type === 'user' ? 'the assigned approver' : 'the assigned role');
+      return respond.forbidden(res, `Only ${who} can approve the "${stage.stage_name}" stage`);
+    }
+    await exec`UPDATE payrollrun_stages SET status='Approved', acted_by=${userId}, acted_at=NOW(), comment=${req.body?.comment?.trim() || null} WHERE id=${BigInt(stage.id)}`;
+    await logAudit(id, 'approve_stage', req, { stage: stage.stage_name });
+
+    if (pending.length > 1) {
+      // more stages remain — advance, keep the run Pending Approval
+      notifyStageApprovers(pending[1], run.name, req);
+      logActivity({ module: 'Payroll', action: 'approve_stage', entityId: String(id), entityName: run.name, details: { stage: stage.stage_name }, ...fromReq(req) });
+      const rows = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
+      return respond.ok(res, `"${stage.stage_name}" approved — awaiting the next stage`, rows[0] || null);
+    }
+    // last stage cleared → final approval below
+  }
+
   await exec`UPDATE payrollruns SET status='Approved', approved_by=${userId}, approved_at=NOW(), updated_at=NOW() WHERE id=${BigInt(id)}`;
   await logAudit(id, 'approve', req);
   logActivity({ module: 'Payroll', action: 'approve', entityId: String(id), entityName: run.name, ...fromReq(req) });
   if (run.submitted_by && String(run.submitted_by) !== String(req.user?.id ?? '')) {
-    notifyUser(run.submitted_by, { message: 'Your payroll run was approved', action: 'Payroll', type: 'payroll', fromUser: req.user?.id });
+    notifyUser(run.submitted_by, { message: 'Your payroll run was fully approved', action: 'Payroll', type: 'payroll', fromUser: req.user?.id });
   }
   const rows = await query`${RUNS_SELECT} WHERE pr.id = ${BigInt(id)}`;
   respond.ok(res, 'Payroll approved', rows[0] || null);
 });
 
-// POST /payroll/runs/:id/reject — reject a Pending Approval run with an optional reason; sends it back for regeneration.
+// POST /payroll/runs/:id/reject — reject the run at its current stage (with an optional reason) and send
+// it back for regeneration. In a multi-stage flow only the current stage's approver may reject.
 const rejectPayroll = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { reason } = req.body;
-  const [run] = await query`SELECT status, submitted_by FROM payrollruns WHERE id = ${BigInt(id)}`;
+  const [run] = await query`SELECT status, submitted_by, name FROM payrollruns WHERE id = ${BigInt(id)}`;
   if (!run) return respond.notFound(res, 'Run not found');
   if (run.status !== 'Pending Approval') return respond.badReq(res, 'Run is not pending approval');
+
+  const stages = await query`
+    SELECT id, stage_name, approver_type, approver_id, approver_label, status
+    FROM payrollrun_stages WHERE run_id = ${BigInt(id)} AND status='Pending' ORDER BY stage_order ASC`;
+  const current = stages[0];
+
+  // Authority: route is no longer permission-guarded — allow a blanket approver or the current stage's
+  // assigned approver; deny everyone else.
+  if (!canActOnApproval(req, current || null))
+    return respond.forbidden(res, 'You are not authorised to reject this payroll run');
+
+  if (current) {
+    if (!actorMatchesStage(req, current)) {
+      const who = current.approver_label || (current.approver_type === 'user' ? 'the assigned approver' : 'the assigned role');
+      return respond.forbidden(res, `Only ${who} can act on the "${current.stage_name}" stage`);
+    }
+    const userId = req.user?.id ? BigInt(req.user.id) : null;
+    await exec`UPDATE payrollrun_stages SET status='Rejected', acted_by=${userId}, acted_at=NOW(), comment=${reason?.trim() || null} WHERE id=${BigInt(current.id)}`;
+  }
+
   await exec`UPDATE payrollruns SET status='Rejected', rejection_reason=${reason?.trim() || null}, updated_at=NOW() WHERE id=${BigInt(id)}`;
-  await logAudit(id, 'reject', req, { reason: reason?.trim() || null });
+  await logAudit(id, 'reject', req, { reason: reason?.trim() || null, stage: current?.stage_name });
   if (run.submitted_by && String(run.submitted_by) !== String(req.user?.id ?? '')) {
     notifyUser(run.submitted_by, { message: `Your payroll run was rejected${reason?.trim() ? ': ' + reason.trim() : ''}`, action: 'Payroll', type: 'payroll', fromUser: req.user?.id });
   }
@@ -739,9 +890,9 @@ const duplicatePayrollRun = asyncHandler(async (req, res) => {
   await exec`
     INSERT INTO payrollruns (name, pay_frequency, date_start, date_end, deduction_group, payment_type_id, status)
      VALUES (${`${run.name} (Copy)`}, ${run.pay_frequency ? parseInt(run.pay_frequency) : null},
-             ${run.date_start ? run.date_start.slice(0, 10) : null}, ${run.date_end ? run.date_end.slice(0, 10) : null},
+             ${toDate(run.date_start)}, ${toDate(run.date_end)},
              ${run.deduction_group ? BigInt(run.deduction_group) : null}, ${run.payment_type_id ? BigInt(run.payment_type_id) : null}, 'Draft')`;
-  const rows = await query`${RUNS_SELECT} ORDER BY pr.created_at DESC LIMIT 1`;
+  const rows = await query`${RUNS_SELECT} ORDER BY pr.id DESC LIMIT 1`;
   logActivity({ module: 'Payroll', action: 'duplicate_run', entityId: String(id), entityName: run.name, ...fromReq(req) });
   respond.created(res, 'Run duplicated', rows[0] || null);
 });
@@ -751,4 +902,5 @@ module.exports = {
   generatePayroll, getPayrollData, updatePayrollDataItem, finalizePayroll, retryGLPosting,
   submitPayroll, approvePayroll, rejectPayroll, getPayrollAudit, duplicatePayrollRun,
   debugPayrollRun,
+  getApprovalFlow, saveApprovalFlow, getRunStages,
 };

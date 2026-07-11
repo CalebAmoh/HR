@@ -23,6 +23,30 @@ deployment, follow the guide below.
 
 ---
 
+## Testing the API (smoke suite)
+
+Instead of clicking through every screen, run the per-module smoke tests. They hit the **running** API
+over HTTP (auth, routing, permission guards, CRUD round-trips) and report pass/fail per module. Great
+for catching regressions and for confirming the app works identically on MySQL and Postgres.
+
+```bash
+cd Server
+npm run smoke                 # run every module (exit code 1 if any check fails)
+node smoke/run.js salary      # run a single module
+node smoke/run.js salary leave payroll   # run several
+node smoke/run.js --list      # list all module names
+```
+
+**Prerequisites:** the API server must be running (`npm run dev`) and the database seeded (a
+`super-admin` login must exist — see step 4 of the full setup). Override the target/credentials with the
+`SMOKE_BASE_URL`, `SMOKE_EMAIL`, and `SMOKE_PASSWORD` env vars if needed.
+
+Tests only ever create temporary `ZZ_`-prefixed records and delete them afterward, so they are safe to
+run against a real database and safe to re-run. Full details and how to add a module:
+[`Server/smoke/README.md`](../Server/smoke/README.md).
+
+---
+
 # Full Setup on a New Server
 
 This sets up the whole stack — MySQL database, the Express API (`Server/`), and
@@ -134,6 +158,11 @@ npm run dev          # development (nodemon, auto-restart)
 The API now listens on `http://<server>:3040`. Uploaded files are stored under
 `Server/uploads/` and served from there — make sure that folder is writable and
 persisted (back it up / mount a volume).
+
+### Smoke tests
+
+Once the server is running and seeded, verify any module with `npm run smoke` (from `Server/`) instead
+of clicking through it — see [Testing the API](#testing-the-api-smoke-suite) above.
 
 ### Switching between MySQL and Postgres
 

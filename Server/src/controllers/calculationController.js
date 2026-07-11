@@ -2,7 +2,7 @@ const { prisma } = require('../helpers/dbQueryHelper');
 const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 
-const { serialize, toBigInt } = require('../helpers/controllerHelpers');
+const { serialize, toBigInt, enumSql } = require('../helpers/controllerHelpers');
 const { tokenizeFormula, detokenizeFormula } = require('../helpers/payrollFormula');
 const { Prisma } = require('@prisma/client'); // Prisma.sql for reusable/portable SQL fragments
 
@@ -179,7 +179,7 @@ const createPayrollColumn = asyncHandler(async (req, res) => {
   const dup = await query`SELECT id FROM payrollcolumns WHERE UPPER(name) = UPPER(${name.trim()}) LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'A column with this name already exists');
 
-  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM payrollcolumns`;
+  const nextId = Number((await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM payrollcolumns`)[0].nextId);
   const colorderVal = (colorder !== undefined && colorder !== '')
     ? parseInt(colorder)
     : Number((await query`SELECT COALESCE(MAX(colorder), 0) + 1 AS nextOrder FROM payrollcolumns`)[0].nextOrder);
@@ -193,7 +193,7 @@ const createPayrollColumn = asyncHandler(async (req, res) => {
       id, name, function_type, enabled, editable, colorder, default_value, payment_deduction,
       salarycomponent_gl, posting_column, posting_branch, calculation_function,
       calculation_rule, visible, include_in_net, payslip_label
-    ) VALUES (${nextId}, ${name.trim()}, ${function_type}, ${enabled}, ${editable}, ${colorderVal},
+    ) VALUES (${nextId}, ${name.trim()}, ${enumSql(function_type, ['Simple','Advanced'], 'Simple')}, ${enumSql(enabled, ['Yes','No'], 'Yes')}, ${enumSql(editable, ['Yes','No'], 'Yes')}, ${colorderVal},
              ${default_value?.trim() || null}, ${payment_deduction?.trim() || null}, ${salarycomponent_gl?.trim() || null},
              ${posting_column?.trim() || 'Yes'}, ${posting_branch?.trim() || null}, ${formula?.trim() || null},
              ${calculation_rule ? parseInt(calculation_rule) : null}, ${visibleBool}, ${includeInNetBool},
@@ -229,7 +229,7 @@ const updatePayrollColumn = asyncHandler(async (req, res) => {
   const includeInNetBool = include_in_net !== undefined && include_in_net !== '' ? !!parseInt(include_in_net) : true;
   await exec`
     UPDATE payrollcolumns SET
-      name=${name.trim()}, function_type=${function_type || 'Simple'}, enabled=${enabled || 'Yes'}, editable=${editable || 'Yes'},
+      name=${name.trim()}, function_type=${enumSql(function_type, ['Simple','Advanced'], 'Simple')}, enabled=${enumSql(enabled, ['Yes','No'], 'Yes')}, editable=${enumSql(editable, ['Yes','No'], 'Yes')},
       colorder=${colorder !== undefined && colorder !== '' ? parseInt(colorder) : null},
       default_value=${default_value?.trim() || null}, payment_deduction=${payment_deduction?.trim() || null},
       salarycomponent_gl=${salarycomponent_gl?.trim() || null}, posting_column=${posting_column?.trim() || 'Yes'},
@@ -286,7 +286,7 @@ const createCalcGroup = asyncHandler(async (req, res) => {
   const dup = await query`SELECT id FROM calculationgroups WHERE UPPER(name) = UPPER(${name.trim()}) LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'A calculation group with this name already exists');
 
-  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM calculationgroups`;
+  const nextId = Number((await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM calculationgroups`)[0].nextId);
   await exec`INSERT INTO calculationgroups (id, name, details) VALUES (${nextId}, ${name.trim()}, ${details?.trim() || null})`;
   const [created] = await query`SELECT id, name, details, created_at FROM calculationgroups WHERE id = ${nextId}`;
   respond.created(res, 'Calculation group created', created);
@@ -373,7 +373,7 @@ const createSavedCalculation = asyncHandler(async (req, res) => {
   const dup = await query`SELECT id FROM savedcalculations WHERE UPPER(name) = UPPER(${name.trim()}) LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'A saved calculation with this name already exists');
 
-  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM savedcalculations`;
+  const nextId = Number((await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM savedcalculations`)[0].nextId);
   const groupId = calculation_group_id ? toBigInt(calculation_group_id) : null;
   const targetId = target_id ? toBigInt(target_id) : null;
 
@@ -383,7 +383,7 @@ const createSavedCalculation = asyncHandler(async (req, res) => {
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-    const [{ nextItemId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextItemId FROM calculationprocessitems`;
+    const nextItemId = Number((await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextItemId FROM calculationprocessitems`)[0].nextItemId);
     await exec`
       INSERT INTO calculationprocessitems
         (id, saved_calculation_id, lower_limit_condition, lower_limit, upper_limit_condition, upper_limit, value, sort_order)
@@ -420,7 +420,7 @@ const updateSavedCalculation = asyncHandler(async (req, res) => {
   await exec`DELETE FROM calculationprocessitems WHERE saved_calculation_id = ${id}`;
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-    const [{ nextItemId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextItemId FROM calculationprocessitems`;
+    const nextItemId = Number((await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextItemId FROM calculationprocessitems`)[0].nextItemId);
     await exec`
       INSERT INTO calculationprocessitems
         (id, saved_calculation_id, lower_limit_condition, lower_limit, upper_limit_condition, upper_limit, value, sort_order)
@@ -539,7 +539,7 @@ const createPayrollEmployee = asyncHandler(async (req, res) => {
   const dup = await query`SELECT id FROM payrollemployees WHERE employee = ${empId} LIMIT 1`;
   if (dup.length) return respond.conflict(res, 'This employee already has a payroll record');
 
-  const [{ nextId }] = await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM payrollemployees`;
+  const nextId = Number((await query`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM payrollemployees`)[0].nextId);
   await exec`
     INSERT INTO payrollemployees (id, employee, pay_frequency, currency, deduction_group, deduction_exemptions)
      VALUES (${nextId}, ${empId}, ${toBigInt(pay_frequency)}, ${currency?.trim() || null},

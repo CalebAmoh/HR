@@ -19,7 +19,7 @@ const RATING_SCALE    = [
   { value: 5, label: 'Outstanding'         },
 ];
 
-const { toBigInt, s } = require('../helpers/controllerHelpers');
+const { toBigInt, s, toDate } = require('../helpers/controllerHelpers');
 const { Prisma } = require('@prisma/client'); // Prisma.sql / Prisma.join for portable dynamic SQL
 
 // Tagged-template query helpers — portable (Prisma emits the right placeholders per provider).
@@ -32,7 +32,7 @@ async function exec(strings, ...values) {
   return prisma.$executeRaw(strings, ...values);
 }
 
-const now = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
+const now = () => new Date(); // a Date binds correctly to timestamp columns on both MySQL and Postgres
 
 async function enrichEmployees(rows, field = 'employee') {
   if (!rows.length) return rows;
@@ -127,7 +127,7 @@ const createCycle = asyncHandler(async (req, res) => {
 
   await exec`
     INSERT INTO performance_cycle (name, type, period_start, period_end, self_due, supervisor_due, hr_due, status, notes, created_by, created_at, updated_at)
-     VALUES (${name.trim()}, ${type}, ${period_start}, ${period_end}, ${self_due || null}, ${supervisor_due || null}, ${hr_due || null},
+     VALUES (${name.trim()}, ${type}, ${toDate(period_start)}, ${toDate(period_end)}, ${toDate(self_due)}, ${toDate(supervisor_due)}, ${toDate(hr_due)},
              'Draft', ${notes?.trim() || null}, ${createdBy}, ${now()}, ${now()})`;
   const [created] = await query`SELECT * FROM performance_cycle ORDER BY id DESC LIMIT 1`;
 
@@ -154,11 +154,11 @@ const updateCycle = asyncHandler(async (req, res) => {
     UPDATE performance_cycle SET
       name=${name?.trim() ?? ex.name},
       type=${type ?? ex.type},
-      period_start=${period_start ?? ex.period_start},
-      period_end=${period_end ?? ex.period_end},
-      self_due=${self_due != null ? (self_due || null) : ex.self_due},
-      supervisor_due=${supervisor_due != null ? (supervisor_due || null) : ex.supervisor_due},
-      hr_due=${hr_due != null ? (hr_due || null) : ex.hr_due},
+      period_start=${toDate(period_start ?? ex.period_start)},
+      period_end=${toDate(period_end ?? ex.period_end)},
+      self_due=${toDate(self_due != null ? (self_due || null) : ex.self_due)},
+      supervisor_due=${toDate(supervisor_due != null ? (supervisor_due || null) : ex.supervisor_due)},
+      hr_due=${toDate(hr_due != null ? (hr_due || null) : ex.hr_due)},
       notes=${notes != null ? (notes?.trim() || null) : ex.notes},
       updated_at=${now()}
      WHERE id=${id}`;
@@ -648,7 +648,7 @@ const createGoal = asyncHandler(async (req, res) => {
     INSERT INTO performance_goal (employee, cycle_id, title, description, weight, target, actual_result, progress_note, status, due_date, achievement, source, comment, document_ref, created_at, updated_at)
      VALUES (${empId}, ${cycle_id ? toBigInt(cycle_id) : null}, ${title.trim()}, ${description?.trim() || null}, ${weight ?? null},
              ${target?.trim() || null}, ${actual_result?.trim() || null}, ${progress_note?.trim() || null}, ${status},
-             ${due_date || null}, ${achievement || null}, ${source}, ${comment?.trim() || null}, ${document_ref?.trim() || null},
+             ${toDate(due_date)}, ${achievement || null}, ${source}, ${comment?.trim() || null}, ${document_ref?.trim() || null},
              ${now()}, ${now()})`;
   const [created] = await query`SELECT * FROM performance_goal ORDER BY id DESC LIMIT 1`;
   respond.created(res, 'Goal created', created);
@@ -673,7 +673,7 @@ const updateGoal = asyncHandler(async (req, res) => {
       actual_result=${actual_result != null ? (actual_result?.trim() || null) : ex.actual_result},
       progress_note=${progress_note?.trim() != null ? (progress_note?.trim() || null) : ex.progress_note},
       status=${status ?? ex.status},
-      due_date=${due_date != null ? (due_date || null) : ex.due_date},
+      due_date=${toDate(due_date != null ? (due_date || null) : ex.due_date)},
       achievement=${achievement != null ? (achievement || null) : ex.achievement},
       employee_score=${employee_score != null ? employee_score : ex.employee_score},
       supervisor_score=${supervisor_score != null ? supervisor_score : ex.supervisor_score},

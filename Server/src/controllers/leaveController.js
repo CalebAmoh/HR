@@ -4,7 +4,7 @@ const respond           = require('../helpers/respondHelper');
 const { tmsg }          = require('../helpers/messageStore');
 const { sendLeaveEmail } = require('../helpers/emailHelper');
 const { logActivity, fromReq } = require('./auditController');
-const { toBigInt, s } = require('../helpers/controllerHelpers');
+const { toBigInt, s, enumSql } = require('../helpers/controllerHelpers');
 const { notifyEmployee } = require('../helpers/notificationHelper');
 const { Prisma } = require('@prisma/client'); // Prisma.sql / Prisma.join for portable dynamic SQL
 const { upsertSetting: upsertSettingShared } = require('../helpers/settingsHelper');
@@ -977,7 +977,7 @@ exports.createHoliday = asyncHandler(async (req, res) => {
   const { name, dateh, status } = req.body;
   if (!name || !dateh) return respond.badReq(res, 'Name and date are required');
   const id = BigInt(Date.now());
-  await prisma.$executeRaw`INSERT INTO holidays (id, name, dateh, status) VALUES (${id}, ${name}, ${new Date(dateh)}, ${status ?? 'Full_Day'})`;
+  await prisma.$executeRaw`INSERT INTO holidays (id, name, dateh, status) VALUES (${id}, ${name}, ${new Date(dateh)}, ${enumSql(/half/i.test(String(status||'')) ? 'Half Day' : 'Full Day', ['Full Day','Half Day'], 'Full Day')})`;
   logActivity({ module: 'Leave Setup', action: 'create_holiday', entityId: id.toString(), entityName: name, ...fromReq(req) });
   respond.created(res, 'Holiday created', { id: id.toString(), name, dateh, status: status ?? 'Full_Day' });
 });
@@ -989,7 +989,7 @@ exports.updateHoliday = asyncHandler(async (req, res) => {
   const parts = [];
   if (name   !== undefined) parts.push(Prisma.sql`name=${name}`);
   if (dateh  !== undefined) parts.push(Prisma.sql`dateh=${new Date(dateh)}`);
-  if (status !== undefined) parts.push(Prisma.sql`status=${status}`);
+  if (status !== undefined) parts.push(Prisma.sql`status=${enumSql(/half/i.test(String(status||'')) ? 'Half Day' : 'Full Day', ['Full Day','Half Day'], 'Full Day')}`);
   if (!parts.length) return respond.badReq(res, 'No fields to update');
   await prisma.$executeRaw`UPDATE holidays SET ${Prisma.join(parts, ', ')} WHERE id=${id}`;
   logActivity({ module: 'Leave Setup', action: 'update_holiday', entityId: req.params.id, entityName: name ?? req.params.id, ...fromReq(req) });

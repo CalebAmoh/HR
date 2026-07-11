@@ -40,6 +40,7 @@ export function normalizeFromLogin(data: LoginResponseData): AppUser {
     directPermissions:   [],                          // not in login response
     resolvedPermissions: new Set(data.permissions),   // use backend-resolved set directly
     theme:               data.theme === 'dark' ? 'dark' : data.theme === 'light' ? 'light' : null,
+    isStageApprover:     data.isStageApprover === true,
   };
 }
 
@@ -129,10 +130,14 @@ export function canAccessNav(user: AppUser, navKey: string): boolean {
   if (!(navKey in NAV_PERMISSIONS)) return false;
   
   const required = NAV_PERMISSIONS[navKey];
-  
+
   // Empty array = explicitly open view
   if (required.length === 0) return true;
-  
+
+  // Central Approval: a payroll stage approver reaches it even without a blanket approve_* permission,
+  // because being named in the approval flow grants access to action their assigned runs.
+  if (navKey === 'CentralApproval' && user.isStageApprover) return true;
+
   // Check if user has ANY of the required permissions
   return required.some(k => user.resolvedPermissions.has(k));
 }

@@ -17,6 +17,7 @@ export interface LoginResponseData {
   roles:         string[];      // e.g. ["admin", "Supervisor"] — names only
   permissions:   string[];      // already resolved by backend
   theme?:        string | null; // saved UI theme preference ('dark' | 'light')
+  isStageApprover?: boolean;     // named in the payroll approval flow (by user or role)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -91,4 +92,5 @@ export interface AppUser {
   directPermissions: string[]; // direct overrides — prefix "!" to revoke
   resolvedPermissions: Set<string>; // final computed set, ready to use
   theme?: 'dark' | 'light' | null;  // saved UI theme preference (per user, server-backed)
+  isStageApprover?: boolean;        // named in the payroll approval flow → may reach Central Approval
 }

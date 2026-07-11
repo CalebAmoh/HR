@@ -40,6 +40,25 @@ function toBigInt(val) {
   try { return BigInt(val); } catch { return null; }
 }
 
+// Convert a value bound for a DATE/DATETIME/TIMESTAMP column to a JS Date (or null). MySQL silently
+// coerces a 'YYYY-MM-DD' string, but Postgres rejects a text param on a date/timestamp column — so raw
+// SQL that binds dates must pass a Date. Used as query`... ${toDate(req.body.some_date)} ...`.
+function toDate(val) {
+  if (val == null || val === '') return null;
+  if (val instanceof Date) return val;
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// Inline an ENUM value as a SQL string literal (Postgres auto-casts a string literal to its enum type;
+// a bound text param does NOT). `value` is validated against `allowed` (falling back to `fallback`), so
+// inlining it is injection-safe. Returns a Prisma.sql fragment for use inside a tagged query.
+const { Prisma } = require('@prisma/client');
+function enumSql(value, allowed, fallback) {
+  const v = allowed.includes(value) ? value : fallback;
+  return Prisma.raw(`'${String(v).replace(/'/g, "''")}'`);
+}
+
 // Run an ALTER TABLE / CREATE TABLE statement quietly — ignores duplicate-column and similar
 // schema-patch errors. Intentionally uses $executeRawUnsafe: this is DDL (a dynamic runtime
 // string, not parameterizable), so it can't be a tagged template. The statements are MySQL-dialect
@@ -51,4 +70,4 @@ async function safeAlter(sql) {
   try { await prisma.$executeRawUnsafe(sql); } catch {}
 }
 
-module.exports = { serialize, s, toBigInt, safeAlter };
+module.exports = { serialize, s, toBigInt, toDate, enumSql, safeAlter };

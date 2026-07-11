@@ -9,10 +9,22 @@
 // (keys already match the field names, so nothing is renamed).
 const { Prisma } = require('@prisma/client');
 
+// camelCase SQL aliases used in raw queries (e.g. `SELECT COALESCE(MAX(id),0)+1 AS nextId`). Postgres
+// lower-cases these in the result set; the code reads the camelCase form. They are not Prisma fields so
+// the DMMF map below can't cover them — list them explicitly. Keyed by the lower-cased form.
+const ALIAS_SUPPLEMENT = {
+  nextid: 'nextId',
+  nextitemid: 'nextItemId',
+  nextorder: 'nextOrder',
+  totalenabled: 'totalEnabled',
+  componenttypename: 'componentTypeName',
+};
+
 let _map = null;
 function dbToField() {
   if (_map) return _map;
   _map = Object.create(null);
+  Object.assign(_map, ALIAS_SUPPLEMENT);
   try {
     // Any column name that some model uses as a LITERAL field name (e.g. `name`, `status`,
     // `staff_id`) is a legitimate lower-case column — a raw query may select it directly, so it

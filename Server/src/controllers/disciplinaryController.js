@@ -12,7 +12,7 @@ const INCIDENT_TYPES = [
 const SEVERITIES = ['Low', 'Medium', 'High', 'Critical'];
 const STATUSES   = ['Open', 'Under Review', 'Resolved', 'Appealed'];
 
-const { toBigInt, s } = require('../helpers/controllerHelpers');
+const { toBigInt, s, toDate } = require('../helpers/controllerHelpers');
 const { Prisma } = require('@prisma/client'); // Prisma.sql / Prisma.join for portable dynamic SQL
 
 // Tagged-template query helpers — portable (Prisma emits the right placeholders per provider).
@@ -59,8 +59,8 @@ const getAllDisciplinary = asyncHandler(async (req, res) => {
   if (incident_type) conds.push(Prisma.sql`d.incident_type = ${incident_type}`);
   if (severity)      conds.push(Prisma.sql`d.severity = ${severity}`);
   if (status)        conds.push(Prisma.sql`d.status = ${status}`);
-  if (date_from)     conds.push(Prisma.sql`d.incident_date >= ${date_from}`);
-  if (date_to)       conds.push(Prisma.sql`d.incident_date <= ${date_to}`);
+  if (date_from)     conds.push(Prisma.sql`d.incident_date >= ${toDate(date_from)}`);
+  if (date_to)       conds.push(Prisma.sql`d.incident_date <= ${toDate(date_to)}`);
   const where = Prisma.join(conds, ' AND ');
 
   let rows = await query`
@@ -114,15 +114,15 @@ const createDisciplinary = asyncHandler(async (req, res) => {
 
   const raisedBy   = req.user?.id ? BigInt(req.user.id) : null;
   const raisedName = req.user?.username || req.user?.name || null;
-  const now        = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  const now        = new Date();
 
   await exec`
     INSERT INTO employee_disciplinary
       (employee, incident_date, incident_type, description, severity, action_taken,
        witnesses, status, resolution, resolved_date, raised_by, raised_by_name, created_at, updated_at)
-     VALUES (${empId}, ${incident_date}, ${incident_type}, ${description.trim()}, ${severity},
+     VALUES (${empId}, ${toDate(incident_date)}, ${incident_type}, ${description.trim()}, ${severity},
              ${action_taken?.trim() || null}, ${witnesses?.trim() || null}, ${status},
-             ${resolution?.trim() || null}, ${resolved_date || null}, ${raisedBy}, ${raisedName}, ${now}, ${now})`;
+             ${resolution?.trim() || null}, ${toDate(resolved_date)}, ${raisedBy}, ${raisedName}, ${now}, ${now})`;
 
   const [created] = await query`SELECT * FROM employee_disciplinary ORDER BY id DESC LIMIT 1`;
 
@@ -159,11 +159,11 @@ const updateDisciplinary = asyncHandler(async (req, res) => {
     action_taken, witnesses, status, resolution, resolved_date,
   } = req.body;
 
-  const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  const now = new Date();
 
   await exec`
     UPDATE employee_disciplinary SET
-      incident_date  = ${incident_date  ?? existing.incident_date},
+      incident_date  = ${toDate(incident_date ?? existing.incident_date)},
       incident_type  = ${incident_type  ?? existing.incident_type},
       description    = ${description?.trim() || existing.description},
       severity       = ${severity       ?? existing.severity},
@@ -171,7 +171,7 @@ const updateDisciplinary = asyncHandler(async (req, res) => {
       witnesses      = ${witnesses    != null ? (witnesses.trim()    || null) : existing.witnesses},
       status         = ${status         ?? existing.status},
       resolution     = ${resolution   != null ? (resolution.trim()   || null) : existing.resolution},
-      resolved_date  = ${resolved_date != null ? (resolved_date || null) : existing.resolved_date},
+      resolved_date  = ${toDate(resolved_date != null ? (resolved_date || null) : existing.resolved_date)},
       updated_at     = ${now}
      WHERE id = ${id}`;
 
