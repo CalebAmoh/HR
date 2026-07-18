@@ -10,6 +10,15 @@ const errorMiddleware = (err, req, res, next) => {
     });
   }
 
+  // JWT verification errors must be 401 (never 500) so the client can trigger a silent refresh.
+  // checkToken already handles these directly; this is a safety net for any other jwt.verify caller.
+  if (err.name === 'TokenExpiredError' || err.name === 'JsonWebTokenError') {
+    return res.status(401).json({
+      status:  '401',
+      message: err.name === 'TokenExpiredError' ? 'Access token expired' : 'Invalid access token',
+    });
+  }
+
   res.status(err.status || 500).json({
     success: false,
     message: err.message,

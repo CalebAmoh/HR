@@ -59,7 +59,7 @@ const DEFAULTS: AppSettings = {
     employeeUpdateApproval: true,
     payrollApproval: false,
     selfApproval: false,
-    medicalApproval: true,
+    medicalApproval: false,
     medicalSelfApproval: true,
   },
   general: {

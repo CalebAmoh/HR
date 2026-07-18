@@ -9,16 +9,16 @@ const { sendWelcomeEmail } = require('../helpers/emailHelper');
 const { logActivity, fromReq } = require('./auditController');
 
 /**
- * Is this user named in the payroll approval flow? True when a `user` stage targets their id, or a
+ * Is this user named in a given approval flow setting? True when a `user` stage targets their id, or a
  * `role` stage targets one of their role names (matched by label or id). Used to surface Central Approval
  * to stage approvers who lack a blanket `approve_*` permission. Never throws — a missing/invalid config
  * just means "not a stage approver".
  */
-async function isPayrollStageApprover(userId, roleNames) {
+async function isNamedInFlow(settingName, userId, roleNames) {
   try {
     const res = await helper.selectRecordsWithQuery(
-      `SELECT value FROM settings WHERE name = 'payroll_approval_flow' AND category = 'app_controls' LIMIT 1`,
-      [],
+      `SELECT value FROM settings WHERE name = ? AND category = 'app_controls' LIMIT 1`,
+      [settingName],
     );
     const raw = res?.data?.[0]?.value;
     if (!raw) return false;
@@ -32,6 +32,16 @@ async function isPayrollStageApprover(userId, roleNames) {
       return false;
     });
   } catch { return false; }
+}
+
+/** A stage approver of payroll, medical, OR leave — any surfaces Central Approval to them. */
+async function isStageApproverAnyModule(userId, roleNames) {
+  const [payroll, medical, leave] = await Promise.all([
+    isNamedInFlow('payroll_approval_flow', userId, roleNames),
+    isNamedInFlow('medical_approval_flow', userId, roleNames),
+    isNamedInFlow('leave_approval_flow',   userId, roleNames),
+  ]);
+  return payroll || medical || leave;
 }
 
 
@@ -307,10 +317,10 @@ const loginUser = asyncHandler(async (req, res) => {
 
   const { password: _, ...userWithoutPassword } = user;
 
-  // ── Payroll stage-approver flag ─────────────────────────
-  // A user named in the payroll approval flow (by user id, or by one of their role names) can reach
+  // ── Stage-approver flag ─────────────────────────────────
+  // A user named in the payroll OR medical approval flow (by user id, or one of their role names) can reach
   // Central Approval even without a blanket `approve_*` permission — stage assignment grants access.
-  const isStageApprover = await isPayrollStageApprover(String(user.id), roles.map(r => r.name));
+  const isStageApprover = await isStageApproverAnyModule(String(user.id), roles.map(r => r.name));
 
   res.status(200).json({
     status:  '200',
@@ -359,6 +369,27 @@ const logoutUser = asyncHandler(async (req, res) => {
 
   res.status(200).json({ status: '200', message: 'Logged out successfully' });
 });
+
+
+// ─────────────────────────────────────────────
+// @desc    Purge stale refresh tokens — called by cron.
+//          Deletes rows that are expired, OR revoked and older than a short grace window (so reuse
+//          detection still has a brief audit trail). Every refresh rotates in a new row and revokes the
+//          old one, so without this the table grows unbounded.
+// ─────────────────────────────────────────────
+const purgeStaleRefreshTokens = async () => {
+  const now = new Date();
+  const graceCutoff = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000); // 2 days
+  const result = await helper.prisma.refresh_tokens.deleteMany({
+    where: {
+      OR: [
+        { expires_at: { lt: now } },
+        { AND: [{ revoked: true }, { created_at: { lt: graceCutoff } }] },
+      ],
+    },
+  });
+  return result.count;
+};
 
 
 // ─────────────────────────────────────────────
@@ -952,6 +983,7 @@ module.exports = {
   registerUser,
   loginUser,
   logoutUser,
+  purgeStaleRefreshTokens,
   getAllUsers,
   getUserById,
   updateUser,

@@ -58,25 +58,60 @@ async function notifyUser(userId, payload = {}) {
 async function notifyUsersWithPermission(permission, payload = {}, exceptUserId = null) {
   try {
     const rows = await prisma.$queryRaw`
-      SELECT DISTINCT mhr.model_id AS userId
+      SELECT DISTINCT mhr.model_id AS user_id
          FROM permissions p
          JOIN role_has_permissions rhp ON rhp.permission_id = p.id
          JOIN roles r ON r.id = rhp.role_id AND r.status = '1'
          JOIN model_has_roles mhr ON mhr.role_id = r.id AND mhr.model_type = 'users'
         WHERE p.name = ${permission}
        UNION
-       SELECT DISTINCT mhp.model_id AS userId
+       SELECT DISTINCT mhp.model_id AS user_id
          FROM permissions p
          JOIN model_has_permissions mhp ON mhp.permission_id = p.id AND mhp.model_type = 'users'
         WHERE p.name = ${permission}`;
     const except = exceptUserId === null || exceptUserId === undefined ? null : String(exceptUserId);
     for (const row of rows) {
-      if (except !== null && String(row.userId) === except) continue;
-      await createNotification({ toUser: row.userId, ...payload });
+      if (except !== null && String(row.user_id) === except) continue;
+      await createNotification({ toUser: row.user_id, ...payload });
     }
   } catch (err) {
     console.error('notifyUsersWithPermission failed:', err.message);
   }
 }
 
-module.exports = { createNotification, notifyEmployee, notifyUser, notifyUsersWithPermission };
+// Notify every user assigned to one specific active role. Approval-flow stages may grant authority
+// through a role even when that role does not carry the workflow's blanket approval permission, so
+// stage notifications must target the configured role itself rather than a broader permission group.
+async function notifyUsersWithRole(roleIdOrName, payload = {}, exceptUserId = null, roleLabel = null) {
+  const roleId = big(roleIdOrName);
+  const roleName = roleLabel || (!roleId && roleIdOrName != null ? String(roleIdOrName) : null);
+  if (!roleId && !roleName) return;
+  try {
+    const rows = roleId && roleName
+      ? await prisma.$queryRaw`
+          SELECT DISTINCT mhr.model_id AS user_id
+            FROM roles r
+            JOIN model_has_roles mhr ON mhr.role_id = r.id AND mhr.model_type = 'users'
+           WHERE r.status = '1' AND (r.id = ${roleId} OR r.name = ${roleName})`
+      : roleId
+        ? await prisma.$queryRaw`
+            SELECT DISTINCT mhr.model_id AS user_id
+              FROM roles r
+              JOIN model_has_roles mhr ON mhr.role_id = r.id AND mhr.model_type = 'users'
+             WHERE r.status = '1' AND r.id = ${roleId}`
+        : await prisma.$queryRaw`
+            SELECT DISTINCT mhr.model_id AS user_id
+              FROM roles r
+              JOIN model_has_roles mhr ON mhr.role_id = r.id AND mhr.model_type = 'users'
+             WHERE r.status = '1' AND r.name = ${roleName}`;
+    const except = exceptUserId === null || exceptUserId === undefined ? null : String(exceptUserId);
+    for (const row of rows) {
+      if (except !== null && String(row.user_id) === except) continue;
+      await createNotification({ toUser: row.user_id, ...payload });
+    }
+  } catch (err) {
+    console.error('notifyUsersWithRole failed:', err.message);
+  }
+}
+
+module.exports = { createNotification, notifyEmployee, notifyUser, notifyUsersWithPermission, notifyUsersWithRole };

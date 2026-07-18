@@ -3,7 +3,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 const { Parser } = require('expr-eval');
 const { logActivity, fromReq } = require('./auditController');
-const { notifyUser, notifyUsersWithPermission } = require('../helpers/notificationHelper');
+const { notifyUser, notifyUsersWithPermission, notifyUsersWithRole } = require('../helpers/notificationHelper');
 const { postToGL }    = require('../helpers/glHelper');
 const { getApiConfig } = require('./apiIntegrationController');
 const _parser = new Parser({ operators: { logical: false, comparison: false, conditional: false } });
@@ -795,7 +795,7 @@ function notifyStageApprovers(stage, runName, req) {
   const stageName = stage.stage_name ?? stage.name;
   const payload = { message: `Payroll run "${runName}" awaits your approval (${stageName})`, action: 'Payroll', type: 'payroll', fromUser: req.user?.id };
   if (type === 'user' && idv) notifyUser(idv, payload);
-  else notifyUsersWithPermission('approve_payroll', payload, req.user?.id);
+  else notifyUsersWithRole(idv, payload, req.user?.id, stage.approver_label ?? stage.approverLabel);
 }
 
 // GET /payroll/approval-flow — the configured stages (empty array when none set).

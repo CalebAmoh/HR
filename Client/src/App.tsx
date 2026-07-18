@@ -79,21 +79,8 @@ function loadActiveView(user: AppUser | null): string {
 }
 
 export default function App() {
-  // Public portals are matched on the base-stripped path, so they work under any VITE_BASE_PATH
-  // (e.g. "/xhrm/careers" resolves the same as "/careers").
-  const portalPath = appPath();
-  if (portalPath.startsWith('/careers')) {
-    return <CareersPortal />;
-  }
-  if (portalPath.startsWith('/schedule')) {
-    return <SchedulingPortal />;
-  }
-  if (portalPath.startsWith('/kiosk')) {
-    return <AttendanceKiosk />;
-  }
-  if (portalPath.startsWith('/onboarding')) {
-    return <OnboardingPortal />;
-  }
+  // All hooks must run unconditionally on every render (Rules of Hooks). The public-portal early
+  // returns therefore come AFTER the hooks below — never before them.
   const [currentUser, setCurrentUser] = useState<AppUser | null>(loadCurrentUser);
   const [activeView, setActiveView] = useState<string>(() => loadActiveView(currentUser));
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -138,46 +125,59 @@ export default function App() {
     setCurrentUser(null);
   }, []);
 
+  // Public portals are matched on the base-stripped path, so they work under any VITE_BASE_PATH
+  // (e.g. "/xhrm/careers" resolves the same as "/careers"). Checked AFTER all hooks so the Rules of
+  // Hooks are never violated by an early return.
+  const portalPath = appPath();
+  if (portalPath.startsWith('/careers'))    return <CareersPortal />;
+  if (portalPath.startsWith('/schedule'))   return <SchedulingPortal />;
+  if (portalPath.startsWith('/kiosk'))      return <AttendanceKiosk />;
+  if (portalPath.startsWith('/onboarding')) return <OnboardingPortal />;
+
   const renderView = () => {
+    // renderView only runs after the `!currentUser` guard below, so currentUser is non-null here.
+    // The local narrows the type for ProtectedRoute's `user: AppUser` prop.
+    const user = currentUser;
+    if (!user) return null;
     // All routes now require permission check via ProtectedRoute
     // If user lacks permission, they see AccessDenied component
     switch (activeView) {
-      case 'Dashboard': return <ProtectedRoute user={currentUser} navKey="Dashboard"><Dashboard /></ProtectedRoute>;
-      case 'Modules': return <ProtectedRoute user={currentUser} navKey="Modules"><Modules onNavigate={navigate} /></ProtectedRoute>;
-      case 'Employees': return <ProtectedRoute user={currentUser} navKey="Employees"><Employees /></ProtectedRoute>;
-      case 'SelfOnboarding': return <ProtectedRoute user={currentUser} navKey="SelfOnboarding"><SelfOnboarding /></ProtectedRoute>;
-      case 'Company': return <ProtectedRoute user={currentUser} navKey="Company"><Company /></ProtectedRoute>;
-      case 'Documents':         return <ProtectedRoute user={currentUser} navKey="Documents"><Documents /></ProtectedRoute>;
-      case 'PersonalDocuments': return <ProtectedRoute user={currentUser} navKey="PersonalDocuments"><PersonalDocuments /></ProtectedRoute>;
-      case 'LeaveManagement': return <ProtectedRoute user={currentUser} navKey="LeaveManagement"><LeaveManagement /></ProtectedRoute>;
-      case 'Leave': return <ProtectedRoute user={currentUser} navKey="Leave"><LeaveManagement /></ProtectedRoute>;
-      case 'LeaveSetup': return <ProtectedRoute user={currentUser} navKey="LeaveSetup"><LeaveSetup /></ProtectedRoute>;
-      case 'LeaveCalendar': return <ProtectedRoute user={currentUser} navKey="LeaveCalendar"><LeaveCalendar /></ProtectedRoute>;
-      case 'Salary': return <ProtectedRoute user={currentUser} navKey="Salary"><Salary /></ProtectedRoute>;
-      case 'Payroll': return <ProtectedRoute user={currentUser} navKey="Payroll"><Payroll /></ProtectedRoute>;
-      case 'Users': return <ProtectedRoute user={currentUser} navKey="Users"><Users /></ProtectedRoute>;
-      case 'System': return <ProtectedRoute user={currentUser} navKey="System"><System /></ProtectedRoute>;
-      case 'Settings': return <ProtectedRoute user={currentUser} navKey="Settings"><Settings /></ProtectedRoute>;
-      case 'AuditLogs': return <ProtectedRoute user={currentUser} navKey="AuditLogs"><AuditLogs /></ProtectedRoute>;
-      case 'LeaveSettings': return <ProtectedRoute user={currentUser} navKey="Settings"><LeaveSettings /></ProtectedRoute>;
-      case 'NotificationSettings': return <ProtectedRoute user={currentUser} navKey="Settings"><NotificationSettings /></ProtectedRoute>;
-      case 'AdminReports': return <ProtectedRoute user={currentUser} navKey="AdminReports"><AdminReports /></ProtectedRoute>;
-      case 'UserReports': return <ProtectedRoute user={currentUser} navKey="UserReports"><UserReports /></ProtectedRoute>;
-      case 'CentralApproval': return <ProtectedRoute user={currentUser} navKey="CentralApproval"><CentralApproval onNavigate={navigate} /></ProtectedRoute>;
-      case 'PersonalInfo':    return <ProtectedRoute user={currentUser} navKey="PersonalInfo"><PersonalInfo /></ProtectedRoute>;
-      case 'StaffOrganogram': return <ProtectedRoute user={currentUser} navKey="StaffOrganogram"><StaffOrganogram /></ProtectedRoute>;
-      case 'PersonalMedical': return <ProtectedRoute user={currentUser} navKey="Medical"><PersonalMedical /></ProtectedRoute>;
-      case 'AdminMedical':    return <ProtectedRoute user={currentUser} navKey="AdminMedical"><AdminMedical /></ProtectedRoute>;
-      case 'AdminTraining':    return <ProtectedRoute user={currentUser} navKey="AdminTraining"><AdminTraining /></ProtectedRoute>;
-      case 'PersonalTraining': return <ProtectedRoute user={currentUser} navKey="PersonalTraining"><PersonalTraining /></ProtectedRoute>;
-      case 'AdminAttendance':  return <ProtectedRoute user={currentUser} navKey="AdminAttendance"><AdminAttendance /></ProtectedRoute>;
-      case 'MyAttendance':     return <ProtectedRoute user={currentUser} navKey="Attendance"><MyAttendance /></ProtectedRoute>;
-      case 'Help':            return <ProtectedRoute user={currentUser} navKey="Help"><Help /></ProtectedRoute>;
-      case 'Recruitment':        return <ProtectedRoute user={currentUser} navKey="Recruitment"><Recruitment onNavigate={navigate} /></ProtectedRoute>;
-      case 'ManagePerformance':  return <ProtectedRoute user={currentUser} navKey="ManagePerformance"><ManagePerformance /></ProtectedRoute>;
-      case 'PersonalPerformance': return <ProtectedRoute user={currentUser} navKey="PersonalPerformance"><PersonalPerformance /></ProtectedRoute>;
-      case 'AiInsights':         return <ProtectedRoute user={currentUser} navKey="AiInsights"><AiInsights /></ProtectedRoute>;
-      default: return <ProtectedRoute user={currentUser} navKey="Dashboard"><Dashboard /></ProtectedRoute>;
+      case 'Dashboard': return <ProtectedRoute user={user} navKey="Dashboard"><Dashboard /></ProtectedRoute>;
+      case 'Modules': return <ProtectedRoute user={user} navKey="Modules"><Modules onNavigate={navigate} /></ProtectedRoute>;
+      case 'Employees': return <ProtectedRoute user={user} navKey="Employees"><Employees /></ProtectedRoute>;
+      case 'SelfOnboarding': return <ProtectedRoute user={user} navKey="SelfOnboarding"><SelfOnboarding /></ProtectedRoute>;
+      case 'Company': return <ProtectedRoute user={user} navKey="Company"><Company /></ProtectedRoute>;
+      case 'Documents':         return <ProtectedRoute user={user} navKey="Documents"><Documents /></ProtectedRoute>;
+      case 'PersonalDocuments': return <ProtectedRoute user={user} navKey="PersonalDocuments"><PersonalDocuments /></ProtectedRoute>;
+      case 'LeaveManagement': return <ProtectedRoute user={user} navKey="LeaveManagement"><LeaveManagement /></ProtectedRoute>;
+      case 'Leave': return <ProtectedRoute user={user} navKey="Leave"><LeaveManagement /></ProtectedRoute>;
+      case 'LeaveSetup': return <ProtectedRoute user={user} navKey="LeaveSetup"><LeaveSetup /></ProtectedRoute>;
+      case 'LeaveCalendar': return <ProtectedRoute user={user} navKey="LeaveCalendar"><LeaveCalendar /></ProtectedRoute>;
+      case 'Salary': return <ProtectedRoute user={user} navKey="Salary"><Salary /></ProtectedRoute>;
+      case 'Payroll': return <ProtectedRoute user={user} navKey="Payroll"><Payroll /></ProtectedRoute>;
+      case 'Users': return <ProtectedRoute user={user} navKey="Users"><Users /></ProtectedRoute>;
+      case 'System': return <ProtectedRoute user={user} navKey="System"><System /></ProtectedRoute>;
+      case 'Settings': return <ProtectedRoute user={user} navKey="Settings"><Settings /></ProtectedRoute>;
+      case 'AuditLogs': return <ProtectedRoute user={user} navKey="AuditLogs"><AuditLogs /></ProtectedRoute>;
+      case 'LeaveSettings': return <ProtectedRoute user={user} navKey="Settings"><LeaveSettings /></ProtectedRoute>;
+      case 'NotificationSettings': return <ProtectedRoute user={user} navKey="Settings"><NotificationSettings /></ProtectedRoute>;
+      case 'AdminReports': return <ProtectedRoute user={user} navKey="AdminReports"><AdminReports /></ProtectedRoute>;
+      case 'UserReports': return <ProtectedRoute user={user} navKey="UserReports"><UserReports /></ProtectedRoute>;
+      case 'CentralApproval': return <ProtectedRoute user={user} navKey="CentralApproval"><CentralApproval onNavigate={navigate} /></ProtectedRoute>;
+      case 'PersonalInfo':    return <ProtectedRoute user={user} navKey="PersonalInfo"><PersonalInfo /></ProtectedRoute>;
+      case 'StaffOrganogram': return <ProtectedRoute user={user} navKey="StaffOrganogram"><StaffOrganogram /></ProtectedRoute>;
+      case 'PersonalMedical': return <ProtectedRoute user={user} navKey="Medical"><PersonalMedical /></ProtectedRoute>;
+      case 'AdminMedical':    return <ProtectedRoute user={user} navKey="AdminMedical"><AdminMedical /></ProtectedRoute>;
+      case 'AdminTraining':    return <ProtectedRoute user={user} navKey="AdminTraining"><AdminTraining /></ProtectedRoute>;
+      case 'PersonalTraining': return <ProtectedRoute user={user} navKey="PersonalTraining"><PersonalTraining /></ProtectedRoute>;
+      case 'AdminAttendance':  return <ProtectedRoute user={user} navKey="AdminAttendance"><AdminAttendance /></ProtectedRoute>;
+      case 'MyAttendance':     return <ProtectedRoute user={user} navKey="Attendance"><MyAttendance /></ProtectedRoute>;
+      case 'Help':            return <ProtectedRoute user={user} navKey="Help"><Help /></ProtectedRoute>;
+      case 'Recruitment':        return <ProtectedRoute user={user} navKey="Recruitment"><Recruitment onNavigate={navigate} /></ProtectedRoute>;
+      case 'ManagePerformance':  return <ProtectedRoute user={user} navKey="ManagePerformance"><ManagePerformance /></ProtectedRoute>;
+      case 'PersonalPerformance': return <ProtectedRoute user={user} navKey="PersonalPerformance"><PersonalPerformance /></ProtectedRoute>;
+      case 'AiInsights':         return <ProtectedRoute user={user} navKey="AiInsights"><AiInsights /></ProtectedRoute>;
+      default: return <ProtectedRoute user={user} navKey="Dashboard"><Dashboard /></ProtectedRoute>;
     }
   };
 

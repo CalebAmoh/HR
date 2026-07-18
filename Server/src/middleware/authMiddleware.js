@@ -35,8 +35,19 @@ const checkToken = asyncHandler(async (req, res, next) => {
     return res.status(401).json({ status: '401', message: 'Not authorized, no token' });
   }
 
-  // Verify token — throws if expired or tampered
-  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  // Verify token — an expired or tampered token must surface as 401 (not a generic 500), so the client's
+  // silent-refresh interceptor kicks in. jwt errors carry no `.status`, so without this they'd fall through
+  // to errorMiddleware and become 500 — which the client never refreshes on.
+  let decoded;
+  try {
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
+  } catch (err) {
+    const expired = err.name === 'TokenExpiredError';
+    return res.status(401).json({
+      status:  '401',
+      message: expired ? 'Access token expired' : 'Invalid access token',
+    });
+  }
 
   // Fetch user — email lives on employee, not users
   const userResult = await helper.selectRecordsWithCondition(
@@ -179,11 +190,11 @@ const handleRefreshToken = asyncHandler(async (req, res) => {
     return res.status(403).json({ status: '403', message: 'Account is deactivated. Contact administrator.' });
   }
 
-  // 8. Rotate — revoke old token and issue a new refresh token
-  await helper.dynamicUpdateWithId('refresh_tokens', { revoked: true }, storedToken.id);
-
+  // 8. Rotate — mint the new refresh token, then revoke-old + insert-new ATOMICALLY so a crash or a
+  //    double-fire can never leave the family revoked with no valid successor (which reuse-detection would
+  //    then escalate to a full logout). Tokens are consumed by `id` only, so sign just `{ id }`.
   const newRefreshToken = jwt.sign(
-    { id: user.id, email: user.email },
+    { id: user.id },
     process.env.REFRESH_TOKEN_SECRET,
     { expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || '7d' }
   );
@@ -191,16 +202,24 @@ const handleRefreshToken = asyncHandler(async (req, res) => {
   const newExpiry = new Date();
   newExpiry.setDate(newExpiry.getDate() + 7);
 
-  await helper.dynamicInsert('refresh_tokens', {
-    user_id:    user.id,
-    token:      newRefreshToken,
-    expires_at: newExpiry,
-    revoked:    false,
-  });
+  await helper.prisma.$transaction([
+    helper.prisma.refresh_tokens.update({
+      where: { id: storedToken.id },
+      data:  { revoked: true },
+    }),
+    helper.prisma.refresh_tokens.create({
+      data: {
+        user_id:    user.id,
+        token:      newRefreshToken,
+        expires_at: newExpiry,
+        revoked:    false,
+      },
+    }),
+  ]);
 
-  // 9. Issue new access token — same secret and payload as loginUser
+  // 9. Issue new access token
   const newAccessToken = jwt.sign(
-    { id: user.id, email: user.email },
+    { id: user.id },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || '15m' }
   );

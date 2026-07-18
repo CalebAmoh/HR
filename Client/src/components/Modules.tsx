@@ -44,6 +44,31 @@ const modules = [
 
 const TAGS = ['All', 'Core', 'HR', 'Finance', 'Intelligence', 'Operations', 'Growth'];
 
+const MODULE_TITLE_TYPOGRAPHY: React.CSSProperties = {
+  fontSize: '14.5px',
+  fontWeight: 700,
+  lineHeight: 1.25,
+  letterSpacing: '-0.025em',
+};
+
+const MODULE_TAG_TYPOGRAPHY: React.CSSProperties = {
+  fontSize: '10px',
+  fontWeight: 700,
+  letterSpacing: '.07em',
+  textTransform: 'uppercase',
+  lineHeight: 1.4,
+};
+
+const MODULE_DESCRIPTION_TYPOGRAPHY: React.CSSProperties = {
+  fontSize: '12px',
+  lineHeight: 1.7,
+};
+
+const MODULE_STAT_TYPOGRAPHY: React.CSSProperties = {
+  fontSize: '11px',
+  fontWeight: 600,
+};
+
 
 /* ─────────────────────────────────────────────────────────────────────────────
    MODULE CARD
@@ -158,16 +183,12 @@ function ModuleCard({ key,mod, index, onClick, isSettings, isEnabled, onToggle }
           {/* Category badge — text uses same ramp's dark stop, never raw black */}
           <span
             style={{
-              fontSize: '10px',
-              fontWeight: 700,
-              letterSpacing: '.07em',
-              textTransform: 'uppercase',
+              ...MODULE_TAG_TYPOGRAPHY,
               color: r.tag,
               background: r.bg,
               border: `1px solid ${r.border}`,
               borderRadius: '100px',
               padding: '3px 9px',
-              lineHeight: 1.4,
             }}
           >
             {mod.tag}
@@ -179,12 +200,9 @@ function ModuleCard({ key,mod, index, onClick, isSettings, isEnabled, onToggle }
       <h3
         className="syne"
         style={{
-          fontSize: '14.5px',
-          fontWeight: 700,                 // match the page title (font-bold)
+          ...MODULE_TITLE_TYPOGRAPHY,
           color: 'var(--text-primary)',
           margin: '0 0 7px',
-          lineHeight: 1.25,
-          letterSpacing: '-0.025em',       // match the page title (tracking-tight)
         }}
       >
         {mod.title}
@@ -193,9 +211,8 @@ function ModuleCard({ key,mod, index, onClick, isSettings, isEnabled, onToggle }
       {/* Description — visually subordinate, comfortable line height */}
       <p
         style={{
-          fontSize: '12px',
+          ...MODULE_DESCRIPTION_TYPOGRAPHY,
           color: 'var(--text-muted)',
-          lineHeight: 1.7,
           margin: 0,
           flex: 1,
         }}
@@ -224,7 +241,7 @@ function ModuleCard({ key,mod, index, onClick, isSettings, isEnabled, onToggle }
               flexShrink: 0,
             }}
           />
-          <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)' }}>
+          <span style={{ ...MODULE_STAT_TYPOGRAPHY, color: 'var(--text-muted)' }}>
             {mod.stat}
           </span>
         </div>
@@ -284,10 +301,10 @@ function ModuleRow({ mod, index, onClick, isSettings, isEnabled, onToggle }: any
 
         <div className="flex-1 min-w-0 sm:hidden">
           <div className="flex items-center gap-2 mb-1">
-             <h3 className="syne text-sm font-extrabold m-0 text-[var(--text-primary)] truncate">{mod.title}</h3>
-             <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full border whitespace-nowrap" style={{ background: r.bg, color: r.tag, borderColor: r.border }}>{mod.tag}</span>
+             <h3 className="syne m-0 text-[var(--text-primary)] truncate" style={MODULE_TITLE_TYPOGRAPHY}>{mod.title}</h3>
+             <span className="shrink-0 px-1.5 py-0.5 rounded-full border whitespace-nowrap" style={{ ...MODULE_TAG_TYPOGRAPHY, background: r.bg, color: r.tag, borderColor: r.border }}>{mod.tag}</span>
           </div>
-          <p className="text-xs text-[var(--text-muted)] m-0 truncate">{mod.desc}</p>
+          <p className="text-[var(--text-muted)] m-0 truncate" style={MODULE_DESCRIPTION_TYPOGRAPHY}>{mod.desc}</p>
         </div>
         
         {/* Right side stuff on mobile */}
@@ -310,16 +327,16 @@ function ModuleRow({ mod, index, onClick, isSettings, isEnabled, onToggle }: any
 
       <div className="flex-1 min-w-0 hidden sm:block">
          <div className="flex items-center gap-2 mb-1">
-            <h3 className="syne text-sm font-extrabold m-0 text-[var(--text-primary)] truncate">{mod.title}</h3>
-            <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full border whitespace-nowrap" style={{ background: r.bg, color: r.tag, borderColor: r.border }}>{mod.tag}</span>
+            <h3 className="syne m-0 text-[var(--text-primary)] truncate" style={MODULE_TITLE_TYPOGRAPHY}>{mod.title}</h3>
+            <span className="shrink-0 px-1.5 py-0.5 rounded-full border whitespace-nowrap" style={{ ...MODULE_TAG_TYPOGRAPHY, background: r.bg, color: r.tag, borderColor: r.border }}>{mod.tag}</span>
          </div>
-         <p className="text-xs text-[var(--text-muted)] m-0 truncate">{mod.desc}</p>
+         <p className="text-[var(--text-muted)] m-0 truncate" style={MODULE_DESCRIPTION_TYPOGRAPHY}>{mod.desc}</p>
       </div>
 
       <div className="hidden sm:flex items-center gap-4 shrink-0">
         <div className="flex items-center gap-1.5 hidden lg:flex">
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: mod.statColor }} />
-          <span className="text-[11px] font-semibold text-[var(--text-muted)] whitespace-nowrap">{mod.stat}</span>
+          <span className="text-[var(--text-muted)] whitespace-nowrap" style={MODULE_STAT_TYPOGRAPHY}>{mod.stat}</span>
         </div>
 
         {isSettings ? (

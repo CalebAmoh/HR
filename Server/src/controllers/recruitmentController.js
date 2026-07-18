@@ -3,6 +3,7 @@ const asyncHandler             = require('../middleware/asyncHandler');
 const respond                  = require('../helpers/respondHelper');
 const { tmsg }                 = require('../helpers/messageStore');
 const { logActivity, fromReq } = require('./auditController');
+const { notifyUsersWithPermission } = require('../helpers/notificationHelper');
 const crypto                   = require('crypto');
 const { sendSchedulingInvite, sendInterviewConfirmation, buildIcs, sendCandidateStageEmail } = require('../helpers/emailHelper');
 
@@ -575,6 +576,10 @@ const hireCandidate = asyncHandler(async (req, res) => {
     .catch(() => {});
 
   logActivity({ module: 'Recruitment', action: 'hire_candidate', entityId: String(employee.id), entityName: `${employee.firstName} ${employee.lastName}`, details: { candidateId: id.toString() }, ...fromReq(req) });
+  await notifyUsersWithPermission('approve_employees', {
+    message: `New hire ${employee.firstName} ${employee.lastName} awaits employee approval`,
+    action: 'Employees', type: 'employees', fromUser: req.user?.id, employee: employee.id,
+  }, req.user?.id);
   return respond.created(res, 'Employee record created', s({ employee }));
 });
 

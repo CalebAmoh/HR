@@ -696,6 +696,13 @@ const updateEmployee = asyncHandler(async (req, res) => {
   const [enriched] = await enrichEmployees([refreshed]);
   logActivity({ module: 'Employees', action: 'update', entityId: String(id), entityName: `${existing.firstName} ${existing.lastName}`, ...fromReq(req) });
 
+  if (updateNeedsApproval) {
+    await notifyUsersWithPermission('approve_employees', {
+      message: `Updated employee ${existing.firstName} ${existing.lastName} awaits approval`,
+      action: 'Employees', type: 'employees', fromUser: req.user?.id, employee: id,
+    }, req.user?.id);
+  }
+
   // Edit approval off → push the updated record to the external system immediately.
   if (!updateNeedsApproval) {
     const syncResult = await pushEmployeeToExternalSystem(enriched);

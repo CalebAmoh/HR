@@ -10,6 +10,8 @@ import {
 } from 'lucide-react';
 import { Modules } from './Modules';
 import { PayrollApprovalFlow } from './PayrollApprovalFlow';
+import { MedicalApprovalFlow } from './MedicalApprovalFlow';
+import { LeaveApprovalFlow } from './LeaveApprovalFlow';
 import {
   aiGetConfig, aiSaveConfig, aiHealth, aiReindex, type AiHealth,
   aiListKnowledge, aiSaveKnowledge, aiSetKnowledgeEnabled, aiDeleteKnowledge, type KnowledgeEntry,
@@ -31,7 +33,7 @@ const ONBOARDING_FIELD_KEYS = new Set(ONBOARDING_FIELDS.map(f => f.key));
 import { useCan } from '@/hooks/useCan';
 import { inputClass } from './ui/FormField';
 import { CountedTextarea } from './ui/CountedTextarea';
-import { MultiSearchSelect, SearchSelect } from './ui/SearchSelect';
+import { SearchSelect } from './ui/SearchSelect';
 import { TablePagination } from './ui/TablePagination';
 import api from '../../lib/api';
 import { toast } from 'sonner';
@@ -485,11 +487,14 @@ function ApprovalsSection({
   employeeUpdateApproval, setEmployeeUpdateApproval,
   payrollApproval, setPayrollApproval,
   selfApproval, setSelfApproval,
+  medicalApproval, setMedicalApproval,
   medicalSelfApproval, setMedicalSelfApproval,
   supervisorApproval, setSupervisorApproval, saveFlowSettings,
   trainingApprovalFlow, setTrainingApprovalFlow, saveTrainingFlowSettings,
 }: any) {
   const [showFlowEditor, setShowFlowEditor] = useState(false);
+  const [showMedicalFlowEditor, setShowMedicalFlowEditor] = useState(false);
+  const [showLeaveFlowEditor, setShowLeaveFlowEditor] = useState(false);
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 auto-rows-min">
       <SectionCard icon={<ShieldCheck size={13} />} title="Employee Approval">
@@ -556,12 +561,35 @@ function ApprovalsSection({
 
       <SectionCard icon={<Stethoscope size={13} />} title="Medical Approval">
         <ControlRow
+          label="Medical Approval Workflow"
+          description="Require medical requests (staff, dependent, and hospital claims) to walk a configured sign-off chain before they are approved. With no stages, one approval (any user who can approve medical) is enough."
+          checked={medicalApproval}
+          onChange={(v) => {
+            setMedicalApproval(v);
+            const updates: any = { medicalApproval: v };
+            if (!v) { setMedicalSelfApproval(false); updates.medicalSelfApproval = false; }
+            saveSetting('approvals', updates);
+          }}
+        />
+        <ControlRow
           label="Allow Self-Approval"
           description="Allow a user with both Create Medical and Approve Medical permissions to approve a medical request they originated themselves. When off, a different approver must review and approve the request."
           checked={medicalSelfApproval}
           onChange={(v) => { setMedicalSelfApproval(v); saveSetting('approvals', { medicalSelfApproval: v }); }}
         />
+        {medicalApproval && (
+          <div className="px-5 py-3 border-t border-[var(--border)]">
+            <p className="text-[12px] text-[var(--text-muted)] mb-2 leading-relaxed">
+              Define the sign-off chain — the stages a submitted medical request passes through, and who
+              approves each. With no stages, one approval (any user who can approve medical) is enough.
+            </p>
+            <button type="button" onClick={() => setShowMedicalFlowEditor(true)} className="secondary-btn text-[13px]">
+              <ShieldCheck size={14} /> Configure Approval Flow
+            </button>
+          </div>
+        )}
       </SectionCard>
+      {showMedicalFlowEditor && <MedicalApprovalFlow onClose={() => setShowMedicalFlowEditor(false)} />}
 
       <SectionCard icon={<CalendarClock size={13} />} title="Leave Approval Flow">
         <div className="px-5 py-3 border-b border-[var(--border)]">
@@ -580,7 +608,18 @@ function ApprovalsSection({
           checked={supervisorApproval}
           onChange={(v) => { setSupervisorApproval(v); saveFlowSettings(v); }}
         />
+        <div className="px-5 py-3 border-t border-[var(--border)]">
+          <p className="text-[12px] text-[var(--text-muted)] mb-2 leading-relaxed">
+            Add amount-based financial sign-off <strong>after</strong> normal approval: define stages, each with an
+            approver and an amount range. A leave's allowance is routed only through the stages whose range covers
+            its payout; amounts below every range skip financial approval and go straight to GL.
+          </p>
+          <button type="button" onClick={() => setShowLeaveFlowEditor(true)} className="secondary-btn text-[13px]">
+            <ShieldCheck size={14} /> Configure Approval Flow
+          </button>
+        </div>
       </SectionCard>
+      {showLeaveFlowEditor && <LeaveApprovalFlow onClose={() => setShowLeaveFlowEditor(false)} />}
 
       <SectionCard icon={<GraduationCap size={13} />} title="Training Approval Flow">
         <div className="px-5 py-3 border-b border-[var(--border)]">
@@ -611,10 +650,6 @@ function ApprovalsSection({
 function LeaveSection({
   allowSettings, setAllowSettings,
   saveAllowSetting,
-  thresholdEnabled, setThresholdEnabled,
-  thresholdAmount, setThresholdAmount,
-  thresholdApprovers, setThresholdApprovers,
-  saveThresholdSetting, saveAllThresholdSettings, allUsers,
   calendarShowAll, setCalendarShowAll, saveCalendarSetting,
 }: any) {
 
@@ -667,56 +702,6 @@ function LeaveSection({
               />
             </div>
           ))}
-        </div>
-      </SectionCard>
-
-      {/* Threshold approval */}
-      <SectionCard icon={<ShieldCheck size={13} />} title="Leave Allowance Threshold Approval">
-        <div className="px-5 py-3 border-b border-[var(--border)]">
-          <p className="text-[12px] text-[var(--text-muted)]">
-            When a leave allowance payout exceeds the threshold amount, GL posting is held and the item appears in Central Approval for sign-off by the designated financial approvers.
-          </p>
-        </div>
-        <div className="flex items-center gap-4 px-5 py-4 border-b border-[var(--border-light)]">
-          <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-semibold text-[var(--text-primary)] leading-snug">Enable Threshold Approval</p>
-            <p className="text-[12px] text-[var(--text-muted)] mt-0.5">When on, allowances above the threshold require financial approver sign-off before GL is posted.</p>
-          </div>
-          <Toggle checked={thresholdEnabled} onChange={v => setThresholdEnabled(v)} />
-        </div>
-        <div className="px-5 py-4 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 border-b border-[var(--border-light)]">
-          <div className="space-y-1.5">
-            <p className="text-[13px] font-semibold text-[var(--text-primary)]">Threshold Amount</p>
-            <p className="text-[12px] text-[var(--text-muted)]">
-              Allowance payouts above this value require additional sign-off. Set to 0 to require approval on all allowances.
-            </p>
-            <input
-              type="number" min="0" step="0.01"
-              className={`${inputClass} w-full`}
-              value={thresholdAmount}
-              onChange={e => setThresholdAmount(e.target.value)}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <p className="text-[13px] font-semibold text-[var(--text-primary)]">Financial Approvers</p>
-            <p className="text-[12px] text-[var(--text-muted)]">
-              Users who can approve high-value allowances in Central Approval. Leave empty to allow any admin.
-            </p>
-            <MultiSearchSelect
-              value={thresholdApprovers}
-              onChange={setThresholdApprovers}
-              options={allUsers}
-              placeholder="Search and select approvers…"
-            />
-          </div>
-        </div>
-        <div className="px-5 py-4 flex justify-end">
-          <button
-            className="primary-btn"
-            onClick={() => saveAllThresholdSettings(thresholdEnabled, thresholdAmount, thresholdApprovers)}
-          >
-            Save Threshold Settings
-          </button>
         </div>
       </SectionCard>
 
@@ -1145,6 +1130,7 @@ function ControlsTab() {
   const [employeeUpdateApproval, setEmployeeUpdateApproval] = useState(() => getSettings().approvals.employeeUpdateApproval);
   const [payrollApproval,      setPayrollApproval]      = useState(() => getSettings().approvals.payrollApproval);
   const [selfApproval,         setSelfApproval]         = useState(() => getSettings().approvals.selfApproval);
+  const [medicalApproval,      setMedicalApproval]      = useState(() => getSettings().approvals.medicalApproval);
   const [medicalSelfApproval,  setMedicalSelfApproval]  = useState(() => getSettings().approvals.medicalSelfApproval);
   const [currency,             setCurrency]             = useState(() => getSettings().general.currency);
 
@@ -1168,11 +1154,6 @@ function ControlsTab() {
     leave_allow_tax_rate: '0.3',
   });
 
-  // ── Threshold approval state (backend) ───────────────────────────────────
-  const [thresholdEnabled,   setThresholdEnabled]   = useState(false);
-  const [thresholdAmount,    setThresholdAmount]     = useState('0');
-  const [thresholdApprovers, setThresholdApprovers]  = useState<string[]>([]);
-  const [allUsers, setAllUsers] = useState<{ id: string; label: string }[]>([]);
 
   // ── Calendar visibility state (backend) ──────────────────────────────────
   const [calendarShowAll, setCalendarShowAll] = useState(false);
@@ -1233,13 +1214,6 @@ function ControlsTab() {
       if (Object.keys(d).length) setAllowSettings(d);
     }).catch(() => {});
 
-    api.get('/leave/threshold-settings').then(r => {
-      const d = r.data.data ?? {};
-      setThresholdEnabled(d.threshold_enabled === 'Yes');
-      setThresholdAmount(d.threshold_amount ?? '0');
-      try { setThresholdApprovers(JSON.parse(d.threshold_approvers ?? '[]')); } catch {}
-    }).catch(() => {});
-
     api.get('/leave/calendar-settings').then(r => {
       const d = r.data.data ?? {};
       setCalendarShowAll(d.calendar_show_all === 'Yes');
@@ -1248,14 +1222,6 @@ function ControlsTab() {
     api.get('/documents/settings').then(r => {
       const d = r.data.data ?? {};
       setAllowDocumentDownload(d.allow_document_download === 'Yes');
-    }).catch(() => {});
-
-    api.get('/users').then(r => {
-      const users = r.data.data ?? [];
-      setAllUsers(users.map((u: any) => ({
-        id:    String(u.id),
-        label: u.name || u.username || `User ${u.id}`,
-      })));
     }).catch(() => {});
 
     api.get('/settings/api-integrations').then(r => {
@@ -1315,19 +1281,6 @@ function ControlsTab() {
   function saveAllowSetting(key: string, val: string) {
     api.put('/leave/allowance-settings', { [key]: val }).catch(() => {});
     setAllowSettings(prev => ({ ...prev, [key]: val }));
-  }
-
-  function saveThresholdSetting(key: string, val: string) {
-    api.put('/leave/threshold-settings', { [key]: val }).catch(() => {});
-  }
-
-  function saveAllThresholdSettings(enabled: boolean, amount: string, approvers: string[]) {
-    api.put('/leave/threshold-settings', {
-      threshold_enabled:   enabled ? 'Yes' : 'No',
-      threshold_amount:    amount,
-      threshold_approvers: JSON.stringify(approvers),
-    }).then(() => toast.success('Threshold settings saved'))
-      .catch(() => toast.error('Failed to save threshold settings'));
   }
 
   function saveCalendarSetting(val: boolean) {
@@ -1403,6 +1356,7 @@ function ControlsTab() {
             employeeUpdateApproval={employeeUpdateApproval} setEmployeeUpdateApproval={setEmployeeUpdateApproval}
             payrollApproval={payrollApproval}         setPayrollApproval={setPayrollApproval}
             selfApproval={selfApproval}               setSelfApproval={setSelfApproval}
+            medicalApproval={medicalApproval}         setMedicalApproval={setMedicalApproval}
             medicalSelfApproval={medicalSelfApproval} setMedicalSelfApproval={setMedicalSelfApproval}
             supervisorApproval={supervisorApproval}         setSupervisorApproval={setSupervisorApproval}
             saveFlowSettings={saveFlowSettings}
@@ -1421,12 +1375,6 @@ function ControlsTab() {
           <LeaveSection
             allowSettings={allowSettings}           setAllowSettings={setAllowSettings}
             saveAllowSetting={saveAllowSetting}
-            thresholdEnabled={thresholdEnabled}     setThresholdEnabled={setThresholdEnabled}
-            thresholdAmount={thresholdAmount}       setThresholdAmount={setThresholdAmount}
-            thresholdApprovers={thresholdApprovers} setThresholdApprovers={setThresholdApprovers}
-            saveThresholdSetting={saveThresholdSetting}
-            saveAllThresholdSettings={saveAllThresholdSettings}
-            allUsers={allUsers}
             calendarShowAll={calendarShowAll} setCalendarShowAll={setCalendarShowAll}
             saveCalendarSetting={saveCalendarSetting}
           />

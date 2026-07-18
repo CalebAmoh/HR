@@ -6,7 +6,7 @@ import {
   Plus, Edit, Trash2, CheckCircle2, XCircle, RefreshCw,
   FileText, X, UploadCloud, Send, Eye, ChevronLeft, Download, Upload,
   Calendar, Stethoscope, Pill, Landmark, UserCircle2, DollarSign, Paperclip,
-  Clock,
+  Clock, ShieldCheck,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { PageHeader } from './ui/PageHeader';
@@ -361,8 +361,24 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
   const medicalSelfApproval = getSettings().approvals.medicalSelfApproval;
   const appCurrency = getSettings().general.currency;
   const currentUserId = getCurrentUser()?.id;
+  const currentUserRoles = (getCurrentUser()?.allRoles ?? []).map(r => r.name);
   const attachment = record.attachment1;
   const isImage = (name: string) => /\.(png|jpg|jpeg|gif|webp)$/i.test(name ?? '');
+
+  // Multi-stage approval snapshot for this record (empty ⇒ single-stage / no flow).
+  const [stages, setStages] = useState<any[]>([]);
+  useEffect(() => {
+    if (record.status === 'Pending Approval' || record.status === 'Approved' || record.status === 'Rejected') {
+      api.get(`/medical/requests/${type}/${record.id}/stages`)
+        .then(r => setStages(r.data?.data ?? []))
+        .catch(() => setStages([]));
+    } else { setStages([]); }
+  }, [record.id, record.status, type]);
+  const hasFlow = stages.length > 0;
+  const currentStage = stages.find(s => s.status === 'Pending') ?? null;
+  const isCurrentApprover = !currentStage ? true : (currentStage.approver_type === 'user'
+    ? String(currentUserId ?? '') === String(currentStage.approver_id)
+    : currentUserRoles.includes(String(currentStage.approver_label)) || currentUserRoles.includes(String(currentStage.approver_id)));
 
   const { can } = useCan();
   // In admin mode, processing actions require medical permissions. In personal mode a user can
@@ -521,6 +537,35 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
             </div>
           )}
 
+          {/* ── Approval flow progress ── */}
+          {hasFlow && (
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+              <div className="flex items-center gap-1.5 mb-2 text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">
+                <ShieldCheck size={12} /> Approval flow
+              </div>
+              <div className="space-y-1.5">
+                {stages.map((st: any) => {
+                  const done = st.status === 'Approved';
+                  const rejected = st.status === 'Rejected';
+                  const isCurrent = !done && !rejected && currentStage?.id === st.id;
+                  const color = rejected ? 'var(--danger)' : done ? 'var(--success)' : isCurrent ? 'var(--warning)' : 'var(--text-muted)';
+                  return (
+                    <div key={st.id} className="flex items-center gap-2 text-[12px]">
+                      <span className="shrink-0" style={{ color }}>
+                        {done ? <CheckCircle2 size={13} /> : rejected ? <XCircle size={13} /> : <Clock size={13} />}
+                      </span>
+                      <span className="font-medium text-[var(--text-primary)]">{st.stage_name}</span>
+                      <span className="text-[var(--text-muted)]">
+                        · {st.approver_type === 'user' ? '' : 'Role: '}{st.approver_label || st.approver_type}
+                        {st.status !== 'Pending' && ` · ${st.status}`}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Rejection reason input */}
           {rejecting && (
             <div className="space-y-1.5">
@@ -563,15 +608,22 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
           {adminMode && record.status === 'Pending Approval' && !rejecting && canProcess && (() => {
             const isSelf = currentUserId != null && record.posted_by != null
               && String(record.posted_by) === String(currentUserId);
-            const canAct = medicalSelfApproval || !isSelf;
+            const selfOk = medicalSelfApproval || !isSelf;
+            const stageOk = !hasFlow || isCurrentApprover; // multi-stage: only the current stage's approver
+            const canAct = selfOk && stageOk;
 
-            if (!canAct) return (
-              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium flex-1"
-                style={{ background: 'rgba(245,158,11,0.1)', color: '#b45309', border: '1px solid #f59e0b' }}>
-                <Clock size={13} className="shrink-0" />
-                Awaiting a different approver
-              </div>
-            );
+            if (!canAct) {
+              const who = hasFlow && currentStage
+                ? (currentStage.approver_label || (currentStage.approver_type === 'user' ? 'the assigned approver' : 'the assigned role'))
+                : 'a different approver';
+              return (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium flex-1"
+                  style={{ background: 'var(--warning-dim)', color: 'var(--warning)', border: '1px solid var(--warning)' }}>
+                  <Clock size={13} className="shrink-0" />
+                  {hasFlow && currentStage ? `Awaiting ${who} — "${currentStage.stage_name}"` : `Awaiting ${who}`}
+                </div>
+              );
+            }
             return (
               <>
                 <button disabled={acting} onClick={approveRecord}

@@ -7,7 +7,7 @@ require('dotenv').config();
 const axios  = require('axios');
 const { prisma } = require('./src/helpers/dbQueryHelper');
 
-const BASE = 'http://localhost:3040/v1/api/hr';
+const BASE = 'http://localhost:3050/v1/api/hr';
 const results = [];
 let token = '';
 let adminToken = '';

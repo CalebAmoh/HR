@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { checkToken, handleRefreshToken } = require("../middleware/authMiddleware");
-const { registerUser, loginUser, getAllUsers, getUserById, updateUser, changePassword, deactivateUser, activateUser,updateUserStatus,getMe,updateUserTheme } = require("../controllers/userController.js");
+const { registerUser, loginUser, logoutUser, getAllUsers, getUserById, updateUser, changePassword, deactivateUser, activateUser,updateUserStatus,getMe,updateUserTheme } = require("../controllers/userController.js");
 const { assignRoleToUser, revokeRoleFromUser, assignPermissionToUser, revokePermissionFromUser, getAllRoles, getAllPermissions, getUserAccess, addRole, deleteRole, updateRole, updateRoleStatus } = require('../controllers/rolePermissionController');
 const roleGuard       = require('../middleware/roleGuard');
 const permissionGuard = require('../middleware/permissionGuard');
@@ -82,6 +82,9 @@ router.get('/health', (req, res) => {
 });
 
 router.post('/login', loginUser);
+// Logout authenticates via the httpOnly refresh cookie (not the Bearer token), so it must sit BEFORE the
+// global checkToken — a user whose access token has already expired must still be able to log out.
+router.post('/logout', logoutUser);
 router.get('/user/refresh-token', handleRefreshToken);
 
 // Module visibility — public read so the pre-render fetch in main.tsx never
@@ -394,8 +397,9 @@ router.post  ('/medical/staff',                             med.createStaffMedic
 router.put   ('/medical/staff/:id',                         med.updateStaffMedical);
 router.delete('/medical/staff/:id',                         med.deleteStaffMedical);
 router.post  ('/medical/staff/:id/submit',                  med.submitStaffMedical);
-router.post  ('/medical/staff/:id/approve',                 permissionGuard('approve_medical'), med.approveStaffMedical);
-router.post  ('/medical/staff/:id/reject',                  permissionGuard('approve_medical'), med.rejectStaffMedical);
+// approve/reject are authorised inside the controller (blanket approve_medical OR current-stage approver).
+router.post  ('/medical/staff/:id/approve',                 med.approveStaffMedical);
+router.post  ('/medical/staff/:id/reject',                  med.rejectStaffMedical);
 router.post  ('/medical/staff/:id/finalize',                permissionGuard('approve_medical'), med.finalizeStaffMedical);
 router.post  ('/medical/staff/:id/retry-gl',               permissionGuard('approve_medical'), med.retryStaffMedicalGL);
 
@@ -404,8 +408,8 @@ router.post  ('/medical/dependents-requests',               med.createDependentM
 router.put   ('/medical/dependents-requests/:id',           med.updateDependentMedical);
 router.delete('/medical/dependents-requests/:id',           med.deleteDependentMedical);
 router.post  ('/medical/dependents-requests/:id/submit',    med.submitDependentMedical);
-router.post  ('/medical/dependents-requests/:id/approve',   permissionGuard('approve_medical'), med.approveDependentMedical);
-router.post  ('/medical/dependents-requests/:id/reject',    permissionGuard('approve_medical'), med.rejectDependentMedical);
+router.post  ('/medical/dependents-requests/:id/approve',   med.approveDependentMedical);
+router.post  ('/medical/dependents-requests/:id/reject',    med.rejectDependentMedical);
 router.post  ('/medical/dependents-requests/:id/finalize',  permissionGuard('approve_medical'), med.finalizeDependentMedical);
 router.post  ('/medical/dependents-requests/:id/retry-gl', permissionGuard('approve_medical'), med.retryDependentMedicalGL);
 
@@ -435,9 +439,14 @@ router.post  ('/medical/claims',                   permissionGuard('create_medic
 router.put   ('/medical/claims/:id',               permissionGuard('edit_medical'),    med.updateHospitalClaim);
 router.delete('/medical/claims/:id',               permissionGuard('delete_medical'),  med.deleteHospitalClaim);
 router.post  ('/medical/claims/:id/submit',        permissionGuard('create_medical'),  med.submitHospitalClaim);
-router.post  ('/medical/claims/:id/approve',       permissionGuard('approve_medical'), med.approveHospitalClaim);
+router.post  ('/medical/claims/:id/approve',       med.approveHospitalClaim);
 router.post  ('/medical/claims/:id/retry-gl',     permissionGuard('approve_medical'), med.retryHospitalClaimGL);
-router.post  ('/medical/claims/:id/reject',        permissionGuard('approve_medical'), med.rejectHospitalClaim);
+router.post  ('/medical/claims/:id/reject',        med.rejectHospitalClaim);
+
+// Multi-stage medical approval config + per-record stage progress
+router.get   ('/medical/approval-flow',            med.getMedicalApprovalFlow);
+router.put   ('/medical/approval-flow',            permissionGuard('approve_medical'), med.saveMedicalApprovalFlow);
+router.get   ('/medical/requests/:type/:id/stages', med.getMedicalStages);
 
 
 // ─────────────────────────────────────────────
@@ -480,8 +489,9 @@ router.put   ('/leave/allowance-settings',            permissionGuard('manage_se
 router.get   ('/leave/approval-settings',             leave.getApprovalFlowSettings);
 router.put   ('/leave/approval-settings',             permissionGuard('manage_settings'), leave.updateApprovalFlowSettings);
 
-router.get   ('/leave/threshold-settings',            leave.getThresholdSettings);
-router.put   ('/leave/threshold-settings',            permissionGuard('manage_settings'), leave.updateThresholdSettings);
+// Multi-stage, amount-range financial approval flow (replaces the old single threshold)
+router.get   ('/leave/approval-flow',                 leave.getLeaveApprovalFlow);
+router.put   ('/leave/approval-flow',                 permissionGuard('manage_settings'), leave.saveLeaveApprovalFlow);
 
 router.get   ('/leave/calendar-settings',             leave.getCalendarSettings);
 router.put   ('/leave/calendar-settings',             permissionGuard('manage_settings'), leave.updateCalendarSettings);
@@ -515,6 +525,8 @@ router.post  ('/leave/leaves/:id/reject',            leave.rejectLeave);
 router.post  ('/leave/leaves/:id/cancel',            leave.cancelLeave);
 router.post  ('/leave/leaves/:id/finalize',          leave.finalizeLeave);
 router.post  ('/leave/leaves/:id/approve-allowance', leave.approveAllowanceLeave);
+router.post  ('/leave/leaves/:id/reject-allowance',  leave.rejectAllowanceLeave);
+router.get   ('/leave/leaves/:id/stages',            leave.getLeaveStages);
 router.post  ('/leave/leaves/:id/retry-gl',          leave.retryLeaveGL);
 
 // ─────────────────────────────────────────────

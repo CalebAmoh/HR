@@ -12,7 +12,7 @@ npm run preview    # Preview production build
 npm run clean      # Remove dist/
 ```
 
-The dev server proxies `/v1/api/hr` and `/uploads` to `http://localhost:3040` (the backend must be running separately).
+The dev server proxies `/v1/api/hr` and `/uploads` to `http://localhost:3050` (the backend must be running separately).
 
 ## Architecture
 

@@ -3,6 +3,7 @@ const asyncHandler  = require('../middleware/asyncHandler');
 const respond       = require('../helpers/respondHelper');
 const { tmsg }      = require('../helpers/messageStore');
 const { toBigInt, s, safeAlter } = require('../helpers/controllerHelpers');
+const { notifyEmployee, notifyUsersWithPermission } = require('../helpers/notificationHelper');
 const { Prisma } = require('@prisma/client'); // Prisma.join for portable IN lists
 
 // Schema patches — per-slot seat cap; wider currency for CUR code-list labels (no-ops once applied)
@@ -42,6 +43,26 @@ async function empMap(ids) {
 }
 
 const toDateStr = v => v instanceof Date ? v.toISOString().slice(0, 10) : (v ? String(v).slice(0, 10) : null);
+
+async function notifyTrainingApprover(nomination, nextStatus, req) {
+  const trainingName = nomination.training_name || 'training nomination';
+  const employeeId = nomination.employee;
+  if (nextStatus === 'Pending Supervisor Approval') {
+    const [employee] = await prisma.$queryRaw`
+      SELECT supervisorId AS supervisor_id FROM employee WHERE id = ${toBigInt(employeeId)} LIMIT 1`.catch(() => []);
+    if (employee?.supervisor_id) {
+      await notifyEmployee(employee.supervisor_id, {
+        message: `A nomination for "${trainingName}" awaits your supervisor approval`,
+        action: 'PersonalTraining', type: 'training', fromUser: req.user?.id, employee: employeeId,
+      });
+    }
+  } else if (nextStatus === 'Pending HR Approval') {
+    await notifyUsersWithPermission('approve_training', {
+      message: `A nomination for "${trainingName}" awaits HR approval`,
+      action: 'AdminTraining', type: 'training', fromUser: req.user?.id, employee: employeeId,
+    }, req.user?.id);
+  }
+}
 
 // True when the employee already has a nomination for the same training on the same start date.
 // Rejected and No Show nominations don't block a re-application.
@@ -359,6 +380,8 @@ exports.createNomination = asyncHandler(async (req, res) => {
     },
   });
 
+  if (row.status === 'Pending HR Approval') await notifyTrainingApprover(row, row.status, req);
+
   respond.created(res, 'Nomination created', s(row));
 });
 
@@ -471,6 +494,7 @@ exports.submitNomination = asyncHandler(async (req, res) => {
   const nextStatus = flow === 'supervisor_first' ? 'Pending Supervisor Approval' : 'Pending HR Approval';
 
   await prisma.$executeRaw`UPDATE trainingnomination SET status = ${nextStatus}, updated_at = NOW() WHERE id = ${id}`;
+  await notifyTrainingApprover(existing, nextStatus, req);
   const [updated] = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE id = ${id}`;
   respond.ok(res, 'Submitted for approval', s(updated ?? {}));
 });
@@ -488,6 +512,10 @@ exports.approveNomination = asyncHandler(async (req, res) => {
   if (seatErr) return respond.badReq(res, tmsg('training.approve_seat_error', { reason: seatErr.charAt(0).toLowerCase() + seatErr.slice(1) }));
 
   await prisma.$executeRaw`UPDATE trainingnomination SET status = 'Approved', approved_by = ${String(req.user?.id ?? '')}, approved_at = NOW(), updated_at = NOW() WHERE id = ${id}`;
+  await notifyEmployee(existing.employee, {
+    message: `Your nomination for "${existing.training_name}" was approved`,
+    action: 'PersonalTraining', type: 'training', fromUser: req.user?.id,
+  });
   const [updated] = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE id = ${id}`;
   respond.ok(res, 'Nomination approved', s(updated ?? {}));
 });
@@ -504,6 +532,10 @@ exports.rejectNomination = asyncHandler(async (req, res) => {
   const reason = req.body?.reason ? String(req.body.reason).trim() : null;
 
   await prisma.$executeRaw`UPDATE trainingnomination SET status = 'Rejected', approved_by = ${String(req.user?.id ?? '')}, rejection_reason = ${reason}, updated_at = NOW() WHERE id = ${id}`;
+  await notifyEmployee(existing.employee, {
+    message: `Your nomination for "${existing.training_name}" was rejected${reason ? ': ' + reason : ''}`,
+    action: 'PersonalTraining', type: 'training', fromUser: req.user?.id,
+  });
   const [updated] = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE id = ${id}`;
   respond.ok(res, 'Nomination rejected', s(updated ?? {}));
 });
@@ -550,6 +582,7 @@ exports.supervisorApproveNomination = asyncHandler(async (req, res) => {
     return respond.badReq(res, 'Only Pending Supervisor Approval nominations can be approved here');
 
   await prisma.$executeRaw`UPDATE trainingnomination SET status = 'Pending HR Approval', updated_at = NOW() WHERE id = ${id}`;
+  await notifyTrainingApprover(existing, 'Pending HR Approval', req);
   const [updated] = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE id = ${id}`;
   respond.ok(res, 'Approved — forwarded to HR for final approval', s(updated ?? {}));
 });
@@ -567,6 +600,10 @@ exports.supervisorRejectNomination = asyncHandler(async (req, res) => {
   const reason = req.body?.reason ? String(req.body.reason).trim() : null;
 
   await prisma.$executeRaw`UPDATE trainingnomination SET status = 'Rejected', rejection_reason = ${reason}, updated_at = NOW() WHERE id = ${id}`;
+  await notifyEmployee(existing.employee, {
+    message: `Your nomination for "${existing.training_name}" was rejected by your supervisor${reason ? ': ' + reason : ''}`,
+    action: 'PersonalTraining', type: 'training', fromUser: req.user?.id,
+  });
   const [updated] = await prisma.$queryRaw`SELECT * FROM trainingnomination WHERE id = ${id}`;
   respond.ok(res, 'Nomination rejected', s(updated ?? {}));
 });

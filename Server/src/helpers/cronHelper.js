@@ -1,7 +1,16 @@
 const cron = require('node-cron');
 const leaveCtrl = require('../controllers/leaveController');
 const attendanceCtrl = require('../controllers/attendanceController');
+const userCtrl = require('../controllers/userController');
 const aiRag = require('./aiRag');
+
+// Runs daily at 03:00 — purges expired / long-revoked refresh tokens so the table doesn't grow unbounded
+// (every token refresh rotates in a new row and revokes the old one).
+cron.schedule('0 3 * * *', () => {
+  userCtrl.purgeStaleRefreshTokens()
+    .then(n => { if (n) console.log(`[cron] Purged ${n} stale refresh token(s)`); })
+    .catch(err => console.error('[cron] Refresh-token purge failed:', err.message));
+});
 
 // Runs daily at 06:00 — posts GL for all approved leaves whose start date has arrived
 cron.schedule('0 6 * * *', () => {

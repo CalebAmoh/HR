@@ -73,7 +73,7 @@ The repo has two apps:
 
 | Folder    | What it is                          | Default port |
 |-----------|-------------------------------------|--------------|
-| `Server/` | Express + Prisma API + cron jobs    | `3040`       |
+| `Server/` | Express + Prisma API + cron jobs    | `3050`       |
 | `Client/` | React 19 + Vite front end           | `3002` (dev) |
 
 ## 3. Create the database
@@ -100,7 +100,7 @@ Create a `Server/.env` file. The required keys (see the existing `.env` for the
 full list, including optional SMTP / GL-posting / employee-sync integrations):
 
 ```dotenv
-PORT=3040
+PORT=3050
 NODE_ENV=production
 LOG_LEVEL=info
 
@@ -155,7 +155,7 @@ npm run start        # production (node server.js)
 npm run dev          # development (nodemon, auto-restart)
 ```
 
-The API now listens on `http://<server>:3040`. Uploaded files are stored under
+The API now listens on `http://<server>:3050`. Uploaded files are stored under
 `Server/uploads/` and served from there — make sure that folder is writable and
 persisted (back it up / mount a volume).
 
@@ -231,7 +231,7 @@ npm install
 ```
 
 **Point the client at the API.** In dev, Vite proxies `/v1/api/hr` and
-`/uploads` to `http://localhost:3040` — if your API runs elsewhere, edit the
+`/uploads` to `http://localhost:3050` — if your API runs elsewhere, edit the
 `target` in [`Client/vite.config.ts`](vite.config.ts).
 
 Run it:
@@ -253,7 +253,7 @@ Put both apps behind one reverse proxy on a single hostname so the browser sees
 one origin (no CORS, public QR/onboarding links resolve correctly):
 
 - Serve `Client/dist` as the site root (`/`).
-- Proxy `/v1/api/hr` and `/uploads` to the API at `http://127.0.0.1:3040`.
+- Proxy `/v1/api/hr` and `/uploads` to the API at `http://127.0.0.1:3050`.
 - Run the API with a process manager (`pm2 start server.js --name hr-api`) so it
   restarts on reboot. Cron jobs (auto-absent marking, daily digests) run inside
   the API process, so it must stay up.
@@ -271,10 +271,10 @@ one origin (no CORS, public QR/onboarding links resolve correctly):
 
    **Change this password immediately after first login.**
 2. Go to **Settings → Email Setup** to configure SMTP and send a test email.
-3. Sanity-check: `GET http://<server>:3040/v1/api/hr/health` returns
+3. Sanity-check: `GET http://<server>:3050/v1/api/hr/health` returns
    `{ "status": "ok" }`.
 4. Run `npm run lint` in `Client/` (type-check) and confirm the API console shows
-   `🚀 Server running on port 3040`.
+   `🚀 Server running on port 3050`.
 
 ---
 
@@ -353,7 +353,7 @@ files or content, rebuild it via **Settings → AI → Reindex knowledge**.
 ### 8.5 Verify
 
 ```bash
-curl http://<server>:3040/v1/api/hr/ai/health
+curl http://<server>:3050/v1/api/hr/ai/health
 ```
 
 A healthy response reports `ok: true`, the configured models, and

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { CheckCircle, X, Eye, Users, Banknote, RefreshCw, Check, XCircle, Stethoscope, FileText, Download, CalendarClock } from 'lucide-react';
+import { CheckCircle, X, Eye, Users, Banknote, RefreshCw, Check, XCircle, Stethoscope, FileText, Download, CalendarClock, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import { TableToolbar } from './ui/TableToolbar';
@@ -367,20 +367,31 @@ function MedicalDetail({ rec, onApprove, onReject, onClose, busy }: {
 }
 
 // ── Leave detail panel ────────────────────────────────────────────────────────
-function LeaveApprovalDetail({ item, onApprove, onReject, onApproveAllowance, onClose, busy }: {
+function LeaveApprovalDetail({ item, onApprove, onReject, onApproveAllowance, onRejectAllowance, onClose, busy }: {
   item: ApprovalItem;
   onApprove: () => void;
   onReject: (reason: string) => void;
   onApproveAllowance: () => void;
+  onRejectAllowance: (reason: string) => void;
   onClose: () => void;
   busy: boolean;
 }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason]       = useState('');
+  const [stages, setStages]       = useState<any[]>([]);
   const l = item.raw;
   const isPendingFinancial = l._isPendingFinancial as boolean;
+  const canAct = l._canActAllowance !== false; // undefined (non-financial) or true → allowed
   const amount    = parseFloat(l.amount    ?? 0) || 0;
   const taxAmount = parseFloat(l.leave_tax ?? 0) || 0;
+
+  // Load the financial-approval stage chain for a pending-financial leave.
+  useEffect(() => {
+    if (isPendingFinancial) {
+      api.get(`/leave/leaves/${item.id}/stages`).then(r => setStages(r.data?.data ?? [])).catch(() => setStages([]));
+    }
+  }, [isPendingFinancial, item.id]);
+  const currentStage = stages.find(s => s.status === 'Pending') ?? null;
 
   const rows = [
     ['Employee',    l.employee_name    || '—'],
@@ -435,6 +446,32 @@ function LeaveApprovalDetail({ item, onApprove, onReject, onApproveAllowance, on
         </div>
       )}
 
+      {isPendingFinancial && stages.length > 0 && (
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+          <p className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2">Approval flow</p>
+          <div className="space-y-1.5">
+            {stages.map((st: any) => {
+              const done = st.status === 'Approved';
+              const rej  = st.status === 'Rejected';
+              const cur  = !done && !rej && currentStage?.id === st.id;
+              const color = rej ? 'var(--danger)' : done ? 'var(--success)' : cur ? 'var(--warning)' : 'var(--text-muted)';
+              return (
+                <div key={st.id} className="flex items-center gap-2 text-[12px]">
+                  <span className="shrink-0" style={{ color }}>
+                    {done ? <Check size={13} /> : rej ? <XCircle size={13} /> : <Clock size={13} />}
+                  </span>
+                  <span className="font-medium text-[var(--text-primary)]">{st.stage_name}</span>
+                  <span className="text-[var(--text-muted)]">
+                    · {st.approver_type === 'user' ? '' : 'Role: '}{st.approver_label || st.approver_type}
+                    {st.status !== 'Pending' && ` · ${st.status}`}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {!isPendingFinancial && l.details && (
         <div className="rounded-lg bg-slate-50 border border-slate-100 px-4 py-3">
           <p className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1">Details</p>
@@ -453,10 +490,32 @@ function LeaveApprovalDetail({ item, onApprove, onReject, onApproveAllowance, on
       <div className="flex justify-end gap-3 pt-2 border-t border-[var(--border)]">
         <button className="secondary-btn" onClick={onClose} disabled={busy}>Cancel</button>
         {isPendingFinancial ? (
-          <button className="primary-btn !bg-purple-600 hover:!bg-purple-700" onClick={onApproveAllowance} disabled={busy}>
-            <Check size={14} />
-            <span>{busy ? 'Approving…' : 'Approve Allowance'}</span>
-          </button>
+          !canAct ? (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
+              style={{ background: 'var(--warning-dim)', color: 'var(--warning)', border: '1px solid var(--warning)' }}>
+              <Clock size={13} className="shrink-0" />
+              {currentStage ? `Awaiting ${currentStage.approver_label || currentStage.approver_type} — "${currentStage.stage_name}"` : 'Awaiting a different approver'}
+            </div>
+          ) : rejecting ? (
+            <>
+              <button className="secondary-btn" onClick={() => setRejecting(false)} disabled={busy}>Back</button>
+              <button className="primary-btn !bg-red-600 hover:!bg-red-700"
+                onClick={() => onRejectAllowance(reason)} disabled={busy || !reason.trim()}>
+                <XCircle size={14} /><span>{busy ? 'Rejecting…' : 'Confirm Reject'}</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="secondary-btn !border-red-500 !text-red-600 hover:!bg-red-50"
+                onClick={() => setRejecting(true)} disabled={busy}>
+                <XCircle size={14} /><span>Reject</span>
+              </button>
+              <button className="primary-btn !bg-purple-600 hover:!bg-purple-700" onClick={onApproveAllowance} disabled={busy}>
+                <Check size={14} />
+                <span>{busy ? 'Approving…' : 'Approve Allowance'}</span>
+              </button>
+            </>
+          )
         ) : rejecting ? (
           <>
             <button className="secondary-btn" onClick={() => setRejecting(false)} disabled={busy}>Back</button>
@@ -533,12 +592,19 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
     } finally { setBusy(false); }
   }
 
+  // Route segment per medical record type. Use the dedicated /approve|/reject endpoints so the multi-stage
+  // approval engine runs (the legacy PUT {status} path bypasses it).
+  const medBase = () => {
+    const t = item.raw._medType;
+    return t === 'dependent' ? `/medical/dependents-requests/${item.id}`
+      : t === 'claim' ? `/medical/claims/${item.id}`
+      : `/medical/staff/${item.id}`;
+  };
+
   async function approveMedical() {
     setBusy(true);
-    const isDep = item.raw._medType === 'dependent';
-    const url = isDep ? `/medical/dependents-requests/${item.id}` : `/medical/staff/${item.id}`;
     try {
-      await api.put(url, { status: 'Approved' });
+      await api.post(`${medBase()}/approve`);
       toast.success('Medical request approved');
       onDone(item.id);
     } catch (e: any) {
@@ -548,10 +614,8 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
 
   async function rejectMedical(reason: string) {
     setBusy(true);
-    const isDep = item.raw._medType === 'dependent';
-    const url = isDep ? `/medical/dependents-requests/${item.id}` : `/medical/staff/${item.id}`;
     try {
-      await api.put(url, { status: 'Rejected', rejection_reason: reason });
+      await api.post(`${medBase()}/reject`, { reason });
       toast.success('Medical request rejected');
       onDone(item.id);
     } catch (e: any) {
@@ -592,6 +656,17 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
     } finally { setBusy(false); }
   }
 
+  async function rejectLeaveAllowance(reason: string) {
+    setBusy(true);
+    try {
+      await api.post(`/leave/leaves/${item.id}/reject-allowance`, { reason });
+      toast.success('Allowance rejected');
+      onDone(item.id);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Rejection failed');
+    } finally { setBusy(false); }
+  }
+
   return (
     <>
       <div className="fixed inset-0 bg-slate-900/30 z-40 backdrop-blur-sm" onClick={onClose} />
@@ -621,6 +696,7 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
               onApprove={approveLeave}
               onReject={rejectLeave}
               onApproveAllowance={approveLeaveAllowance}
+              onRejectAllowance={rejectLeaveAllowance}
               onClose={onClose}
               busy={busy}
             />
@@ -677,20 +753,23 @@ export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) =>
     try {
       const currentUser = getCurrentUser();
       const isAdmin = currentUser?.allRoles?.some(r => ['admin', 'super-admin', 'hr'].includes(r.name)) ?? false;
-      // A payroll stage approver reaches this screen without an admin/hr role — they still need the
-      // payroll queue (the server only lets them action runs where they're the current stage's approver).
-      const canSeePayroll = isAdmin || currentUser?.isStageApprover === true;
+      // A payroll/medical stage approver reaches this screen without an admin/hr role — they still need the
+      // relevant queue (the server only lets them action items where they're the current stage's approver).
+      const isStageApprover = currentUser?.isStageApprover === true;
+      const canSeePayroll = isAdmin || isStageApprover;
+      const canSeeMedical = isAdmin || isStageApprover;
 
       const noop = Promise.resolve({ data: { data: [] } });
-      // Employee/Medical queues stay HR/admin-only; payroll opens up to stage approvers too.
+      // Employee queue stays HR/admin-only; payroll + medical open up to stage approvers too.
       const adminFetches = [
-        isAdmin       ? api.get('/employees')                     : noop,
-        canSeePayroll ? api.get('/payroll/runs')                  : noop,
-        isAdmin       ? api.get('/medical/staff')                 : noop,
-        isAdmin       ? api.get('/medical/dependents-requests')   : noop,
+        isAdmin       ? api.get('/employees')                        : noop,
+        canSeePayroll ? api.get('/payroll/runs')                     : noop,
+        canSeeMedical ? api.get('/medical/staff')                    : noop,
+        canSeeMedical ? api.get('/medical/dependents-requests')      : noop,
+        canSeeMedical ? api.get('/medical/claims')                   : noop,
       ];
 
-      const [empRes, runRes, staffMedRes, depMedRes, leaveRes] = await Promise.allSettled([
+      const [empRes, runRes, staffMedRes, depMedRes, claimRes, leaveRes] = await Promise.allSettled([
         ...adminFetches,
         api.get('/leave/central-approval'),
       ]);
@@ -746,38 +825,50 @@ export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) =>
           });
       }
 
+      // Collect pending medical items across all three record types, then (for a non-admin stage approver)
+      // keep only the ones whose CURRENT stage is theirs — the server enforces the same on action.
+      const medItems: ApprovalItem[] = [];
       if (staffMedRes.status === 'fulfilled') {
-        const records: any[] = staffMedRes.value.data.data ?? [];
-        records
-          .filter((r: any) => r.status === 'Pending Approval')
-          .forEach((r: any) => {
-            pending.push({
-              id:          String(r.id),
-              module:      'Medical',
-              title:       r.employee_name || 'Unknown Employee',
-              subtitle:    `Staff — ${r.illness_type || ''}`,
-              submittedAt: r.admission_date || null,
-              status:      r.status || 'Pending Approval',
-              raw:         { ...r, _medType: 'staff' },
-            });
-          });
+        (staffMedRes.value.data.data ?? []).filter((r: any) => r.status === 'Pending Approval').forEach((r: any) => {
+          medItems.push({ id: String(r.id), module: 'Medical', title: r.employee_name || 'Unknown Employee',
+            subtitle: `Staff — ${r.illness_type || ''}`, submittedAt: r.admission_date || null,
+            status: r.status || 'Pending Approval', raw: { ...r, _medType: 'staff' } });
+        });
+      }
+      if (depMedRes.status === 'fulfilled') {
+        (depMedRes.value.data.data ?? []).filter((r: any) => r.status === 'Pending Approval').forEach((r: any) => {
+          medItems.push({ id: String(r.id), module: 'Medical', title: r.employee_name || 'Unknown Employee',
+            subtitle: `Dependent (${r.dependent_name || ''}) — ${r.illness_type || ''}`, submittedAt: r.date_attended || null,
+            status: r.status || 'Pending Approval', raw: { ...r, _medType: 'dependent' } });
+        });
+      }
+      if (claimRes.status === 'fulfilled') {
+        (claimRes.value.data.data ?? []).filter((r: any) => r.status === 'Pending Approval').forEach((r: any) => {
+          medItems.push({ id: String(r.id), module: 'Medical', title: r.hospital_name || r.employee_name || 'Hospital Claim',
+            subtitle: `Claim — ${r.total_amount != null ? Number(r.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : ''}`,
+            submittedAt: r.posted_date || r.createdAt || null, status: r.status || 'Pending Approval', raw: { ...r, _medType: 'claim' } });
+        });
       }
 
-      if (depMedRes.status === 'fulfilled') {
-        const records: any[] = depMedRes.value.data.data ?? [];
-        records
-          .filter((r: any) => r.status === 'Pending Approval')
-          .forEach((r: any) => {
-            pending.push({
-              id:          String(r.id),
-              module:      'Medical',
-              title:       r.employee_name || 'Unknown Employee',
-              subtitle:    `Dependent (${r.dependent_name || ''}) — ${r.illness_type || ''}`,
-              submittedAt: r.date_attended || null,
-              status:      r.status || 'Pending Approval',
-              raw:         { ...r, _medType: 'dependent' },
-            });
-          });
+      if (isAdmin) {
+        pending.push(...medItems);
+      } else {
+        // Non-admin stage approver: filter to items where the current pending stage matches this user.
+        const myId = currentUser?.id != null ? String(currentUser.id) : '';
+        const myRoles = new Set((currentUser?.allRoles ?? []).map(r => r.name));
+        const kept = await Promise.all(medItems.map(async (it) => {
+          try {
+            const sres = await api.get(`/medical/requests/${it.raw._medType}/${it.id}/stages`);
+            const stages: any[] = sres.data?.data ?? [];
+            const cur = stages.find(x => x.status === 'Pending');
+            if (!cur) return null; // no flow (single-stage) → non-admins can't act; hide
+            const mine = cur.approver_type === 'user'
+              ? String(cur.approver_id) === myId
+              : (myRoles.has(String(cur.approver_label)) || myRoles.has(String(cur.approver_id)));
+            return mine ? it : null;
+          } catch { return null; }
+        }));
+        pending.push(...kept.filter((x): x is ApprovalItem => x !== null));
       }
 
       if (leaveRes.status === 'fulfilled') {

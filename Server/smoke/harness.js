@@ -6,11 +6,11 @@
  * only ever creates/edits records with a `ZZ_` name prefix and deletes everything it created, so it is
  * safe to run against a real database and safe to re-run.
  *
- *   BASE URL   — SMOKE_BASE_URL  (default http://localhost:3040/v1/api/hr)
+ *   BASE URL   — SMOKE_BASE_URL  (default http://localhost:3050/v1/api/hr)
  *   LOGIN      — SMOKE_EMAIL / SMOKE_PASSWORD (default superadmin@usg.com / pass1234)
  */
 
-const BASE = (process.env.SMOKE_BASE_URL || 'http://localhost:3040/v1/api/hr').replace(/\/+$/, '');
+const BASE = (process.env.SMOKE_BASE_URL || 'http://localhost:3050/v1/api/hr').replace(/\/+$/, '');
 const EMAIL = process.env.SMOKE_EMAIL || 'superadmin@usg.com';
 const PASSWORD = process.env.SMOKE_PASSWORD || 'pass1234';
 
@@ -83,6 +83,7 @@ class Suite {
     this._cleanups = []; // { path, label } — deleted in reverse (LIFO) at the end
     this.api = api;
     this.email = EMAIL;            // the smoke user's login email
+    this.base = BASE;             // API base URL (for raw fetches with custom headers)
     this.tag = RUN_TAG;             // e.g. name things `${t.tag}_Foo`
     this.uniq = (base) => `${RUN_TAG}_${base}`;
   }

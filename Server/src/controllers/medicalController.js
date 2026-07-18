@@ -4,8 +4,9 @@ const asyncHandler  = require('../middleware/asyncHandler');
 const respond       = require('../helpers/respondHelper');
 const { tmsg }      = require('../helpers/messageStore');
 const { postToGL } = require('../helpers/glHelper');
+const { getApiConfig } = require('../controllers/apiIntegrationController');
 const { toBigInt, s } = require('../helpers/controllerHelpers');
-const { notifyEmployee, notifyUser, notifyUsersWithPermission } = require('../helpers/notificationHelper');
+const { notifyEmployee, notifyUser, notifyUsersWithPermission, notifyUsersWithRole } = require('../helpers/notificationHelper');
 const { logActivity, fromReq } = require('./auditController');
 const { upsertSetting: upsertSettingShared } = require('../helpers/settingsHelper');
 
@@ -219,16 +220,33 @@ async function postStaffMedicalGL({ id, prefix, employeeName, illnessType, cost,
   return { ...result, _sentPayload: payload };
 }
 
+/**
+ * GL API connection config (url) + posting defaults (branch/currency), sourced from the shared API
+ * integration settings — same pattern payroll uses (getApiConfig + gl_extra). Replaces the never-defined
+ * `glCfg` object that previously threw a ReferenceError whenever a medical approval reached GL posting.
+ */
+async function glConfig() {
+  const cfg = await getApiConfig();
+  let extra = {};
+  try { extra = JSON.parse(cfg.gl_extra || '{}'); } catch { /* ignore */ }
+  return {
+    url:      cfg.gl_url || '',
+    branch:   extra.branch   || '000',
+    currency: extra.currency || 'SLL',
+  };
+}
+
 async function loadGLSettings() {
   const rows = await prisma.settings
     .findMany({ where: { category: GL_CAT }, select: { name: true, value: true } })
     .catch(() => []);
   const map = Object.fromEntries(rows.map(r => [r.name, r.value]));
+  const gl = await glConfig();
   return {
     expenseGl: map[GL_EXPENSE_KEY] || '',
     whtGl:     map[GL_WHT_KEY]     || '',
-    branch:    map[GL_BRANCH_KEY]  || glCfg.branch(),
-    currency:  glCfg.currency(),
+    branch:    map[GL_BRANCH_KEY]  || gl.branch,
+    currency:  gl.currency,
   };
 }
 
@@ -350,6 +368,194 @@ async function assertCanSelfApprove(req, res, record) {
   return true;
 }
 
+// ── Multi-stage medical approval flow ───────────────────────────────────────────
+// Mirrors the payroll approval flow: a global stage config (medical_approval_flow) is snapshotted per
+// record into medicalrequest_stages on submit; approve/reject walk the stages in order. One shared flow
+// serves all three record types (staff | dependent | claim), keyed by (record_type, record_id).
+
+/** Read + normalise the configured medical approval flow (empty array when unset/invalid). */
+async function readMedicalFlow() {
+  const row = await prisma.settings
+    .findFirst({ where: { name: 'medical_approval_flow', category: 'app_controls' }, select: { value: true } })
+    .catch(() => null);
+  if (!row?.value) return [];
+  try {
+    const arr = JSON.parse(row.value);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter(st => st && String(st.name || '').trim() && (st.approverType === 'role' || st.approverType === 'user') && st.approverId != null && String(st.approverId).trim() !== '')
+      .map(st => ({
+        name: String(st.name).trim(),
+        approverType: st.approverType,
+        approverId: String(st.approverId),
+        approverLabel: st.approverLabel != null ? String(st.approverLabel) : null,
+      }));
+  } catch { return []; }
+}
+
+/** Does this actor satisfy the given stage? user → id match; role → role name/id match. */
+function actorMatchesStage(req, stage) {
+  const type = stage.approver_type ?? stage.approverType;
+  const idv = stage.approver_id ?? stage.approverId;
+  const label = stage.approver_label ?? stage.approverLabel;
+  if (type === 'user') return String(req.user?.id ?? '') === String(idv);
+  if (type === 'role') {
+    const roles = (req.user?.roles || []).map(String);
+    return roles.includes(String(label)) || roles.includes(String(idv));
+  }
+  return false;
+}
+
+/** Notify a stage's approver(s): a user stage pings that user; a role stage pings all medical approvers. */
+function notifyMedicalStageApprovers(stage, req, employeeId) {
+  const type = stage.approver_type ?? stage.approverType;
+  const idv = stage.approver_id ?? stage.approverId;
+  const stageName = stage.stage_name ?? stage.name;
+  const payload = { message: `A medical request awaits your approval (${stageName})`, action: 'AdminMedical', type: 'medical', fromUser: req.user?.id, employee: employeeId };
+  if (type === 'user' && idv) notifyUser(idv, payload);
+  else notifyUsersWithRole(idv, payload, req.user?.id, stage.approver_label ?? stage.approverLabel);
+}
+
+/** Snapshot the configured flow onto a record (all Pending). Returns the stage list (empty ⇒ single-stage,
+ *  caller keeps legacy behaviour). Call from submit* when approval_medical is on. */
+async function snapshotMedicalStages(recordType, recordId) {
+  const flow = await readMedicalFlow();
+  await prisma.$executeRaw`DELETE FROM medicalrequest_stages WHERE record_type=${recordType} AND record_id=${BigInt(recordId)}`;
+  for (let i = 0; i < flow.length; i++) {
+    const st = flow[i];
+    await prisma.$executeRaw`
+      INSERT INTO medicalrequest_stages (record_type, record_id, stage_order, stage_name, approver_type, approver_id, approver_label, status)
+      VALUES (${recordType}, ${BigInt(recordId)}, ${i}, ${st.name}, ${st.approverType}, ${st.approverId}, ${st.approverLabel}, 'Pending')`;
+  }
+  return flow;
+}
+
+/** Remove a record's stage snapshot (on withdraw / edit-back-to-Draft / delete). */
+async function deleteMedicalStages(recordType, recordId) {
+  await prisma.$executeRaw`DELETE FROM medicalrequest_stages WHERE record_type=${recordType} AND record_id=${BigInt(recordId)}`;
+}
+
+/** Load a record's stages ordered by stage_order. */
+async function loadMedicalStages(recordType, recordId) {
+  return prisma.$queryRaw`
+    SELECT id, stage_order, stage_name, approver_type, approver_id, approver_label, status
+    FROM medicalrequest_stages WHERE record_type=${recordType} AND record_id=${BigInt(recordId)} ORDER BY stage_order ASC`;
+}
+
+/** Fetch a full record row by id from one of the medical tables. */
+async function fetchMedicalRecord(table, recordId) {
+  const [row] = await prisma.$queryRaw`SELECT * FROM ${Prisma.raw(table)} WHERE id=${BigInt(recordId)}`;
+  return row;
+}
+
+/**
+ * Require the blanket `approve_medical` permission. The approve/reject routes are no longer
+ * permission-guarded (so stage approvers can act on their stage via the stage engine); when a record has
+ * NO configured flow, that engine defers, so the single-stage path must enforce the permission itself —
+ * otherwise any authenticated user could approve. Returns false and responds 403 when the actor lacks it.
+ */
+function assertCanApproveMedical(req, res) {
+  if ((req.user?.permissions || []).includes('approve_medical')) return true;
+  respond.forbidden(res, 'You do not have permission to approve medical requests');
+  return false;
+}
+
+/**
+ * Run the multi-stage APPROVE gate for a record. Returns:
+ *   { handled:false }              → no flow; caller runs the legacy single-stage approve.
+ *   { handled:true, done:false }   → an intermediate stage cleared; this function has already responded
+ *                                    (or a 403 was sent) — caller must STOP (no GL, no status change).
+ *   { handled:true, done:true }    → last stage cleared; caller proceeds to final approval + GL.
+ */
+async function medicalStageApprove(req, res, recordType, table, recordId, employeeId) {
+  const stages = await loadMedicalStages(recordType, recordId);
+  const pending = stages.filter(st => st.status === 'Pending');
+  if (!pending.length) return { handled: false };
+
+  const current = pending[0];
+  // In a configured flow, the current stage's approver must match — a blanket approve_medical permission
+  // grants access to the queue but does NOT let a non-assigned user skip a stage (mirrors payroll).
+  if (!actorMatchesStage(req, current)) {
+    const who = current.approver_label || (current.approver_type === 'user' ? 'the assigned approver' : 'the assigned role');
+    respond.forbidden(res, `Only ${who} can approve the "${current.stage_name}" stage`);
+    return { handled: true, done: false };
+  }
+  const actedBy = req.user?.id ? BigInt(req.user.id) : null;
+  await prisma.$executeRaw`UPDATE medicalrequest_stages SET status='Approved', acted_by=${actedBy}, acted_at=NOW(), comment=${req.body?.comment?.trim() || null} WHERE id=${BigInt(current.id)}`;
+
+  if (pending.length > 1) {
+    notifyMedicalStageApprovers(pending[1], req, employeeId);
+    const updated = await fetchMedicalRecord(table, recordId);
+    respond.ok(res, `"${current.stage_name}" approved — awaiting the next stage`, s(updated));
+    return { handled: true, done: false };
+  }
+  return { handled: true, done: true }; // last stage cleared → caller does final approval + GL
+}
+
+/**
+ * Run the multi-stage REJECT gate. Returns { handled:false } when there's no flow (caller does legacy
+ * reject), or { handled:true } after marking the current stage + the record Rejected (caller stops).
+ * `rejectRecord(reason, approvedBy)` performs the table-specific status='Rejected' UPDATE.
+ */
+async function medicalStageReject(req, res, recordType, table, recordId, employeeId, label, rejectRecord) {
+  const stages = await loadMedicalStages(recordType, recordId);
+  const pending = stages.filter(st => st.status === 'Pending');
+  if (!pending.length) return { handled: false };
+
+  const current = pending[0];
+  // Only the current stage's assigned approver may reject it (blanket permission doesn't skip stages).
+  if (!actorMatchesStage(req, current)) {
+    const who = current.approver_label || (current.approver_type === 'user' ? 'the assigned approver' : 'the assigned role');
+    respond.forbidden(res, `Only ${who} can act on the "${current.stage_name}" stage`);
+    return { handled: true };
+  }
+  const reason = req.body?.reason?.trim() || null;
+  const actedBy = req.user?.id ? BigInt(req.user.id) : null;
+  await prisma.$executeRaw`UPDATE medicalrequest_stages SET status='Rejected', acted_by=${actedBy}, acted_at=NOW(), comment=${reason} WHERE id=${BigInt(current.id)}`;
+  await rejectRecord(reason, req.user?.id != null ? String(req.user.id) : null);
+  if (employeeId) notifyMedicalStatus(req, employeeId, 'Rejected', reason, label);
+  const updated = await fetchMedicalRecord(table, recordId);
+  respond.ok(res, 'Rejected', s(updated));
+  return { handled: true };
+}
+
+// GET /medical/approval-flow — the configured medical approval stage chain.
+exports.getMedicalApprovalFlow = asyncHandler(async (_req, res) => {
+  respond.ok(res, 'Medical approval flow retrieved', await readMedicalFlow());
+});
+
+// PUT /medical/approval-flow — validate + save the stage chain (guarded by approve_medical).
+exports.saveMedicalApprovalFlow = asyncHandler(async (req, res) => {
+  const stages = Array.isArray(req.body?.stages) ? req.body.stages : [];
+  const clean = [];
+  for (const st of stages) {
+    const name = String(st?.name || '').trim();
+    if (!name) return respond.badReq(res, 'Every stage needs a name');
+    if (st.approverType !== 'role' && st.approverType !== 'user') return respond.badReq(res, `Stage "${name}" has an invalid approver type`);
+    if (st.approverId == null || String(st.approverId).trim() === '') return respond.badReq(res, `Stage "${name}" needs an approver`);
+    clean.push({
+      name,
+      approverType: st.approverType,
+      approverId: String(st.approverId),
+      approverLabel: st.approverLabel != null ? String(st.approverLabel) : null,
+    });
+  }
+  await upsertSettingShared(null, 'medical_approval_flow', 'app_controls', JSON.stringify(clean));
+  respond.ok(res, 'Medical approval flow saved', clean);
+});
+
+// GET /medical/:type/:id/stages — a record's snapshotted stage progress (type ∈ staff|dependent|claim).
+exports.getMedicalStages = asyncHandler(async (req, res) => {
+  const { type, id } = req.params;
+  if (!['staff', 'dependent', 'claim'].includes(type)) return respond.badReq(res, 'Invalid record type');
+  const recId = toBigInt(id);
+  if (!recId) return respond.badReq(res, 'Invalid ID');
+  const stages = await prisma.$queryRaw`
+    SELECT id, record_type, record_id, stage_order, stage_name, approver_type, approver_id, approver_label, status, acted_by, acted_at
+    FROM medicalrequest_stages WHERE record_type=${type} AND record_id=${recId} ORDER BY stage_order ASC`;
+  respond.ok(res, 'Stages retrieved', s(stages));
+});
+
 exports.updateStaffMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
@@ -401,6 +607,8 @@ exports.updateStaffMedical = asyncHandler(async (req, res) => {
     });
     // Editing a rejected record restores it to Draft so it can be resubmitted (literal status → auto-cast)
     await prisma.$executeRaw`UPDATE staffmedical SET status='Draft', rejection_reason=NULL, approved_by=NULL, updatedAt=NOW() WHERE id=${id} AND status='Rejected'`;
+    // Clear any stale stage snapshot — a fresh submit re-snapshots the current flow.
+    await deleteMedicalStages('staff', id);
   }
 
   const updated = await prisma.$queryRaw`SELECT * FROM staffmedical WHERE id = ${id}`;
@@ -571,6 +779,7 @@ exports.updateDependentMedical = asyncHandler(async (req, res) => {
     });
     // Editing a rejected record restores it to Draft so it can be resubmitted (literal status → auto-cast)
     await prisma.$executeRaw`UPDATE dependentmedical SET status='Draft', rejection_reason=NULL, approved_by=NULL WHERE id=${id} AND status='Rejected'`;
+    await deleteMedicalStages('dependent', id);
   }
 
   if (dependent_id) {
@@ -1034,10 +1243,11 @@ exports.submitHospitalClaim = asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
   await prisma.hospitalclaims.update({ where: { id }, data: { status: 'Pending Approval' } });
-  notifyUsersWithPermission('approve_medical', {
-    message: 'A hospital medical claim awaits your approval',
-    action: 'AdminMedical', type: 'medical', fromUser: req.user?.id,
-  }, req.user?.id);
+  const flow = await readControlSetting('approval_medical', false)
+    ? await snapshotMedicalStages('claim', id)
+    : [];
+  if (flow.length) notifyMedicalStageApprovers(flow[0], req, null);
+  else notifyMedicalStatus(req, null, 'Pending Approval', null, 'hospital medical claim');
   respond.ok(res, 'Claim submitted for approval');
 });
 
@@ -1059,6 +1269,11 @@ exports.approveHospitalClaim = asyncHandler(async (req, res) => {
   // Enforce the "Allow Self-Approval" control — the originator can't approve their own claim when it's off.
   if (claim && !(await assertCanSelfApprove(req, res, claim))) return;
 
+  // Multi-stage gate: only the last stage's approval proceeds to the status change + GL below.
+  const stage = await medicalStageApprove(req, res, 'claim', 'hospitalclaims', id, null);
+  if (stage.handled && !stage.done) return;
+  if (!stage.handled && !assertCanApproveMedical(req, res)) return; // no flow → enforce blanket permission
+
   // Approve the claim
   await prisma.hospitalclaims.update({
     where: { id },
@@ -1069,16 +1284,9 @@ exports.approveHospitalClaim = asyncHandler(async (req, res) => {
   }
 
   // GL posting (non-blocking — approval already committed above). Skipped in record-only mode.
-  if (claim && (await medicalPaymentsEnabled()) && glCfg.url()) {
+  if (claim && (await medicalPaymentsEnabled()) && (await glConfig()).url) {
     try {
-      const glRows = await prisma.settings
-        .findMany({ where: { category: GL_CAT }, select: { name: true, value: true } })
-        .catch(() => []);
-      const glMap     = Object.fromEntries(glRows.map(r => [r.name, r.value]));
-      const expenseGl = glMap[GL_EXPENSE_KEY] || '';
-      const whtGl     = glMap[GL_WHT_KEY]     || '';
-      const branch    = glMap[GL_BRANCH_KEY]  || glCfg.branch();
-      const currency  = glCfg.currency();
+      const { expenseGl, whtGl, branch, currency } = await loadGLSettings();
 
       let items = [];
       try { items = JSON.parse(claim.items ?? '[]'); } catch {}
@@ -1164,6 +1372,11 @@ exports.rejectHospitalClaim = asyncHandler(async (req, res) => {
   const id = toInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
   const { reason = '' } = req.body;
+  // Multi-stage gate: the current stage's approver rejects → claim Rejected (handled inside).
+  const stage = await medicalStageReject(req, res, 'claim', 'hospitalclaims', id, null, 'hospital medical claim',
+    (rsn) => prisma.hospitalclaims.update({ where: { id }, data: { status: 'Rejected', approved_by: BigInt(req.user?.id ?? 0), response: rsn ?? '' } }));
+  if (stage.handled) return;
+  if (!assertCanApproveMedical(req, res)) return; // no flow → enforce blanket permission
   await prisma.hospitalclaims.update({
     where: { id },
     data: { status: 'Rejected', approved_by: BigInt(req.user?.id ?? 0), response: reason },
@@ -1178,11 +1391,17 @@ exports.submitStaffMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
   if (!(await assertCanMutateMedical(req, res, 'staffmedical', id, 'create_medical'))) return;
-  const [rec] = await prisma.$queryRaw`SELECT id, status FROM staffmedical WHERE id = ${id}`;
+  const [rec] = await prisma.$queryRaw`SELECT id, status, employee FROM staffmedical WHERE id = ${id}`;
   if (!rec) return respond.notFound(res, 'Record not found');
   if (rec.status !== 'Draft') return respond.badReq(res, 'Only Draft records can be submitted');
   const userId = req.user?.id ? Number(req.user.id) : null;
   await prisma.$executeRaw`UPDATE staffmedical SET status='Pending Approval', submitted_by=${userId != null ? BigInt(userId) : null}, updatedAt=NOW() WHERE id=${id}`;
+  // Snapshot the approval flow onto this record (all Pending) when medical approval is enabled.
+  const flow = await readControlSetting('approval_medical', false)
+    ? await snapshotMedicalStages('staff', id)
+    : [];
+  if (flow.length) notifyMedicalStageApprovers(flow[0], req, rec.employee);
+  else notifyMedicalStatus(req, rec.employee, 'Pending Approval', null, 'staff medical claim');
   const [updated] = await prisma.$queryRaw`SELECT * FROM staffmedical WHERE id=${id}`;
   respond.ok(res, 'Submitted for approval', s(updated));
 });
@@ -1196,10 +1415,15 @@ exports.approveStaffMedical = asyncHandler(async (req, res) => {
   if (!rec) return respond.notFound(res, 'Record not found');
   if (rec.status !== 'Pending Approval') return respond.badReq(res, 'Record is not pending approval');
   if (!(await assertCanSelfApprove(req, res, rec))) return;
+  // Multi-stage gate: only the last stage's approval proceeds to the status change + GL below.
+  const stage = await medicalStageApprove(req, res, 'staff', 'staffmedical', id, rec.employee);
+  if (stage.handled && !stage.done) return;
+  // No flow (single-stage): the stage engine deferred, so enforce the blanket permission here.
+  if (!stage.handled && !assertCanApproveMedical(req, res)) return;
   const userId = req.user?.id ? Number(req.user.id) : null;
   await prisma.$executeRaw`UPDATE staffmedical SET status='Approved', approved_by=${userId != null ? String(userId) : null}, updatedAt=NOW() WHERE id=${id}`;
   let glPayload = null;
-  if ((await medicalPaymentsEnabled()) && glCfg.url()) {
+  if ((await medicalPaymentsEnabled()) && (await glConfig()).url) {
     try {
       const gl  = await loadGLSettings();
       const [emp] = await prisma.$queryRaw`
@@ -1232,9 +1456,14 @@ exports.rejectStaffMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
   const { reason } = req.body;
-  const [rec] = await prisma.$queryRaw`SELECT id, status FROM staffmedical WHERE id = ${id}`;
+  const [rec] = await prisma.$queryRaw`SELECT id, status, employee FROM staffmedical WHERE id = ${id}`;
   if (!rec) return respond.notFound(res, 'Record not found');
   if (rec.status !== 'Pending Approval') return respond.badReq(res, 'Record is not pending approval');
+  // Multi-stage gate: the current stage's approver rejects → record Rejected (handled inside).
+  const stage = await medicalStageReject(req, res, 'staff', 'staffmedical', id, rec.employee, 'staff medical claim',
+    (rsn, by) => prisma.$executeRaw`UPDATE staffmedical SET status='Rejected', approved_by=${by}, rejection_reason=${rsn}, updatedAt=NOW() WHERE id=${id}`);
+  if (stage.handled) return;
+  if (!assertCanApproveMedical(req, res)) return; // no flow → enforce blanket permission
   const userId = req.user?.id ? Number(req.user.id) : null;
   await prisma.$executeRaw`UPDATE staffmedical SET status='Rejected', approved_by=${userId != null ? String(userId) : null}, rejection_reason=${reason?.trim() || null}, updatedAt=NOW() WHERE id=${id}`;
   const [updated] = await prisma.$queryRaw`SELECT * FROM staffmedical WHERE id=${id}`;
@@ -1252,7 +1481,7 @@ exports.finalizeStaffMedical = asyncHandler(async (req, res) => {
   const userId = req.user?.id ? Number(req.user.id) : null;
   await prisma.$executeRaw`UPDATE staffmedical SET status='Approved', approved_by=${userId != null ? String(userId) : null}, updatedAt=NOW() WHERE id=${id}`;
   let glPayload = null;
-  if ((await medicalPaymentsEnabled()) && glCfg.url()) {
+  if ((await medicalPaymentsEnabled()) && (await glConfig()).url) {
     try {
       const gl  = await loadGLSettings();
       const [emp] = await prisma.$queryRaw`
@@ -1287,11 +1516,16 @@ exports.submitDependentMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
   if (!(await assertCanMutateMedical(req, res, 'dependentmedical', id, 'create_medical'))) return;
-  const [rec] = await prisma.$queryRaw`SELECT id, status FROM dependentmedical WHERE id = ${id}`;
+  const [rec] = await prisma.$queryRaw`SELECT id, status, employee FROM dependentmedical WHERE id = ${id}`;
   if (!rec) return respond.notFound(res, 'Record not found');
   if (rec.status !== 'Draft') return respond.badReq(res, 'Only Draft records can be submitted');
   const userId = req.user?.id ? Number(req.user.id) : null;
   await prisma.$executeRaw`UPDATE dependentmedical SET status='Pending Approval', submitted_by=${userId != null ? BigInt(userId) : null} WHERE id=${id}`;
+  const flow = await readControlSetting('approval_medical', false)
+    ? await snapshotMedicalStages('dependent', id)
+    : [];
+  if (flow.length) notifyMedicalStageApprovers(flow[0], req, rec.employee);
+  else notifyMedicalStatus(req, rec.employee, 'Pending Approval', null, 'dependent medical claim');
   const [updated] = await prisma.$queryRaw`SELECT * FROM dependentmedical WHERE id=${id}`;
   respond.ok(res, 'Submitted for approval', s(updated));
 });
@@ -1305,10 +1539,13 @@ exports.approveDependentMedical = asyncHandler(async (req, res) => {
   if (!rec) return respond.notFound(res, 'Record not found');
   if (rec.status !== 'Pending Approval') return respond.badReq(res, 'Record is not pending approval');
   if (!(await assertCanSelfApprove(req, res, rec))) return;
+  const stage = await medicalStageApprove(req, res, 'dependent', 'dependentmedical', id, rec.employee);
+  if (stage.handled && !stage.done) return;
+  if (!stage.handled && !assertCanApproveMedical(req, res)) return; // no flow → enforce blanket permission
   const userId = req.user?.id ? Number(req.user.id) : null;
   await prisma.$executeRaw`UPDATE dependentmedical SET status='Approved', approved_by=${userId != null ? String(userId) : null} WHERE id=${id}`;
   let glPayload = null;
-  if ((await medicalPaymentsEnabled()) && glCfg.url()) {
+  if ((await medicalPaymentsEnabled()) && (await glConfig()).url) {
     try {
       const gl  = await loadGLSettings();
       const [emp] = await prisma.$queryRaw`
@@ -1342,9 +1579,13 @@ exports.rejectDependentMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
   const { reason } = req.body;
-  const [rec] = await prisma.$queryRaw`SELECT id, status FROM dependentmedical WHERE id = ${id}`;
+  const [rec] = await prisma.$queryRaw`SELECT id, status, employee FROM dependentmedical WHERE id = ${id}`;
   if (!rec) return respond.notFound(res, 'Record not found');
   if (rec.status !== 'Pending Approval') return respond.badReq(res, 'Record is not pending approval');
+  const stage = await medicalStageReject(req, res, 'dependent', 'dependentmedical', id, rec.employee, 'dependent medical claim',
+    (rsn, by) => prisma.$executeRaw`UPDATE dependentmedical SET status='Rejected', approved_by=${by}, rejection_reason=${rsn} WHERE id=${id}`);
+  if (stage.handled) return;
+  if (!assertCanApproveMedical(req, res)) return; // no flow → enforce blanket permission
   const userId = req.user?.id ? Number(req.user.id) : null;
   await prisma.$executeRaw`UPDATE dependentmedical SET status='Rejected', approved_by=${userId != null ? String(userId) : null}, rejection_reason=${reason?.trim() || null} WHERE id=${id}`;
   const [updated] = await prisma.$queryRaw`SELECT * FROM dependentmedical WHERE id=${id}`;
@@ -1361,7 +1602,7 @@ exports.finalizeDependentMedical = asyncHandler(async (req, res) => {
   const userId = req.user?.id ? Number(req.user.id) : null;
   await prisma.$executeRaw`UPDATE dependentmedical SET status='Approved', approved_by=${userId != null ? String(userId) : null} WHERE id=${id}`;
   let glPayload = null;
-  if ((await medicalPaymentsEnabled()) && glCfg.url()) {
+  if ((await medicalPaymentsEnabled()) && (await glConfig()).url) {
     try {
       const gl  = await loadGLSettings();
       const [emp] = await prisma.$queryRaw`
@@ -1429,7 +1670,7 @@ exports.retryStaffMedicalGL = asyncHandler(async (req, res) => {
   if (rec.status !== 'GL Failed') return respond.badReq(res, 'Only GL Failed records can retry posting');
   if (rec.document_ref) return respond.badReq(res, 'GL already posted for this record');
   if (!(await medicalPaymentsEnabled())) return respond.badReq(res, 'Medical GL posting is disabled in settings');
-  if (!glCfg.url()) return respond.badReq(res, 'POSTING_API_URL not configured');
+  if (!(await glConfig()).url) return respond.badReq(res, "POSTING_API_URL not configured");
   try {
     const result = await retryMedicalGL('staffmedical', id, req);
     if (result) {
@@ -1452,7 +1693,7 @@ exports.retryDependentMedicalGL = asyncHandler(async (req, res) => {
   if (rec.status !== 'GL Failed') return respond.badReq(res, 'Only GL Failed records can retry posting');
   if (rec.document_ref) return respond.badReq(res, 'GL already posted for this record');
   if (!(await medicalPaymentsEnabled())) return respond.badReq(res, 'Medical GL posting is disabled in settings');
-  if (!glCfg.url()) return respond.badReq(res, 'POSTING_API_URL not configured');
+  if (!(await glConfig()).url) return respond.badReq(res, "POSTING_API_URL not configured");
   try {
     const result = await retryMedicalGL('dependentmedical', id, req);
     if (result) {
@@ -1480,15 +1721,10 @@ exports.retryHospitalClaimGL = asyncHandler(async (req, res) => {
   if (claim.status !== 'GL Failed') return respond.badReq(res, 'Only GL Failed claims can retry posting');
   if (claim.document_ref) return respond.badReq(res, 'GL already posted for this claim');
   if (!(await medicalPaymentsEnabled())) return respond.badReq(res, 'Medical GL posting is disabled in settings');
-  if (!glCfg.url()) return respond.badReq(res, 'POSTING_API_URL not configured');
+  if (!(await glConfig()).url) return respond.badReq(res, "POSTING_API_URL not configured");
 
   try {
-    const glRows = await prisma.settings.findMany({ where: { category: GL_CAT }, select: { name: true, value: true } }).catch(() => []);
-    const glMap  = Object.fromEntries(glRows.map(r => [r.name, r.value]));
-    const expenseGl = glMap[GL_EXPENSE_KEY] || '';
-    const whtGl     = glMap[GL_WHT_KEY]     || '';
-    const branch    = glMap[GL_BRANCH_KEY]  || glCfg.branch();
-    const currency  = glCfg.currency();
+    const { expenseGl, whtGl, branch, currency } = await loadGLSettings();
     let items = [];
     try { items = JSON.parse(claim.items ?? '[]'); } catch {}
 

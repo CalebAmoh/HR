@@ -5,16 +5,16 @@ const { tmsg }          = require('../helpers/messageStore');
 const { sendLeaveEmail } = require('../helpers/emailHelper');
 const { logActivity, fromReq } = require('./auditController');
 const { toBigInt, s, enumSql } = require('../helpers/controllerHelpers');
-const { notifyEmployee } = require('../helpers/notificationHelper');
+const { notifyEmployee, notifyUser, notifyUsersWithPermission, notifyUsersWithRole } = require('../helpers/notificationHelper');
 const { Prisma } = require('@prisma/client'); // Prisma.sql / Prisma.join for portable dynamic SQL
 const { upsertSetting: upsertSettingShared } = require('../helpers/settingsHelper');
 
 // In-app bell notification for a leave action (independent of the email toggle).
 // 'submitted' → the employee's supervisor; approved/rejected/cancelled → the employee.
-async function notifyLeaveInApp(leaveId, kind, reason) {
+async function notifyLeaveInApp(leaveId, kind, reason, fromUser = null) {
   try {
     const rows = await prisma.$queryRaw`
-      SELECT el.employee, e.supervisorId, lt.name AS leave_type_name,
+      SELECT el.employee, e.supervisorId AS supervisor_id, lt.name AS leave_type_name,
              TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS employee_name
         FROM employeeleaves el
         LEFT JOIN employee e   ON e.id  = el.employee
@@ -23,17 +23,22 @@ async function notifyLeaveInApp(leaveId, kind, reason) {
     if (!rows.length) return;
     const r  = rows[0];
     const lt = r.leave_type_name ?? 'Leave';
-    if (kind === 'submitted') {
-      if (r.supervisorId) notifyEmployee(r.supervisorId, {
+    if (kind === 'supervisor_pending') {
+      if (r.supervisor_id) notifyEmployee(r.supervisor_id, {
         message: `${r.employee_name || 'An employee'} submitted a ${lt} request for your approval`,
-        action: 'LeaveManagement', type: 'leave', fromEmployee: r.employee,
+        action: 'LeaveManagement', type: 'leave', fromUser, fromEmployee: r.employee,
       });
+    } else if (kind === 'hr_pending') {
+      notifyUsersWithPermission('manage_leave_approvals', {
+        message: `${r.employee_name || 'An employee'}: ${lt} request awaits HR approval`,
+        action: 'LeaveSetup', type: 'leave', fromUser, fromEmployee: r.employee, employee: r.employee,
+      }, fromUser);
     } else if (r.employee) {
       const msg = kind === 'approved'  ? `Your ${lt} request was approved`
                 : kind === 'rejected'  ? `Your ${lt} request was rejected${reason ? ': ' + reason : ''}`
                 : kind === 'cancelled' ? `Your ${lt} request was cancelled`
                 : `Your ${lt} request was updated`;
-      notifyEmployee(r.employee, { message: msg, action: 'LeaveManagement', type: 'leave' });
+      notifyEmployee(r.employee, { message: msg, action: 'LeaveManagement', type: 'leave', fromUser });
     }
   } catch { /* never block the request */ }
 }
@@ -327,13 +332,16 @@ async function processLeaveAllowance(leaveId) {
     const custAccount = (leave.emp_acc_no || leave.emp_bank_acc || '').trim();
     if (!custAccount) return;
 
-    // Threshold check — hold for financial approver if amount exceeds limit
-    const ts           = await getThresholdSettings();
-    const threshEnabled = ts.threshold_enabled === 'Yes';
-    const threshAmount  = parseFloat(ts.threshold_amount) || 0;
-
-    if (threshEnabled && threshAmount > 0 && amount > threshAmount) {
+    // Amount-range financial approval flow — route through the stages whose range covers this amount.
+    // Matched stages ⇒ hold as Pending Financial Approval and walk them in Central Approval.
+    // No matched stage (or no flow configured) ⇒ fall through to GL scheduling (small/unconfigured amounts).
+    const flow    = await readLeaveFlow();
+    const matched = matchedLeaveStages(flow, amount);
+    if (matched.length) {
+      await snapshotLeaveStages(leaveId, matched);
       await prisma.$executeRaw`UPDATE employeeleaves SET allowance_status='Pending Financial Approval' WHERE id=${toBigInt(leaveId)}`;
+      const empRow = await prisma.$queryRaw`SELECT employee FROM employeeleaves WHERE id=${toBigInt(leaveId)}`.catch(() => []);
+      notifyLeaveStageApprovers(matched[0], { user: {} }, empRow[0]?.employee);
       return;
     }
 
@@ -482,32 +490,122 @@ exports.updateApprovalFlowSettings = asyncHandler(async (req, res) => {
   respond.ok(res, 'Approval flow settings saved');
 });
 
-// ── Threshold approval settings (category='leave_threshold_approval') ─────────
+// ── Multi-stage, amount-range financial approval flow ────────────────────────
+// After a leave is fully approved, its allowance is routed through a configurable stage chain: each stage
+// has an amount RANGE, and only the stages whose [minAmount, maxAmount] covers the leave's payout apply.
+// A snapshot of the matched stages is written to employeeleave_stages and walked in order (mirrors the
+// payroll/medical stage engine). An amount below every range skips financial approval → straight to GL.
 
-const THRESHOLD_KEYS     = ['threshold_enabled', 'threshold_amount', 'threshold_approvers'];
-const THRESHOLD_DEFAULTS = { threshold_enabled: 'No', threshold_amount: '0', threshold_approvers: '[]' };
-
-async function getThresholdSettings() {
-  const rows = await prisma.settings
-    .findMany({ where: { category: 'leave_threshold_approval' }, select: { name: true, value: true } })
-    .catch(() => []);
-  const map = { ...THRESHOLD_DEFAULTS };
-  for (const r of rows) map[r.name] = r.value ?? map[r.name];
-  return map;
+/** Read + normalise the configured leave approval flow (empty array when unset/invalid). */
+async function readLeaveFlow() {
+  const row = await prisma.settings
+    .findFirst({ where: { name: 'leave_approval_flow', category: 'app_controls' }, select: { value: true } })
+    .catch(() => null);
+  if (!row?.value) return [];
+  try {
+    const arr = JSON.parse(row.value);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter(st => st && String(st.name || '').trim() && (st.approverType === 'role' || st.approverType === 'user') && st.approverId != null && String(st.approverId).trim() !== '')
+      .map(st => ({
+        name: String(st.name).trim(),
+        minAmount: Number(st.minAmount) >= 0 ? Number(st.minAmount) : 0,
+        maxAmount: st.maxAmount == null || st.maxAmount === '' ? null : Number(st.maxAmount),
+        approverType: st.approverType,
+        approverId: String(st.approverId),
+        approverLabel: st.approverLabel != null ? String(st.approverLabel) : null,
+      }));
+  } catch { return []; }
 }
 
-// GET /leave/threshold-settings — read financial approval threshold config (enabled, amount limit, approver list).
-exports.getThresholdSettings = asyncHandler(async (req, res) => {
-  respond.ok(res, 'Threshold settings', await getThresholdSettings());
+/** Stages whose amount range covers `amount`, in flow order (the routing step). */
+function matchedLeaveStages(flow, amount) {
+  const amt = parseFloat(amount) || 0;
+  return flow.filter(st => amt >= st.minAmount && (st.maxAmount == null || amt <= st.maxAmount));
+}
+
+/** Does this actor satisfy the given stage? user → id match; role → role name/id match. */
+function actorMatchesStage(req, stage) {
+  const type = stage.approver_type ?? stage.approverType;
+  const idv = stage.approver_id ?? stage.approverId;
+  const label = stage.approver_label ?? stage.approverLabel;
+  if (type === 'user') return String(req.user?.id ?? '') === String(idv);
+  if (type === 'role') {
+    const roles = (req.user?.roles || []).map(String);
+    return roles.includes(String(label)) || roles.includes(String(idv));
+  }
+  return false;
+}
+
+/** Notify a stage's approver(s): a user stage pings that user; a role stage pings all leave-allowance approvers. */
+function notifyLeaveStageApprovers(stage, req, employeeId) {
+  const type = stage.approver_type ?? stage.approverType;
+  const idv = stage.approver_id ?? stage.approverId;
+  const stageName = stage.stage_name ?? stage.name;
+  const payload = { message: `A leave allowance awaits your approval (${stageName})`, action: 'CentralApproval', type: 'leave', fromUser: req.user?.id, employee: employeeId };
+  if (type === 'user' && idv) notifyUser(idv, payload);
+  else notifyUsersWithRole(idv, payload, req.user?.id, stage.approver_label ?? stage.approverLabel);
+}
+
+/** Snapshot the matched stages onto a leave (all Pending). */
+async function snapshotLeaveStages(leaveId, matched) {
+  await prisma.$executeRaw`DELETE FROM employeeleave_stages WHERE leave_id = ${toBigInt(leaveId)}`;
+  for (let i = 0; i < matched.length; i++) {
+    const st = matched[i];
+    await prisma.$executeRaw`
+      INSERT INTO employeeleave_stages (leave_id, stage_order, stage_name, approver_type, approver_id, approver_label, status)
+      VALUES (${toBigInt(leaveId)}, ${i}, ${st.name}, ${st.approverType}, ${st.approverId}, ${st.approverLabel}, 'Pending')`;
+  }
+}
+
+/** Load a leave's stages ordered by stage_order. */
+async function loadLeaveStages(leaveId) {
+  return prisma.$queryRaw`
+    SELECT id, stage_order, stage_name, approver_type, approver_id, approver_label, status, acted_by, acted_at
+    FROM employeeleave_stages WHERE leave_id = ${toBigInt(leaveId)} ORDER BY stage_order ASC`;
+}
+
+/** Whether the actor holds the blanket leave-allowance approval permission (or is admin). */
+function hasBlanketFinancial(req) {
+  const perms = req.user?.permissions || [];
+  const roles = (req.user?.roles || []).map(String);
+  return perms.includes('approve_leave_allowance') || roles.includes('admin') || roles.includes('super-admin');
+}
+
+// GET /leave/approval-flow — the configured amount-range approval stage chain.
+exports.getLeaveApprovalFlow = asyncHandler(async (_req, res) => {
+  respond.ok(res, 'Leave approval flow retrieved', await readLeaveFlow());
 });
 
-// PUT /leave/threshold-settings — save the financial approval threshold (above which allowance requires a financial approver).
-exports.updateThresholdSettings = asyncHandler(async (req, res) => {
-  for (const key of THRESHOLD_KEYS) {
-    if (req.body[key] === undefined) continue;
-    await upsertSettingShared(null, key, 'leave_threshold_approval', String(req.body[key]));
+// PUT /leave/approval-flow — validate + save the stage chain (name, approver, amount range per stage).
+exports.saveLeaveApprovalFlow = asyncHandler(async (req, res) => {
+  const stages = Array.isArray(req.body?.stages) ? req.body.stages : [];
+  const clean = [];
+  for (const st of stages) {
+    const name = String(st?.name || '').trim();
+    if (!name) return respond.badReq(res, 'Every stage needs a name');
+    if (st.approverType !== 'role' && st.approverType !== 'user') return respond.badReq(res, `Stage "${name}" has an invalid approver type`);
+    if (st.approverId == null || String(st.approverId).trim() === '') return respond.badReq(res, `Stage "${name}" needs an approver`);
+    const minAmount = Number(st.minAmount);
+    if (!Number.isFinite(minAmount) || minAmount < 0) return respond.badReq(res, `Stage "${name}" needs a valid minimum amount (≥ 0)`);
+    const maxAmount = st.maxAmount == null || st.maxAmount === '' ? null : Number(st.maxAmount);
+    if (maxAmount != null && (!Number.isFinite(maxAmount) || maxAmount <= minAmount)) return respond.badReq(res, `Stage "${name}" maximum must be greater than the minimum`);
+    clean.push({
+      name, minAmount, maxAmount,
+      approverType: st.approverType,
+      approverId: String(st.approverId),
+      approverLabel: st.approverLabel != null ? String(st.approverLabel) : null,
+    });
   }
-  respond.ok(res, 'Threshold settings saved');
+  await upsertSettingShared(null, 'leave_approval_flow', 'app_controls', JSON.stringify(clean));
+  respond.ok(res, 'Leave approval flow saved', clean);
+});
+
+// GET /leave/leaves/:id/stages — a leave's snapshotted financial-approval stage progress.
+exports.getLeaveStages = asyncHandler(async (req, res) => {
+  const id = toBigInt(req.params.id);
+  if (!id) return respond.badReq(res, 'Invalid ID');
+  respond.ok(res, 'Stages retrieved', s(await loadLeaveStages(id)));
 });
 
 // ── Calendar visibility settings (category='leave_calendar') ─────────────────
@@ -1719,7 +1817,7 @@ exports.submitLeave = asyncHandler(async (req, res) => {
   await prisma.$executeRaw`UPDATE employeeleaves SET status=${newStatus}, submitted_by=${toBigInt(req.user.id)}, approval_level=${newLevel} WHERE id=${id}`;
   await writeLog(id, req.user.id, logMsg, current.status, newStatus);
   notifyLeaveAction(id, 'submitted');
-  notifyLeaveInApp(id, 'submitted');
+  await notifyLeaveInApp(id, toSupervisor ? 'supervisor_pending' : 'hr_pending', null, req.user.id);
   respond.ok(res, toSupervisor ? 'Leave submitted for approval' : 'Leave submitted — sent directly to HR approval');
 });
 
@@ -1751,7 +1849,7 @@ exports.approveLeave = asyncHandler(async (req, res) => {
     : `Supervisor approved (level ${newLevel}) — awaiting HR`;
   await writeLog(id, req.user.id, logNote, prevStatus, newStatus);
   notifyLeaveAction(id, isFinalTier ? 'approved' : 'submitted');
-  if (isFinalTier) notifyLeaveInApp(id, 'approved');
+  await notifyLeaveInApp(id, isFinalTier ? 'approved' : 'hr_pending', null, req.user.id);
 
   // GL always posts automatically on final approval (HR is always the final approver)
   if (isFinalTier) processLeaveAllowance(id);
@@ -2009,18 +2107,40 @@ exports.getSubordinateLeaves = asyncHandler(async (req, res) => {
             e.employee_id AS employee_code,
             lt.name AS leave_type_name,
             lt.leave_color,
+            lt.leave_allowance AS leave_type_allowance_enabled,
+            lp.name AS period_name,
+            nt.amount AS notch_amount,
             (SELECT COUNT(*) FROM employeeleavedays eld WHERE eld.employee_leave = el.id) AS day_count
      FROM employeeleaves el
      LEFT JOIN employee   e  ON e.id  = el.employee
      LEFT JOIN leavetypes lt ON lt.id = el.leave_type
+     LEFT JOIN leaveperiods lp ON lp.id = el.leave_period
+     LEFT JOIN notches     nt ON nt.id = e.notcheId
      WHERE el.employee IN (${Prisma.join(ids)}) ${statusCond}
      ORDER BY el.posted_date DESC`.catch(() => []);
-  // Null out amount/tax for leaves that should never show an allowance figure
-  const cleaned = rows.map(r =>
-    (r.allowance_status === 'Pre-enable Skip' || r.req_allowance === 'No')
-      ? { ...r, amount: null, leave_tax: null }
-      : r
-  );
+
+  // Return the same allowance display fields as the employee/admin leave endpoints. The supervisor
+  // table and detail panel deliberately key off these aliases, so omitting them hides a saved payout.
+  const allowanceSettings = await getAllowanceSettings().catch(() => ({}));
+  const annualFactor = parseFloat(allowanceSettings.leave_allow_annual_factor) || 0.3;
+  const taxRate      = parseFloat(allowanceSettings.leave_allow_tax_rate)      || 0.3;
+  const cleaned = rows.map(r => {
+    if (r.allowance_status === 'Pre-enable Skip' || r.req_allowance === 'No') {
+      return { ...r, amount: null, leave_tax: null, allowance_tax: null };
+    }
+    const net = parseFloat(r.amount) || 0;
+    if (r.leave_type_allowance_enabled !== 'Yes' || net <= 0) return r;
+    const tax   = parseFloat(r.leave_tax) || 0;
+    const basic = parseFloat(r.notch_amount) || 0;
+    return {
+      ...r,
+      allowance_gross:         String(Math.round((net + tax) * 100) / 100),
+      allowance_tax:           String(tax),
+      allowance_basic:         String(Math.round(basic * 100) / 100),
+      allowance_annual_factor: String(annualFactor),
+      allowance_tax_rate:      String(taxRate),
+    };
+  });
   respond.ok(res, 'Subordinate leaves', s(cleaned));
 });
 
@@ -2046,10 +2166,7 @@ exports.getSubordinateEmployees = asyncHandler(async (req, res) => {
 exports.getLeaveCentralApproval = asyncHandler(async (req, res) => {
   const userId    = toBigInt(req.user.id);
   const isAdmin   = req.user?.roles?.some(r => ['admin', 'super-admin'].includes(r));
-
-  const ts        = await getThresholdSettings();
-  const approvers = JSON.parse(ts.threshold_approvers || '[]');
-  const isFinApprover = approvers.includes(String(req.user.id));
+  const canFinancial = hasBlanketFinancial(req) || (await readLeaveFlow()).length > 0;
 
   // Find current user's linked employee record
   const userEmp = await prisma.$queryRaw`SELECT employeeId FROM users WHERE id=${userId}`.catch(() => []);
@@ -2064,11 +2181,14 @@ exports.getLeaveCentralApproval = asyncHandler(async (req, res) => {
   }
   // HR tier: leaves waiting for HR approval
   if (isAdmin) clauses.push(Prisma.sql`el.status = 'Pending HR Approval'`);
-  // Financial approver tier: allowances held pending sign-off
-  if (isFinApprover) clauses.push(Prisma.sql`el.allowance_status = 'Pending Financial Approval'`);
+  // Financial tier: allowances held pending sign-off (further filtered to current-stage match below)
+  if (canFinancial) clauses.push(Prisma.sql`el.allowance_status = 'Pending Financial Approval'`);
 
   if (!clauses.length) return respond.ok(res, 'Leave approvals', []);
 
+  // Current pending stage per pending-financial leave (lowest stage_order still Pending). Portable
+  // MIN(stage_order) join (works on MariaDB + Postgres) — surfaces the current approver so Central
+  // Approval can build a per-approver queue + stage chain.
   const rows = await prisma.$queryRaw`
     SELECT el.*,
            TRIM(CONCAT_WS(' ', e.firstName, e.lastName)) AS employee_name,
@@ -2076,36 +2196,117 @@ exports.getLeaveCentralApproval = asyncHandler(async (req, res) => {
            d.title AS department_name,
            lt.name AS leave_type_name, lt.leave_color,
            lp.name AS period_name,
+           cs.approver_type  AS cur_approver_type,
+           cs.approver_id    AS cur_approver_id,
+           cs.approver_label AS cur_approver_label,
+           cs.stage_name     AS cur_stage_name,
            (SELECT COUNT(*) FROM employeeleavedays eld WHERE eld.employee_leave = el.id) AS day_count
     FROM employeeleaves el
     LEFT JOIN employee         e  ON e.id   = el.employee
     LEFT JOIN companystructures d  ON d.id   = e.departmentId
     LEFT JOIN leavetypes        lt ON lt.id  = el.leave_type
     LEFT JOIN leaveperiods      lp ON lp.id  = el.leave_period
+    LEFT JOIN (
+      SELECT s.leave_id, s.approver_type, s.approver_id, s.approver_label, s.stage_name
+      FROM   employeeleave_stages s
+      JOIN  (SELECT leave_id, MIN(stage_order) AS min_order
+             FROM employeeleave_stages WHERE status = 'Pending' GROUP BY leave_id) m
+        ON  m.leave_id = s.leave_id AND m.min_order = s.stage_order
+      WHERE  s.status = 'Pending'
+    ) cs ON cs.leave_id = el.id
     WHERE ${Prisma.join(clauses, ' OR ')}
     ORDER BY el.posted_date DESC`.catch(() => []);
 
-  respond.ok(res, 'Leave approvals', s(rows));
+  // For pending-financial rows, keep only those where the actor holds the blanket permission OR matches the
+  // current stage. Non-financial rows (supervisor/HR tiers) always pass through.
+  const blanket = hasBlanketFinancial(req);
+  const visible = s(rows).filter(r => {
+    if (r.allowance_status !== 'Pending Financial Approval') return true;
+    if (blanket) return true;
+    if (!r.cur_approver_type) return false; // no stage snapshot & not blanket → hide
+    return actorMatchesStage(req, { approver_type: r.cur_approver_type, approver_id: r.cur_approver_id, approver_label: r.cur_approver_label });
+  }).map(r => ({
+    ...r,
+    // Whether THIS user may act on the allowance now (used to gate the Approve/Reject buttons).
+    _canActAllowance: r.allowance_status === 'Pending Financial Approval' && (blanket || (r.cur_approver_type
+      ? actorMatchesStage(req, { approver_type: r.cur_approver_type, approver_id: r.cur_approver_id, approver_label: r.cur_approver_label })
+      : false)),
+  }));
+
+  respond.ok(res, 'Leave approvals', visible);
 });
 
-// POST /leave/:id/approve-allowance — financial approver action to release a held allowance payment.
-// Sets allowance_status to 'GL Scheduled' so the GL posts automatically on the leave start date.
-// Verifies the caller is in the configured threshold_approvers list before acting.
+// POST /leave/:id/approve-allowance — walk the amount-range financial approval flow. The current stage's
+// approver (or a blanket leave-allowance approver) signs off; intermediate stages advance and keep the
+// leave 'Pending Financial Approval'; the last stage clears it to 'GL Scheduled' (the cron posts GL on the
+// leave start date). A pending-financial leave with no stage rows (legacy) is a single blanket approval.
 exports.approveAllowanceLeave = asyncHandler(async (req, res) => {
   const id      = toBigInt(req.params.id);
-  const rows    = await prisma.$queryRaw`SELECT id, allowance_status FROM employeeleaves WHERE id=${id}`.catch(() => []);
+  const rows    = await prisma.$queryRaw`SELECT id, allowance_status, employee FROM employeeleaves WHERE id=${id}`.catch(() => []);
   const current = rows[0] ?? null;
   if (!current) return respond.notFound(res, 'Leave not found');
   if (current.allowance_status !== 'Pending Financial Approval')
     return respond.badReq(res, 'Leave is not pending financial approval');
 
-  const ts        = await getThresholdSettings();
-  const approvers = JSON.parse(ts.threshold_approvers || '[]');
-  if (approvers.length && !approvers.includes(String(req.user.id)))
-    return respond.badReq(res, 'You are not authorised to approve this allowance');
+  const stages  = await loadLeaveStages(id);
+  const pending = stages.filter(st => st.status === 'Pending');
+  const actedBy = req.user?.id ? BigInt(req.user.id) : null;
 
+  if (pending.length) {
+    const stage = pending[0];
+    // In a configured flow, only the current stage's assigned approver may act — a blanket permission grants
+    // access to the queue but does NOT let a non-assigned user skip a stage (mirrors payroll/medical).
+    if (!actorMatchesStage(req, stage)) {
+      const who = stage.approver_label || (stage.approver_type === 'user' ? 'the assigned approver' : 'the assigned role');
+      return respond.forbidden(res, `Only ${who} can approve the "${stage.stage_name}" stage`);
+    }
+    await prisma.$executeRaw`UPDATE employeeleave_stages SET status='Approved', acted_by=${actedBy}, acted_at=NOW(), comment=${req.body?.comment?.trim() || null} WHERE id=${BigInt(stage.id)}`;
+    await writeLog(id, req.user.id, `Financial stage "${stage.stage_name}" approved`, 'Pending Financial Approval', 'Pending Financial Approval');
+
+    if (pending.length > 1) {
+      notifyLeaveStageApprovers(pending[1], req, current.employee);
+      return respond.ok(res, `"${stage.stage_name}" approved — awaiting the next stage`);
+    }
+  } else {
+    // Legacy / defensive: pending-financial leave with no snapshot ⇒ single blanket sign-off.
+    if (!hasBlanketFinancial(req)) return respond.forbidden(res, 'You are not authorised to approve this allowance');
+  }
+
+  // Last stage cleared (or no-flow blanket) → schedule GL. The cron posts on the leave start date.
   await prisma.$executeRaw`UPDATE employeeleaves SET allowance_status='GL Scheduled' WHERE id=${id}`;
   await writeLog(id, req.user.id, 'Financial approval granted — GL scheduled for start date', 'Pending Financial Approval', 'GL Scheduled');
   notifyLeaveAction(id, 'approved');
   respond.ok(res, 'Financial approval granted — GL will post on leave start date');
+});
+
+// POST /leave/:id/reject-allowance — the current stage's approver rejects the held allowance. The stage +
+// the leave move to a terminal 'Financial Rejected' state that the GL cron never picks up.
+exports.rejectAllowanceLeave = asyncHandler(async (req, res) => {
+  const id      = toBigInt(req.params.id);
+  const reason  = req.body?.reason?.trim() || null;
+  const rows    = await prisma.$queryRaw`SELECT id, allowance_status, employee FROM employeeleaves WHERE id=${id}`.catch(() => []);
+  const current = rows[0] ?? null;
+  if (!current) return respond.notFound(res, 'Leave not found');
+  if (current.allowance_status !== 'Pending Financial Approval')
+    return respond.badReq(res, 'Leave is not pending financial approval');
+
+  const stages  = await loadLeaveStages(id);
+  const pending = stages.filter(st => st.status === 'Pending');
+  const stage   = pending[0];
+  if (stage) {
+    // Only the current stage's assigned approver may reject it (blanket permission doesn't skip stages).
+    if (!actorMatchesStage(req, stage)) {
+      const who = stage.approver_label || (stage.approver_type === 'user' ? 'the assigned approver' : 'the assigned role');
+      return respond.forbidden(res, `Only ${who} can act on the "${stage.stage_name}" stage`);
+    }
+    const actedBy = req.user?.id ? BigInt(req.user.id) : null;
+    await prisma.$executeRaw`UPDATE employeeleave_stages SET status='Rejected', acted_by=${actedBy}, acted_at=NOW(), comment=${reason} WHERE id=${BigInt(stage.id)}`;
+  } else if (!hasBlanketFinancial(req)) {
+    return respond.forbidden(res, 'You are not authorised to reject this allowance');
+  }
+
+  await prisma.$executeRaw`UPDATE employeeleaves SET allowance_status='Financial Rejected', rejection_reason=${reason} WHERE id=${id}`;
+  await writeLog(id, req.user.id, reason ? `Financial approval rejected: ${reason}` : 'Financial approval rejected', 'Pending Financial Approval', 'Financial Rejected');
+  notifyLeaveAction(id, 'rejected', reason);
+  respond.ok(res, 'Allowance rejected');
 });

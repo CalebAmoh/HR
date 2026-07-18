@@ -1,5 +1,5 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
-import { getToken, updateToken, updateUser, logout } from './auth';
+import { getToken, updateToken, updateUser, logout, broadcastToken } from './auth';
 
 const BASE_URL = '/v1/api/hr';
 
@@ -17,7 +17,7 @@ const api = axios.create({
 // Using a separate instance means a failed refresh won't re-trigger the
 // response interceptor on the main `api` — preventing an infinite loop.
 // ─────────────────────────────────────────────────────────────────────────────
-const refreshApi = axios.create({
+export const refreshApi = axios.create({
   baseURL:         BASE_URL,
   withCredentials: true,  // must be true so the refresh cookie is sent
   headers:         { 'Content-Type': 'application/json' },
@@ -113,6 +113,8 @@ api.interceptors.response.use(
 
       // Store new token in memory only — no localStorage
       updateToken(newToken);
+      // Tell sibling tabs to adopt this token instead of firing their own refresh.
+      broadcastToken(newToken);
 
       // If the server returned fresh user data, update sessionStorage + notify App
       if (res.data?.data) {

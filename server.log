@@ -1,5 +1,5 @@
 [cron] Daily leave GL scheduled — runs at 06:00 every day
-🚀 Server running on port 3040
+🚀 Server running on port 3050
 prisma:query 
       CREATE TABLE IF NOT EXISTS auditlogs (
         id           BIGINT AUTO_INCREMENT PRIMARY KEY,

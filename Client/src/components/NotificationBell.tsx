@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Bell, Volume2, VolumeX, CheckCheck, CalendarCheck, Stethoscope, Users,
-  Banknote, TrendingUp, UserPlus, BellRing, Trash2, X,
+  Banknote, TrendingUp, UserPlus, GraduationCap, BellRing, Trash2, X,
 } from 'lucide-react';
 import { useNotifications, type Notif } from '@/lib/notifications';
 import { isMuted, setMuted } from '@/lib/notificationSound';
@@ -14,6 +14,7 @@ const ICONS: Record<string, typeof Bell> = {
   payroll:     Banknote,
   performance: TrendingUp,
   onboarding:  UserPlus,
+  training:    GraduationCap,
 };
 
 function timeAgo(t: string | null): string {

@@ -21,7 +21,7 @@ node smoke/run.js --list      # list module names
 Config via env (defaults shown):
 
 ```
-SMOKE_BASE_URL=http://localhost:3040/v1/api/hr
+SMOKE_BASE_URL=http://localhost:3050/v1/api/hr
 SMOKE_EMAIL=superadmin@usg.com
 SMOKE_PASSWORD=pass1234
 ```
