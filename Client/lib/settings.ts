@@ -1,5 +1,5 @@
 import api from './api';
-import { defaultFieldConfig, EMPLOYEE_FORM_FIELDS_BY_KEY, type EmployeeFieldConfig } from '../src/config/employeeFormFields';
+import { defaultFieldConfig, defaultTransferFieldConfig, EMPLOYEE_FORM_FIELDS_BY_KEY, type EmployeeFieldConfig, type EmployeeTransferFieldConfig } from '../src/config/employeeFormFields';
 import { DEFAULT_EMPLOYEE_ID_PATTERN } from './employeeIdFormat';
 
 export interface AppSettings {
@@ -39,6 +39,7 @@ export interface AppSettings {
   // Per-field visibility/required config for the employee-creation form.
   employeeForm: {
     fields: EmployeeFieldConfig;
+    transferFields: EmployeeTransferFieldConfig;
   };
 }
 
@@ -76,6 +77,7 @@ const DEFAULTS: AppSettings = {
   },
   employeeForm: {
     fields: defaultFieldConfig(),
+    transferFields: defaultTransferFieldConfig(),
   },
 };
 
@@ -96,6 +98,11 @@ export function employeeFieldVisible(key: string): boolean {
   return cache.employeeForm.fields[key]?.visible ?? meta?.defaultVisible ?? true;
 }
 
+/** Whether an approved/active employee field must be changed through Employee Transfers. */
+export function employeeTransferField(key: string): boolean {
+  return cache.employeeForm.transferFields[key] ?? defaultTransferFieldConfig()[key] ?? false;
+}
+
 export function getSettings(): AppSettings {
   // Return a fresh copy so callers can't mutate the shared cache.
   return {
@@ -106,7 +113,10 @@ export function getSettings(): AppSettings {
     general:          { ...cache.general },
     payments:         { ...cache.payments },
     medicalClaims:    { ...cache.medicalClaims },
-    employeeForm:     { fields: structuredClone(cache.employeeForm.fields) },
+    employeeForm:     {
+      fields: structuredClone(cache.employeeForm.fields),
+      transferFields: structuredClone(cache.employeeForm.transferFields),
+    },
   };
 }
 
@@ -164,8 +174,14 @@ export async function initControlSettings(): Promise<void> {
       const raw = flat['employee_form_fields'];
       merged.employeeForm = {
         fields: raw ? { ...defaultFieldConfig(), ...JSON.parse(raw) } : defaultFieldConfig(),
+        transferFields: defaultTransferFieldConfig(),
       };
-    } catch { merged.employeeForm = { fields: defaultFieldConfig() }; }
+      const transferRaw = flat['employee_transfer_fields'];
+      const savedTransfer = transferRaw ? JSON.parse(transferRaw) : {};
+      merged.employeeForm.transferFields = Array.isArray(savedTransfer)
+        ? { ...defaultTransferFieldConfig(), ...Object.fromEntries(savedTransfer.map((key: string) => [key, true])) }
+        : { ...defaultTransferFieldConfig(), ...savedTransfer };
+    } catch { merged.employeeForm = { fields: defaultFieldConfig(), transferFields: defaultTransferFieldConfig() }; }
     writeCache(merged);
   } catch { /* offline — keep cached/default values */ }
 }
@@ -184,7 +200,11 @@ export function saveSetting<K extends keyof AppSettings>(
   // The employee-form field config is stored as a single JSON string setting.
   if (section === 'employeeForm') {
     const cfg = updated.employeeForm.fields ?? {};
-    api.put('/settings/controls', { employee_form_fields: JSON.stringify(cfg) })
+    const transferFields = updated.employeeForm.transferFields ?? defaultTransferFieldConfig();
+    api.put('/settings/controls', {
+      employee_form_fields: JSON.stringify(cfg),
+      employee_transfer_fields: JSON.stringify(transferFields),
+    })
       .catch(() => { /* cache still holds the value locally */ });
     return;
   }

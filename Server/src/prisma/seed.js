@@ -50,6 +50,8 @@ const PERMISSIONS = {
   'Employees': [
     'view_employees', 'create_employees', 'edit_employees',
     'approve_employees', 'change_employee_status', 'manage_onboarding',
+    'view_employee_transfers', 'create_employee_transfers',
+    'approve_employee_transfers', 'manage_employee_transfers',
   ],
 
   'Employee Relations': [
@@ -124,8 +126,10 @@ const ROLE_PERMISSIONS = {
     ...PERMISSIONS['Users & Access'],
     // System, settings & audit
     ...PERMISSIONS['System'],
-    // Read access to HR
+    // Preserve the existing read-only employee access; transfer rights are additive.
     'view_employees',
+    'view_employee_transfers', 'create_employee_transfers',
+    'approve_employee_transfers', 'manage_employee_transfers',
   ],
 
   'hr-manager': [

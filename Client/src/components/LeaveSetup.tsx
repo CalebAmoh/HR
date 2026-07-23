@@ -429,11 +429,12 @@ export function LeaveSetup() {
 
   useEffect(() => { setEllPage(1); }, [ellSearch, ellStatus]);
 
-  const ELL_STATUSES = ['Pending Approval', 'Pending HR Approval', 'Approved', 'Draft', 'Rejected', 'Cancelled', 'GL Scheduled'];
+  const ELL_STATUSES = ['Pending Approval', 'Pending Financial Approval', 'Pending HR Approval', 'Approved', 'Draft', 'Rejected', 'Cancelled', 'GL Scheduled'];
 
   const STATUS_PILL: Record<string, string> = {
     'Pending':              'bg-[var(--surface-hover)] border border-[var(--border)] text-[var(--text-secondary)]',
     'Pending Approval':     'bg-amber-500/10 text-amber-700 border border-amber-200/50',
+    'Pending Financial Approval': 'bg-blue-500/10 text-blue-700 border border-blue-200/50',
     'Pending HR Approval':  'bg-purple-500/10 text-purple-700 border border-purple-200/50',
     'Approved':             'pill-success',
     'Rejected':             'pill-danger',
@@ -1156,7 +1157,12 @@ export function LeaveSetup() {
                   { label: 'End',   value: fmtDate(ellViewRow.date_end) },
                 ].map(s => (
                   <div key={s.label} className="text-center rounded-xl bg-[var(--surface)] border border-[var(--border)] py-2.5">
-                    <p className="text-[14px] font-extrabold syne text-[var(--text-primary)] leading-none">{s.value}</p>
+                    <p
+                      className="syne text-[var(--text-primary)] whitespace-nowrap"
+                      style={{ fontSize: '14.5px', fontWeight: 700, lineHeight: 1.25, letterSpacing: '-0.025em' }}
+                    >
+                      {s.value}
+                    </p>
                     <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mt-1.5">{s.label}</p>
                   </div>
                 ))}
@@ -1170,10 +1176,67 @@ export function LeaveSetup() {
               <DetailField label="Allowance Status" value={ellViewRow.allowance_status} />
               <DetailField label="Allowance Amount" value={ellViewRow.amount ? money(ellViewRow.amount) : '—'} full />
               <DetailField label="Details"          value={ellViewRow.details} full />
-              {ellViewRow.rejection_reason && (
-                <DetailField label="Rejection Reason" value={ellViewRow.rejection_reason} full />
+              {ellViewRow.status === 'Rejected' && (
+                <DetailField label="Rejection Reason" value={ellViewRow.rejection_reason || 'No reason was provided.'} full />
               )}
             </DetailGrid>
+
+            {ellViewRow.leave_type_allowance_enabled === 'Yes' && Number(ellViewRow.allowance_basic) > 0 && (
+              <div className="rounded-[12px] border border-[var(--border)] overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-2.5 bg-emerald-50 border-b border-emerald-100">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">Leave Allowance</p>
+                  {ellViewRow.allowance_status && (() => {
+                    const status = ellViewRow.allowance_status;
+                    const label = status === 'Pre-enable Skip' ? 'Not Eligible (pre-dates enablement)' : status;
+                    const cls = status === 'Paid' || status === 'GL Scheduled'
+                      ? 'pill-success'
+                      : status === 'Financial Rejected'
+                        ? 'pill-danger'
+                        : status === 'Pre-enable Skip'
+                          ? 'bg-slate-100 text-slate-500 border border-slate-200'
+                          : 'bg-amber-50 text-amber-700 border border-amber-200';
+                    return <span className={`pill text-[10px] ${cls}`}>{label}</span>;
+                  })()}
+                </div>
+                <div className="px-4 py-3 bg-[var(--bg)] space-y-1.5">
+                  <div className="flex justify-between text-[12px]">
+                    <span className="text-[var(--text-secondary)]">Basic Salary (monthly)</span>
+                    <span className="font-semibold tabular-nums">{Number(ellViewRow.allowance_basic).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  </div>
+                  {ellViewRow.allowance_annual_factor && (
+                    <div className="text-[11px] text-[var(--text-muted)] pl-2">
+                      × 12 months × {(Number(ellViewRow.allowance_annual_factor) * 100).toFixed(0)}% annual factor
+                    </div>
+                  )}
+                  {Number(ellViewRow.allowance_gross) > 0 && (
+                    <div className="flex justify-between text-[12px] border-t border-[var(--border-light)] pt-1.5">
+                      <span className="font-medium">Gross Allowance</span>
+                      <span className="font-bold tabular-nums">{Number(ellViewRow.allowance_gross).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-[11px]">
+                    <span className="text-[var(--text-muted)]">Less: non-taxable (basic)</span>
+                    <span className="tabular-nums text-[var(--text-muted)]">({Number(ellViewRow.allowance_basic).toLocaleString(undefined, { minimumFractionDigits: 2 })})</span>
+                  </div>
+                  {Number(ellViewRow.allowance_tax) > 0 && (
+                    <div className="flex justify-between text-[12px]">
+                      <span className="text-[var(--danger)]">Tax{ellViewRow.allowance_tax_rate ? ` (${(Number(ellViewRow.allowance_tax_rate) * 100).toFixed(0)}%)` : ''}</span>
+                      <span className="font-semibold tabular-nums text-[var(--danger)]">({Number(ellViewRow.allowance_tax).toLocaleString(undefined, { minimumFractionDigits: 2 })})</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-[13px] font-bold border-t border-[var(--border)] pt-2 mt-0.5">
+                    <span>Net Payout</span>
+                    <span className="tabular-nums text-[var(--success)]">{Number(ellViewRow.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  </div>
+                  {ellViewRow.documentref && (
+                    <div className="flex justify-between text-[11px] border-t border-[var(--border-light)] pt-1.5 text-[var(--text-muted)]">
+                      <span>GL Reference</span>
+                      <span className="font-mono tracking-wide">{ellViewRow.documentref}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </DetailSlideOver>

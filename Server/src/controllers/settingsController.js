@@ -154,6 +154,7 @@ const CONTROL_KEYS = [
   'approval_medical', 'approval_medical_self',
   'general_currency',
   'employee_form_fields', // JSON: per-field {visible,required} config for the employee-creation form
+  'employee_transfer_fields', // JSON: fields that must use the Employee Transfer workflow
   'employee_id_format',   // template for auto-generated employee IDs, e.g. EMP-{YYYY}-{SEQ4}
   // Master payment/GL-posting switches per module. '0' = record-only (skip all GL postings).
   'leave_payments_enabled', 'medical_payments_enabled', 'payroll_payments_enabled',

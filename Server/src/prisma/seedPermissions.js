@@ -23,10 +23,13 @@ const PERMISSIONS = [
   'view_users', 'create_users', 'edit_users', 'deactivate_users', 'activate_users', 'change_user_password', 'manage_roles',
   // Employees
   'view_employees', 'create_employees', 'edit_employees', 'approve_employees', 'change_employee_status', 'manage_onboarding',
+  'view_employee_transfers', 'create_employee_transfers', 'approve_employee_transfers', 'manage_employee_transfers',
   // Employee Relations
   'manage_skills', 'manage_certifications', 'manage_education', 'manage_languages', 'manage_dependents', 'manage_emergency_contacts',
   // Company
   'view_company_structure', 'create_company_structure', 'edit_company_structure', 'delete_company_structure',
+  // PC Codes (positions)
+  'view_pc_code', 'create_pc_code', 'edit_pc_code', 'delete_pc_code', 'assign_pc_code',
   // Documents
   'view_documents', 'create_documents', 'edit_documents', 'delete_documents',
   // Leave
@@ -84,8 +87,11 @@ const ROLES = [
       'view_app_settings', 'manage_app_settings', 'view_settings', 'manage_settings', 'view_audit_logs',
       // Employees (view + management)
       'view_employees', 'create_employees', 'edit_employees', 'approve_employees', 'change_employee_status', 'manage_onboarding',
+      'view_employee_transfers', 'create_employee_transfers', 'approve_employee_transfers', 'manage_employee_transfers',
       // Company structure (view + management)
       'view_company_structure', 'create_company_structure', 'edit_company_structure', 'delete_company_structure',
+      // PC Codes (positions)
+      'view_pc_code', 'create_pc_code', 'edit_pc_code', 'delete_pc_code', 'assign_pc_code',
       // Documents (view + management)
       'view_documents', 'create_documents', 'edit_documents', 'delete_documents',
       // Dashboard (Overview)
@@ -107,10 +113,13 @@ const ROLES = [
     permissions: [
       // Employees
       'view_employees', 'create_employees', 'edit_employees', 'approve_employees', 'change_employee_status', 'manage_onboarding',
+      'view_employee_transfers', 'create_employee_transfers', 'approve_employee_transfers', 'manage_employee_transfers',
       // Employee Relations
       'manage_skills', 'manage_certifications', 'manage_education', 'manage_languages', 'manage_dependents', 'manage_emergency_contacts',
       // Company
       'view_company_structure', 'create_company_structure', 'edit_company_structure', 'delete_company_structure',
+      // PC Codes (positions)
+      'view_pc_code', 'create_pc_code', 'edit_pc_code', 'delete_pc_code', 'assign_pc_code',
       // Documents
       'view_documents', 'create_documents', 'edit_documents', 'delete_documents',
       // Leave Setup

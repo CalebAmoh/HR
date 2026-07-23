@@ -23,6 +23,10 @@ export const PERMISSIONS = {
   APPROVE_EMPLOYEES:                  'approve_employees',
   CHANGE_EMPLOYEE_STATUS:             'change_employee_status',
   MANAGE_ONBOARDING:                  'manage_onboarding',
+  VIEW_EMPLOYEE_TRANSFERS:            'view_employee_transfers',
+  CREATE_EMPLOYEE_TRANSFERS:          'create_employee_transfers',
+  APPROVE_EMPLOYEE_TRANSFERS:         'approve_employee_transfers',
+  MANAGE_EMPLOYEE_TRANSFERS:          'manage_employee_transfers',
 
   // ── Employee Relations ─────────────────────────────────────
   MANAGE_SKILLS:                      'manage_skills',
@@ -37,6 +41,13 @@ export const PERMISSIONS = {
   CREATE_COMPANY_STRUCTURE:           'create_company_structure',
   EDIT_COMPANY_STRUCTURE:             'edit_company_structure',
   DELETE_COMPANY_STRUCTURE:           'delete_company_structure',
+
+  // ── PC Codes (positions) ───────────────────────────────────
+  VIEW_PC_CODE:                       'view_pc_code',
+  CREATE_PC_CODE:                     'create_pc_code',
+  EDIT_PC_CODE:                       'edit_pc_code',
+  DELETE_PC_CODE:                     'delete_pc_code',
+  ASSIGN_PC_CODE:                     'assign_pc_code',
 
   // ── Documents ──────────────────────────────────────────────
   VIEW_DOCUMENTS:                     'view_documents',
@@ -146,6 +157,7 @@ export const NAV_PERMISSIONS: Record<string, string[]> = {
   Modules:            [],
   PersonalInfo:       [],
   StaffOrganogram:    [],
+  PcCodeOrganogram:   [],
   Help:               [],
 
   // ── Must be assigned ──────────────────────────────────────────
@@ -158,14 +170,16 @@ export const NAV_PERMISSIONS: Record<string, string[]> = {
   QualificationSetups:['manage_app_settings'],
   LeavingSettings:    ['manage_app_settings'],
   AdminReports:       ['generate_reports'],
-  CentralApproval:    ['approve_employees', 'approve_payroll', 'approve_medical'],
+  CentralApproval:    ['approve_employees', 'approve_payroll', 'approve_medical', 'approve_employee_transfers'],
   UserReports:        [],  // Personal reports - open to all
 
   // ── Management ────────────────────────────────────────────────
   Employees:          ['view_employees'],
   SelfOnboarding:     ['manage_onboarding'],
+  EmployeeTransfers: ['view_employee_transfers', 'create_employee_transfers', 'approve_employee_transfers', 'manage_employee_transfers'],
   Organogram:         ['view_company_structure'],
   Company:            ['view_company_structure'],
+  PcCodes:            ['view_pc_code'],
   Documents:          ['view_documents'],
 
   // Leave

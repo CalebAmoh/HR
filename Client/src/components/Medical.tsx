@@ -81,6 +81,22 @@ function StatusPill({ status }: { status?: string }) {
   return <span className={cls[status] ?? 'pill pill-neutral'}>{status}</span>;
 }
 
+function medicalGlError(record: any): string {
+  try {
+    const log = typeof record?.payment_log === 'string'
+      ? JSON.parse(record.payment_log || '{}')
+      : (record?.payment_log ?? {});
+    const error = log?.error;
+    if (error && typeof error === 'object') {
+      return error.responseCode
+        ? `[${error.responseCode}] ${error.message || ''}`.trim()
+        : (error.message || JSON.stringify(error));
+    }
+    if (typeof error === 'string') return error;
+  } catch {}
+  return '';
+}
+
 
 // ── Document preview modal ────────────────────────────────────────────────────
 
@@ -350,10 +366,11 @@ function DetailRow({ label, children }: { label: string; children?: React.ReactN
   );
 }
 
-function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
+function MedicalDetailPanel({ record: initialRecord, type, adminMode, onClose, onRefresh }: {
   record: any; type: 'staff' | 'dependent'; adminMode: boolean;
   onClose: () => void; onRefresh: () => void;
 }) {
+  const [record, setRecord]       = useState(initialRecord);
   const [acting, setActing]         = useState(false);
   const [docPreview, setDocPreview] = useState(false);
   const [rejecting, setRejecting]   = useState(false);
@@ -364,6 +381,8 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
   const currentUserRoles = (getCurrentUser()?.allRoles ?? []).map(r => r.name);
   const attachment = record.attachment1;
   const isImage = (name: string) => /\.(png|jpg|jpeg|gif|webp)$/i.test(name ?? '');
+
+  useEffect(() => { setRecord(initialRecord); }, [initialRecord]);
 
   // Multi-stage approval snapshot for this record (empty ⇒ single-stage / no flow).
   const [stages, setStages] = useState<any[]>([]);
@@ -395,10 +414,27 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
     setActing(true);
     try {
       const r = await api.post(endpoint, body);
-      console.log(`[medical GL] ${endpoint} response:`, r.data?.data);
-      if (r.data?.data?.gl_payload) console.log('[medical GL] sent to GL API:', r.data.data.gl_payload);
-      toast.success(successMsg);
+      const updated = r.data?.data;
+      console.log(`[medical GL] ${endpoint} response:`, updated);
+      if (updated?.gl_payload) console.log('[medical GL] sent to GL API:', updated.gl_payload);
+      if (updated) setRecord((current: any) => ({ ...current, ...updated }));
       onRefresh();
+      if (updated?.status === 'GL Failed') {
+        const glError = medicalGlError(updated);
+        toast.error(
+          `Medical request approved, but GL posting failed${glError ? ': ' + glError : ''}. Use Retry GL Posting below.`,
+          { duration: 8000 },
+        );
+        return;
+      }
+      if (endpoint.endsWith('/retry-gl') && updated?.document_ref) {
+        toast.success(`GL posted — Ref: ${updated.document_ref}`, { duration: 6000 });
+      } else {
+        toast.success(r.data?.message || successMsg);
+        if (updated?.document_ref && endpoint.endsWith('/approve')) {
+          toast.success(`GL posted — Ref: ${updated.document_ref}`, { duration: 6000 });
+        }
+      }
       onClose();
     } catch (e: any) { toast.error(e?.response?.data?.message ?? 'Action failed'); }
     finally { setActing(false); }
@@ -512,13 +548,7 @@ function MedicalDetailPanel({ record, type, adminMode, onClose, onRefresh }: {
             </div>
           )}
           {record.status === 'GL Failed' && (() => {
-            let errMsg = '';
-            try {
-              const log = JSON.parse(record.payment_log ?? '{}');
-              const e = log?.error;
-              if (e && typeof e === 'object') errMsg = e.responseCode ? `[${e.responseCode}] ${e.message || ''}`.trim() : e.message || JSON.stringify(e);
-              else if (typeof e === 'string') errMsg = e;
-            } catch {}
+            const errMsg = medicalGlError(record);
             return (
               <div className="space-y-2 px-3 py-2.5 rounded-[8px] border border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)]">
                 <div className="flex items-center gap-2">
@@ -796,7 +826,7 @@ function StaffMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean; cur
                     },
                   },
                   { label: 'Edit', icon: Edit, onClick: () => openEdit(row), hidden: !(rowEdit(row) && (row.status === 'Draft' || row.status === 'Rejected')) },
-                  { label: 'Delete', icon: Trash2, danger: true, onClick: () => setPending(row), hidden: !(rowDelete(row) && (row.status === 'Draft' || row.status === 'Rejected' || adminMode)) },
+                  { label: 'Delete', icon: Trash2, danger: true, onClick: () => setPending(row), hidden: !(rowDelete(row) && row.status === 'Draft') },
                 ]} />
               </div>
             </td>
@@ -1050,7 +1080,7 @@ function DependentMedicalTab({ adminMode, currentEmpId }: { adminMode?: boolean;
                     },
                   },
                   { label: 'Edit', icon: Edit, onClick: () => openEdit(row), hidden: !(rowEdit(row) && (row.status === 'Draft' || row.status === 'Rejected')) },
-                  { label: 'Delete', icon: Trash2, danger: true, onClick: () => setPending(row), hidden: !(rowDelete(row) && (row.status === 'Draft' || row.status === 'Rejected' || adminMode)) },
+                  { label: 'Delete', icon: Trash2, danger: true, onClick: () => setPending(row), hidden: !(rowDelete(row) && row.status === 'Draft') },
                 ]} />
               </div>
             </td>
@@ -1804,15 +1834,17 @@ function RegisteredHospitalsTab() {
 
 // ── Hospital Claim detail slide-over ─────────────────────────────────────────
 
-function HospitalClaimDetailPanel({ row, onClose, onRefresh }: { row: any; onClose: () => void; onRefresh: () => void }) {
+function HospitalClaimDetailPanel({ row: initialRow, onClose, onRefresh }: { row: any; onClose: () => void; onRefresh: () => void }) {
   const { can } = useCan();
   const canApprove = can('approve_medical');
+  const [row, setRow]             = useState(initialRow);
   const [acting, setActing]     = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason]     = useState('');
   const appCurrency = getSettings().general.currency;
   const medicalSelfApproval = getSettings().approvals.medicalSelfApproval;
   const currentUserId = getCurrentUser()?.id;
+  useEffect(() => { setRow(initialRow); }, [initialRow]);
   // Self-approval guard: the originator can only approve their own claim when self-approval is on.
   const isSelf = currentUserId != null && row.posted_by != null
     && String(row.posted_by) === String(currentUserId);
@@ -1824,9 +1856,26 @@ function HospitalClaimDetailPanel({ row, onClose, onRefresh }: { row: any; onClo
   async function callAction(url: string, body: object, msg: string) {
     setActing(true);
     try {
-      await api.post(url, body);
-      toast.success(msg);
+      const response = await api.post(url, body);
+      const updated = response.data?.data;
+      if (updated) setRow((current: any) => ({ ...current, ...updated }));
       onRefresh();
+      if (updated?.status === 'GL Failed') {
+        const glError = medicalGlError(updated);
+        toast.error(
+          `Medical claim approved, but GL posting failed${glError ? ': ' + glError : ''}. Use Retry GL Posting below.`,
+          { duration: 8000 },
+        );
+        return;
+      }
+      if (url.endsWith('/retry-gl') && updated?.document_ref) {
+        toast.success(`GL posted — Ref: ${updated.document_ref}`, { duration: 6000 });
+      } else {
+        toast.success(response.data?.message || msg);
+        if (updated?.document_ref && url.endsWith('/approve')) {
+          toast.success(`GL posted — Ref: ${updated.document_ref}`, { duration: 6000 });
+        }
+      }
       onClose();
     } catch (e: any) { toast.error(e?.response?.data?.message ?? 'Action failed'); }
     finally { setActing(false); }
@@ -1916,13 +1965,7 @@ function HospitalClaimDetailPanel({ row, onClose, onRefresh }: { row: any; onClo
             </div>
           )}
           {row.status === 'GL Failed' && (() => {
-            let errMsg = '';
-            try {
-              const log = JSON.parse(row.payment_log ?? '{}');
-              const e = log?.error;
-              if (e && typeof e === 'object') errMsg = e.responseCode ? `[${e.responseCode}] ${e.message || ''}`.trim() : e.message || JSON.stringify(e);
-              else if (typeof e === 'string') errMsg = e;
-            } catch {}
+            const errMsg = medicalGlError(row);
             return (
               <div className="space-y-2 px-3 py-2.5 rounded-[8px] border border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)]">
                 <div className="flex items-center gap-2">

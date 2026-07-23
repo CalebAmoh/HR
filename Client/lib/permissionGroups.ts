@@ -32,7 +32,7 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
   {
     label: 'Employees',
     color: { active: '#059669', light: '#ecfdf5', text: '#047857', border: '#a7f3d0' },
-    perms: ['view_employees', 'create_employees', 'edit_employees', 'approve_employees', 'change_employee_status', 'manage_onboarding'],
+    perms: ['view_employees', 'create_employees', 'edit_employees', 'approve_employees', 'change_employee_status', 'manage_onboarding', 'view_employee_transfers', 'create_employee_transfers', 'approve_employee_transfers', 'manage_employee_transfers'],
   },
   {
     label: 'Employee Relations',
@@ -43,6 +43,11 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     label: 'Company',
     color: { active: '#64748b', light: '#f8fafc', text: '#475569', border: '#cbd5e1' },
     perms: ['view_company_structure', 'create_company_structure', 'edit_company_structure', 'delete_company_structure'],
+  },
+  {
+    label: 'PC Codes',
+    color: { active: '#0891b2', light: '#ecfeff', text: '#155e75', border: '#67e8f9' },
+    perms: ['view_pc_code', 'create_pc_code', 'edit_pc_code', 'delete_pc_code', 'assign_pc_code'],
   },
   {
     label: 'Documents',
@@ -109,3 +114,63 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
 /** Human-readable label for a permission key (e.g. create_users → Create Users). */
 export const formatPermission = (p: string): string =>
   p.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
+const PERMISSION_DESCRIPTIONS: Record<string, string> = {
+  view_dashboard: 'Open the dashboard and view its workforce summaries and metrics.',
+  manage_roles: 'Create and edit roles, assign permissions, and activate or deactivate roles.',
+  deactivate_users: 'Deactivate user accounts and prevent those users from signing in.',
+  activate_users: 'Reactivate deactivated user accounts and restore their sign-in access.',
+  change_user_password: 'Reset or change another user’s account password.',
+  approve_employees: 'Approve or reject new employee records and pending employee-detail changes.',
+  change_employee_status: 'Suspend, terminate, reinstate, or process other employee lifecycle status changes.',
+  manage_onboarding: 'Configure self-onboarding forms and review or convert onboarding submissions.',
+  view_employee_transfers: 'Open Employee Transfers and view transfer records and their progress.',
+  create_employee_transfers: 'Create, edit, and submit employee transfer requests.',
+  approve_employee_transfers: 'Approve or reject employee transfer requests assigned for approval.',
+  manage_employee_transfers: 'Configure transfer approvals and manage, reschedule, cancel, or activate transfers.',
+  view_leave_setup: 'Open Leave Setup and view leave configuration and approval records.',
+  view_salary_setup: 'Open Salary Setup and view salary configuration.',
+  view_payroll: 'Open Payroll and view payroll employees, runs, and results.',
+  process_payroll: 'Create, calculate, and submit payroll runs for processing.',
+  approve_payroll: 'Approve or reject payroll runs awaiting authorization.',
+  export_payroll_reports: 'Download or export payroll reports and payroll results.',
+  generate_reports: 'Open Admin Reports and generate organization-wide reports.',
+  export_reports: 'Download or export generated administrative reports.',
+  view_app_settings: 'Open the application setup area and view system configuration.',
+  manage_app_settings: 'Change application setup, code lists, integrations, and system configuration.',
+  view_settings: 'Open Settings and view the available configuration controls.',
+  manage_settings: 'Change global settings and control-setup configuration.',
+  view_audit_logs: 'Open and review the system audit trail and recorded user activity.',
+  review_performance: 'Review, score, approve, or complete employee performance evaluations.',
+  reset_medical_utilization: 'Close a medical year and reset employee medical-benefit utilization.',
+  manage_attendance: 'Manage attendance records, corrections, imports, policies, and reports.',
+  use_ai_assistant: 'Open and use the AI assistant features.',
+  view_ai_insights: 'View AI-generated workforce insights and analysis.',
+};
+
+/** Short business explanation shown when a permission is hovered in the User module. */
+export function describePermission(permission: string): string {
+  const explicit = PERMISSION_DESCRIPTIONS[permission];
+  if (explicit) return explicit;
+
+  const [verb, ...parts] = permission.split('_');
+  const subject = parts.join(' ').replace(/\bgl\b/gi, 'GL');
+  const descriptions: Record<string, string> = {
+    view: `Open and view ${subject}.`,
+    create: `Create new ${subject} records.`,
+    edit: `Edit existing ${subject} records.`,
+    delete: `Delete ${subject} records.`,
+    approve: `Approve or reject ${subject} requests.`,
+    manage: `Configure and manage ${subject}.`,
+    generate: `Generate ${subject}.`,
+    export: `Download or export ${subject}.`,
+    process: `Process ${subject}.`,
+    review: `Review and action ${subject}.`,
+    reset: `Reset ${subject}.`,
+    use: `Access and use ${subject}.`,
+    change: `Change ${subject}.`,
+    activate: `Activate ${subject}.`,
+    deactivate: `Deactivate ${subject}.`,
+  };
+  return descriptions[verb] || `Allows the user to ${formatPermission(permission).toLowerCase()}.`;
+}

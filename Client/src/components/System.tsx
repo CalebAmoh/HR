@@ -188,7 +188,7 @@ export function System() {
         v.label.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (v.description ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
         (codeMap[v.codeListId] ?? '').toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesFilter = codeFilter ? v.codeListId === codeFilter : true;
+      const matchesFilter = codeFilter ? String(v.codeListId) === codeFilter : true;
       return matchesSearch && matchesFilter;
     }), [codeValues, searchQuery, codeFilter, codeMap]);
 
@@ -296,13 +296,13 @@ export function System() {
   ───────────────────────────────────────────────────────────────────────── */
   const handleAddValue = () => {
     setSelectedItem(null);
-    setValForm({ codeListId: codes[0]?.id ?? '', label: '', description: '' });
+    setValForm({ codeListId: codes[0]?.id != null ? String(codes[0].id) : '', label: '', description: '' });
     setIsFormOpen(true);
   };
 
   const handleEditValue = (item: CodeListValue) => {
     setSelectedItem(item);
-    setValForm({ codeListId: item.codeListId, label: item.label, description: item.description ?? '' });
+    setValForm({ codeListId: String(item.codeListId), label: item.label, description: item.description ?? '' });
     setIsFormOpen(true);
   };
 
@@ -330,7 +330,7 @@ export function System() {
         }
         toast.success('Value updated');
       } else {
-        const parentCode = codes.find((c) => c.id === valForm.codeListId);
+        const parentCode = codes.find((c) => String(c.id) === valForm.codeListId);
         if (!parentCode) { toast.error('Code list not found'); setSaving(false); return; }
         const res = await codeLists.createValue(parentCode.code, {
           label: valForm.label,

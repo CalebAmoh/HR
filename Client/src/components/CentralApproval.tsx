@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { CheckCircle, X, Eye, Users, Banknote, RefreshCw, Check, XCircle, Stethoscope, FileText, Download, CalendarClock, Clock } from 'lucide-react';
+import { CheckCircle, X, Eye, Users, Banknote, RefreshCw, Check, XCircle, Stethoscope, FileText, Download, CalendarClock, Clock, ArrowRightLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import { TableToolbar } from './ui/TableToolbar';
@@ -11,8 +11,10 @@ import { getCurrentUser } from '../../lib/auth';
 import { canAccessNav } from '../../lib/permissions';
 import { PayrollReviewModal } from './PayrollReviewModal';
 import { PageHeader } from './ui/PageHeader';
+import { EmployeeChangeComparison } from './ui/EmployeeChangeComparison';
+import { TransferChangeComparison } from './ui/TransferChangeComparison';
 
-type ApprovalModule = 'Employee' | 'Payroll' | 'Medical' | 'Leave';
+type ApprovalModule = 'Employee' | 'Employee Transfer' | 'Payroll' | 'Medical' | 'Leave';
 
 // Safely extract a display string from a value that may be a plain string,
 // a code-list-value object {label}, or a structure object {name}.
@@ -43,10 +45,27 @@ function StatusChip({ status }: { status: string }) {
   return <span className={cls}>{label}</span>;
 }
 
+function medicalGlError(record: any): string {
+  try {
+    const log = typeof record?.payment_log === 'string'
+      ? JSON.parse(record.payment_log || '{}')
+      : (record?.payment_log ?? {});
+    const error = log?.error;
+    if (error && typeof error === 'object') {
+      return error.responseCode
+        ? `[${error.responseCode}] ${error.message || ''}`.trim()
+        : (error.message || JSON.stringify(error));
+    }
+    if (typeof error === 'string') return error;
+  } catch {}
+  return '';
+}
+
 function ModulePill({ module }: { module: ApprovalModule }) {
   if (module === 'Employee') return <span className="pill pill-accent text-[11px]"><Users size={10} className="inline mr-1" />Employee</span>;
   if (module === 'Payroll')  return <span className="pill pill-warning text-[11px]"><Banknote size={10} className="inline mr-1" />Payroll</span>;
   if (module === 'Leave')    return <span className="pill text-[11px] bg-purple-500/10 text-purple-700 border border-purple-200/50"><CalendarClock size={10} className="inline mr-1" />Leave</span>;
+  if (module === 'Employee Transfer') return <span className="pill text-[11px] bg-blue-500/10 text-blue-700 border border-blue-200/50"><ArrowRightLeft size={10} className="inline mr-1" />Transfer</span>;
   return <span className="pill pill-success text-[11px]"><Stethoscope size={10} className="inline mr-1" />Medical</span>;
 }
 
@@ -54,6 +73,8 @@ function ModulePill({ module }: { module: ApprovalModule }) {
 function EmployeeDetail({ emp, onApprove, onReject, onClose, busy }: { emp: any; onApprove: () => void; onReject: (reason: string) => void; onClose: () => void; busy: boolean }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason]       = useState('');
+  const pendingChanges: any[] = Array.isArray(emp.pendingChanges) ? emp.pendingChanges : [];
+  const approvalStages: any[] = Array.isArray(emp.approvalStages) ? emp.approvalStages : [];
 
   const pendingAction = emp.pending_lifecycle_action as string | null | undefined;
   const actionLabels: Record<string, { subtitle: string; btnLabel: string; btnClass: string; iconColor: string }> = {
@@ -81,9 +102,29 @@ function EmployeeDetail({ emp, onApprove, onReject, onClose, busy }: { emp: any;
         </div>
         <div>
           <p className="font-bold text-[var(--text-primary)]">{emp.firstName} {emp.lastName}</p>
-          <p className="text-xs text-[var(--text-muted)]">{actionMeta?.subtitle ?? 'New employee pending approval'}</p>
+          <p className="text-xs text-[var(--text-muted)]">
+            {actionMeta?.subtitle ?? (pendingChanges.length
+              ? `Employee update pending approval · ${pendingChanges.length} change${pendingChanges.length === 1 ? '' : 's'}`
+              : 'New employee pending approval')}
+          </p>
         </div>
       </div>
+
+      <EmployeeChangeComparison changes={pendingChanges} />
+
+      {!!approvalStages.length && (
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+          <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Approval flow</p>
+          <div className="space-y-1.5">
+            {approvalStages.map((stage: any) => (
+              <div key={stage.id} className="flex items-center justify-between gap-3 text-xs">
+                <span className="font-medium text-[var(--text-primary)]">{Number(stage.stage_order) + 1}. {stage.stage_name}</span>
+                <span className="text-[var(--text-muted)]">{stage.approver_label || 'Assigned approver'} · {stage.status}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {emp.actionReason && (
         <div className="rounded-lg bg-slate-50 border border-slate-200 px-4 py-3">
@@ -472,10 +513,10 @@ function LeaveApprovalDetail({ item, onApprove, onReject, onApproveAllowance, on
         </div>
       )}
 
-      {!isPendingFinancial && l.details && (
+      {l.details && (
         <div className="rounded-lg bg-slate-50 border border-slate-100 px-4 py-3">
-          <p className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1">Details</p>
-          <p className="text-[12px] text-[var(--text-primary)]">{l.details}</p>
+          <p className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1">Leave Request Details / Reason</p>
+          <p className="text-[12px] text-[var(--text-primary)] whitespace-pre-wrap">{l.details}</p>
         </div>
       )}
 
@@ -541,16 +582,45 @@ function LeaveApprovalDetail({ item, onApprove, onReject, onApproveAllowance, on
 }
 
 // ── Slide-over panel wrapper ──────────────────────────────────────────────────
+function EmployeeTransferDetail({ transfer, onApprove, onReject, onClose, busy }: {
+  transfer: any; onApprove: (comment: string) => void; onReject: (reason: string) => void; onClose: () => void; busy: boolean;
+}) {
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState('');
+  const [comment, setComment] = useState('');
+  const currentStage = (transfer.stages || []).find((stage: any) => stage.status === 'Pending');
+  return <div className="space-y-5">
+    <div className="flex items-center gap-3 border-b border-[var(--border)] pb-3">
+      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-500/10"><ArrowRightLeft size={18} className="text-blue-600" /></div>
+      <div><p className="font-bold text-[var(--text-primary)]">{transfer.employee_name}</p><p className="text-xs text-[var(--text-muted)]">{transfer.transfer_number} · {transfer.transfer_type}</p></div>
+    </div>
+    <dl className="grid grid-cols-2 gap-4">
+      <div><dt className="text-[11px] font-medium text-[var(--text-muted)]">Employee ID</dt><dd className="mt-0.5 text-sm font-semibold">{transfer.employee_code || '—'}</dd></div>
+      <div><dt className="text-[11px] font-medium text-[var(--text-muted)]">Effective Date</dt><dd className="mt-0.5 text-sm font-semibold">{String(transfer.effective_date || '').slice(0, 10)}</dd></div>
+      <div className="col-span-2"><dt className="text-[11px] font-medium text-[var(--text-muted)]">Current Approval Stage</dt><dd className="mt-0.5 text-sm font-semibold">{currentStage?.stage_name || 'Direct HR approval'}</dd></div>
+    </dl>
+    <div><p className="mb-2 text-xs font-bold uppercase tracking-wide text-[var(--text-muted)]">Proposed changes</p><TransferChangeComparison changes={transfer.changes || []} /></div>
+    {transfer.reason && <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-4"><p className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Transfer reason</p><p className="mt-1 text-sm">{transfer.reason}</p></div>}
+    {rejecting ? <FormField label="Rejection Reason"><CountedTextarea className={`${inputClass} resize-none`} rows={3} maxChars={500} value={reason} onChange={event => setReason(event.target.value)} placeholder="Reason for rejecting this transfer…" /></FormField>
+      : <FormField label="Approval Comment (Optional)"><CountedTextarea className={`${inputClass} resize-none`} rows={2} maxChars={500} value={comment} onChange={event => setComment(event.target.value)} placeholder="Add a note for this approval stage…" /></FormField>}
+    <div className="flex justify-end gap-3 border-t border-[var(--border)] pt-3">
+      <button className="secondary-btn" onClick={onClose} disabled={busy}>Cancel</button>
+      {rejecting ? <><button className="secondary-btn" onClick={() => setRejecting(false)} disabled={busy}>Back</button><button className="primary-btn !bg-red-600 hover:!bg-red-700" onClick={() => onReject(reason)} disabled={busy || !reason.trim()}><XCircle size={14} />{busy ? 'Rejecting…' : 'Confirm Reject'}</button></>
+        : <><button className="secondary-btn !border-red-500 !text-red-600 hover:!bg-red-50" onClick={() => setRejecting(true)} disabled={busy}><XCircle size={14} />Reject</button><button className="primary-btn !bg-green-600 hover:!bg-green-700" onClick={() => onApprove(comment)} disabled={busy}><Check size={14} />{busy ? 'Approving…' : 'Approve Stage'}</button></>}
+    </div>
+  </div>;
+}
+
 function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () => void; onDone: (id: string) => void }) {
   const [busy, setBusy] = useState(false);
 
   async function approveEmployee() {
     setBusy(true);
     try {
-      await api.put(`/employees/${item.id}/approve`);
-      toast.success(item.raw.pending_lifecycle_action
+      const response = await api.put(`/employees/${item.id}/approve`);
+      toast.success(response.data?.message || (item.raw.pending_lifecycle_action
         ? `${item.raw.pending_lifecycle_action.toLowerCase()} approved`
-        : 'Employee approved');
+        : 'Employee approved'));
       onDone(item.id);
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Approval failed');
@@ -604,8 +674,20 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
   async function approveMedical() {
     setBusy(true);
     try {
-      await api.post(`${medBase()}/approve`);
-      toast.success('Medical request approved');
+      const response = await api.post(`${medBase()}/approve`);
+      const updated = response.data?.data;
+      if (updated?.status === 'GL Failed') {
+        const glError = medicalGlError(updated);
+        toast.error(
+          `Medical request approved, but GL posting failed${glError ? ': ' + glError : ''}. Retry it from Manage Medical.`,
+          { duration: 8000 },
+        );
+      } else {
+        toast.success(response.data?.message || 'Medical request approved');
+        if (updated?.document_ref) {
+          toast.success(`GL posted — Ref: ${updated.document_ref}`, { duration: 6000 });
+        }
+      }
       onDone(item.id);
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Approval failed');
@@ -617,6 +699,28 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
     try {
       await api.post(`${medBase()}/reject`, { reason });
       toast.success('Medical request rejected');
+      onDone(item.id);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Rejection failed');
+    } finally { setBusy(false); }
+  }
+
+  async function approveTransfer(comment: string) {
+    setBusy(true);
+    try {
+      await api.post(`/employee-transfers/${item.id}/approve`, { comment });
+      toast.success('Employee transfer approval recorded');
+      onDone(item.id);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Approval failed');
+    } finally { setBusy(false); }
+  }
+
+  async function rejectTransfer(reason: string) {
+    setBusy(true);
+    try {
+      await api.post(`/employee-transfers/${item.id}/reject`, { reason });
+      toast.success('Employee transfer rejected');
       onDone(item.id);
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Rejection failed');
@@ -649,7 +753,7 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
     setBusy(true);
     try {
       await api.post(`/leave/leaves/${item.id}/approve-allowance`);
-      toast.success('Financial approval granted — GL posting in progress');
+      toast.success('Financial approval recorded');
       onDone(item.id);
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Approval failed');
@@ -660,7 +764,7 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
     setBusy(true);
     try {
       await api.post(`/leave/leaves/${item.id}/reject-allowance`, { reason });
-      toast.success('Allowance rejected');
+      toast.success('Financial approval rejected — leave rejected');
       onDone(item.id);
     } catch (e: any) {
       toast.error(e.response?.data?.message || 'Rejection failed');
@@ -700,6 +804,8 @@ function SlideOver({ item, onClose, onDone }: { item: ApprovalItem; onClose: () 
               onClose={onClose}
               busy={busy}
             />
+          ) : item.module === 'Employee Transfer' ? (
+            <EmployeeTransferDetail transfer={item.raw} onApprove={approveTransfer} onReject={rejectTransfer} onClose={onClose} busy={busy} />
           ) : (
             <MedicalDetail rec={item.raw} onApprove={approveMedical} onReject={rejectMedical} onClose={onClose} busy={busy} />
           )}
@@ -760,18 +866,19 @@ export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) =>
       const canSeeMedical = isAdmin || isStageApprover;
 
       const noop = Promise.resolve({ data: { data: [] } });
-      // Employee queue stays HR/admin-only; payroll + medical open up to stage approvers too.
+      // The employee endpoint returns only requests the caller may action at the current stage.
       const adminFetches = [
-        isAdmin       ? api.get('/employees')                        : noop,
+        api.get('/employees/approvals'),
         canSeePayroll ? api.get('/payroll/runs')                     : noop,
         canSeeMedical ? api.get('/medical/staff')                    : noop,
         canSeeMedical ? api.get('/medical/dependents-requests')      : noop,
         canSeeMedical ? api.get('/medical/claims')                   : noop,
       ];
 
-      const [empRes, runRes, staffMedRes, depMedRes, claimRes, leaveRes] = await Promise.allSettled([
+      const [empRes, runRes, staffMedRes, depMedRes, claimRes, leaveRes, transferRes] = await Promise.allSettled([
         ...adminFetches,
         api.get('/leave/central-approval'),
+        api.get('/employee-transfers/approvals'),
       ]);
 
       const pending: ApprovalItem[] = [];
@@ -785,15 +892,18 @@ export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) =>
               SUSPENDED: 'Suspension pending approval', TERMINATED: 'Termination pending approval',
               RESIGNED:  'Resignation pending approval',
             };
+            const pendingChangeCount = Array.isArray(e.pendingChanges) ? e.pendingChanges.length : 0;
             const subtitle = e.pending_lifecycle_action
               ? (lifecycleLabels[e.pending_lifecycle_action] ?? e.pending_lifecycle_action)
-              : (toStr(e.jobTitle) || toStr(e.department) || String(e.email || ''));
+              : pendingChangeCount
+                ? `Employee update · ${pendingChangeCount} change${pendingChangeCount === 1 ? '' : 's'}`
+                : (toStr(e.jobTitle) || toStr(e.department) || String(e.email || ''));
             pending.push({
               id:          String(e.id),
               module:      'Employee',
               title:       `${e.firstName ?? ''} ${e.lastName ?? ''}`.trim() || 'Unknown Employee',
               subtitle,
-              submittedAt: e.createdAt || e.created_at || null,
+              submittedAt: e.updatedAt || e.updated_at || e.createdAt || e.created_at || null,
               status:      e.approvalStatus === 'PENDING' ? 'Pending' : (e.approvalStatus || 'Pending'),
               raw:         e,
             });
@@ -890,6 +1000,29 @@ export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) =>
         });
       }
 
+      if (transferRes.status === 'fulfilled') {
+        const transfers: any[] = transferRes.value.data?.data ?? [];
+        transfers.forEach((transfer: any) => pending.push({
+          id: String(transfer.id),
+          module: 'Employee Transfer',
+          title: transfer.employee_name || 'Employee',
+          subtitle: `${transfer.transfer_type || 'Transfer'} · ${transfer.changes?.length || 0} change(s) · effective ${String(transfer.effective_date || '').slice(0, 10)}`,
+          submittedAt: transfer.submitted_at || transfer.created_at || null,
+          status: transfer.status || 'Pending Approval',
+          raw: transfer,
+        }));
+      }
+
+      pending.sort((a, b) => {
+        const aTime = a.submittedAt ? new Date(a.submittedAt).getTime() : Number.NaN;
+        const bTime = b.submittedAt ? new Date(b.submittedAt).getTime() : Number.NaN;
+        const aValid = Number.isFinite(aTime);
+        const bValid = Number.isFinite(bTime);
+        if (aValid && bValid) return bTime - aTime;
+        if (aValid) return -1;
+        if (bValid) return 1;
+        return 0;
+      });
       setItems(pending);
     } catch {
       toast.error('Failed to load approvals');
@@ -908,9 +1041,11 @@ export function CentralApproval({ onNavigate }: { onNavigate?: (view: string) =>
 
   function handleView(item: ApprovalItem) {
     if (item.module === 'Employee') {
-      sessionStorage.setItem('centralApproval.employeeId', item.id);
-      if (onNavigate) onNavigate('Employees');
-      else setSelectedItem(item);
+      const user = getCurrentUser();
+      if (onNavigate && user && canAccessNav(user, 'Employees')) {
+        sessionStorage.setItem('centralApproval.employeeId', item.id);
+        onNavigate('Employees');
+      } else setSelectedItem(item);
       return;
     }
     if (item.module === 'Payroll') {

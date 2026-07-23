@@ -33,6 +33,8 @@ const STATUS_PILL: Record<string, string> = {
   Draft:             'bg-slate-100 border border-slate-200 text-slate-500',
   Pending:           'bg-[var(--surface-hover)] border border-[var(--border)] text-[var(--text-secondary)]',
   'Pending Approval': 'bg-amber-500/10 text-amber-700 border border-amber-200/50',
+  'Pending Financial Approval': 'bg-blue-500/10 text-blue-700 border border-blue-200/50',
+  'Pending HR Approval': 'bg-purple-500/10 text-purple-700 border border-purple-200/50',
   Approved:          'pill pill-success',
   Rejected:          'pill pill-danger',
   Cancelled:         'bg-[var(--surface-hover)] border border-[var(--border)] text-[var(--text-muted)]',
@@ -1321,8 +1323,19 @@ const fetchSubordinateEmployees = useCallback(() => {
               </div>
             )}
 
+            {/* Rejection reason */}
+            {viewRow.status === 'Rejected' && (
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[var(--danger)] mb-2">Rejection Reason</p>
+                <div className="rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-[13px] text-red-700 leading-relaxed whitespace-pre-wrap">
+                  {viewRow.rejection_reason || 'No reason was provided.'}
+                </div>
+              </div>
+            )}
+
             {/* Allowance breakdown */}
-            {viewRow.leave_type_allowance_enabled === 'Yes' && Number(viewRow.allowance_basic) > 0 && (
+            {!['Subordinate Leave', 'Cancellation Request'].includes(activeTab) &&
+              viewRow.leave_type_allowance_enabled === 'Yes' && Number(viewRow.allowance_basic) > 0 && (
               <div className="rounded-[12px] border border-[var(--border)] overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-2.5 bg-emerald-50 border-b border-emerald-100">
                   <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">Leave Allowance</p>

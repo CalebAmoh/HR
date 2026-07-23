@@ -10,6 +10,14 @@ function validateListCode(code) {
     return null;
 }
 
+// CodeList / CodeListValue ids are integers; route params arrive as strings. Coerce safely
+// (returns null for non-numeric input so handlers can reject with a 400/404).
+function toInt(v) {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isInteger(n) ? n : null;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
    @desc    Get active values for a code list by its CODE string
              Used by select-field pickers throughout the app
@@ -142,7 +150,9 @@ const createCodeListValue = asyncHandler(async (req, res) => {
 const updateCodeListValue = asyncHandler(async (req, res) => {
     // Route: PUT /system/code-lists/:valueId/:id
     // :valueId = codeListId, :id = value record id
-    const { id, valueId: codeListId } = req.params;
+    const id = toInt(req.params.id);
+    const codeListId = toInt(req.params.valueId);
+    if (id === null || codeListId === null) return respond.badReq(res, 'Invalid id');
     const { label, code, description, sortOrder, isActive } = req.body;
 
     const value = await prisma.CodeListValue.findUnique({ where: { id } });
@@ -203,7 +213,9 @@ const updateCodeListValue = asyncHandler(async (req, res) => {
    @access  Private (admin / super-admin)
 ───────────────────────────────────────────────────────────────────────────── */
 const deactivateCodeListValue = asyncHandler(async (req, res) => {
-    const { id, valueId } = req.params;
+    const id = toInt(req.params.id);
+    const valueId = toInt(req.params.valueId);
+    if (id === null || valueId === null) return respond.badReq(res, 'Invalid id');
 
     const value = await prisma.CodeListValue.findUnique({ where: { id: valueId } });
     if (!value)                  return respond.notFound(res, 'Value not found');
@@ -246,7 +258,8 @@ const getAllCodeLists = asyncHandler(async (req, res) => {
    @access  Private
 ───────────────────────────────────────────────────────────────────────────── */
 const getCodeListById = asyncHandler(async (req, res) => {
-    const { id } = req.params;
+    const id = toInt(req.params.id);
+    if (id === null) return respond.notFound(res, 'Code list not found');
     try {
         const list = await prisma.CodeList.findUnique({
             where:   { id },
@@ -315,7 +328,8 @@ const createCodeList = asyncHandler(async (req, res) => {
    Body: { name?, description? }
 ───────────────────────────────────────────────────────────────────────────── */
 const updateCodeList = asyncHandler(async (req, res) => {
-    const { id } = req.params;
+    const id = toInt(req.params.id);
+    if (id === null) return respond.notFound(res, 'Code list not found');
     const { name, description } = req.body;
 
     const list = await prisma.CodeList.findUnique({ where: { id } });
@@ -357,7 +371,9 @@ const updateCodeList = asyncHandler(async (req, res) => {
    @access  Private (admin / super-admin)
 ───────────────────────────────────────────────────────────────────────────── */
 const activateCodeListValue = asyncHandler(async (req, res) => {
-    const { id, valueId } = req.params;
+    const id = toInt(req.params.id);
+    const valueId = toInt(req.params.valueId);
+    if (id === null || valueId === null) return respond.badReq(res, 'Invalid id');
 
     const value = await prisma.CodeListValue.findUnique({ where: { id: valueId } });
     if (!value)                  return respond.notFound(res, 'Value not found');

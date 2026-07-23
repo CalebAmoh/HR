@@ -5,18 +5,23 @@ import {
   User, MapPin, Briefcase, Building, CreditCard, GraduationCap,
   Award, Brain, Heart, Users, FileText, IdCard, ChevronRight,
   Eye, MoreHorizontal, Activity, Calendar, FileCheck, Loader2,
-  Camera, Hash, Search, UserPlus, RefreshCw, Filter, ShieldAlert, TrendingUp,
+  Camera, Hash, Search, UserPlus, RefreshCw, Filter, ShieldAlert, TrendingUp, ArrowRightLeft, Download,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import { getCurrentUser } from '../../lib/auth';
+import { useCan } from '@/hooks/useCan';
+import { SearchSelect } from './ui/SearchSelect';
 import { getSettings, employeeFieldVisible } from '../../lib/settings';
 import { DocumentViewer } from './DocumentViewer';
 import { severityPill, statusPillD, INCIDENT_TYPES, SEVERITIES, STATUSES } from './DisciplinaryTab';
 import { MultiSearchSelect } from './ui/SearchSelect';
 import { ReviewDetailSlideOver } from './ReviewDetailSlideOver';
 import { CountedTextarea } from './ui/CountedTextarea';
+import { EmployeeChangeComparison } from './ui/EmployeeChangeComparison';
+import { TransferChangeComparison } from './ui/TransferChangeComparison';
+import { downloadTransferPdf } from './ui/transferPdf';
 
 interface EmployeeDetailsProps {
   isOpen: boolean;
@@ -25,7 +30,7 @@ interface EmployeeDetailsProps {
   onRefresh?: () => void;
 }
 
-type TabId = 'Personal' | 'Employment' | 'Qualifications' | 'Relationships' | 'Documents' | 'Attendance' | 'Leave' | 'Activity' | 'Disciplinary' | 'Performance';
+type TabId = 'Personal' | 'Employment' | 'Qualifications' | 'Relationships' | 'Documents' | 'Attendance' | 'Leave' | 'Transfers' | 'Activity' | 'Disciplinary' | 'Performance';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -222,7 +227,134 @@ const PersonalTab: React.FC<{ employee: any }> = ({ employee }) => (
   </div>
 );
 
-const EmploymentTab: React.FC<{ employee: any }> = ({ employee }) => (
+// PC-code (position) card — shows the RM/RO tag + current position code, with Assign/Move/Vacate
+// for users who hold `assign_pc_code`. Uses the existing /pc-codes endpoints.
+const PcCodeCard: React.FC<{ employee: any; onRefresh?: () => void }> = ({ employee, onRefresh }) => {
+  const { can } = useCan();
+  const [mode, setMode] = useState<null | 'assign' | 'reparent'>(null);
+  const [vacant, setVacant] = useState<{ id: string; label: string }[]>([]);
+  const [parents, setParents] = useState<{ id: string; label: string }[]>([]);
+  const [target, setTarget] = useState('');
+  const [busy, setBusy] = useState(false);
+  const pc = employee.pcCode;
+
+  const startAssign = async () => {
+    setMode('assign'); setTarget('');
+    try {
+      const res = await api.get('/pc-codes?vacant=1');
+      setVacant((res.data.data ?? []).map((c: any) => ({ id: String(c.id), label: `${c.code} — ${c.name}` })));
+    } catch { toast.error('Failed to load vacant PC codes'); }
+  };
+
+  // Change reporting line: pick a new parent position (or top-level). Only RM-held codes can be
+  // parents, so we offer those plus a "Top level" option; the employee's own code is excluded.
+  const startReparent = async () => {
+    setMode('reparent'); setTarget('');
+    try {
+      const res = await api.get('/pc-codes');
+      const opts = (res.data.data ?? [])
+        .filter((c: any) => String(c.id) !== String(pc?.id) && c.code !== '000000000000')
+        .map((c: any) => ({ id: String(c.id), label: `${c.code} — ${c.name}${c.currentEmployee ? ` · ${c.currentEmployee}` : ' · (vacant)'}` }));
+      setParents([{ id: '__ROOT__', label: 'Top level (reports to nobody)' }, ...opts]);
+    } catch { toast.error('Failed to load positions'); }
+  };
+
+  const doAssign = async () => {
+    if (!target) { toast.error('Select a PC code'); return; }
+    setBusy(true);
+    try {
+      await api.post(`/pc-codes/${target}/assign`, { employeeId: String(employee.id) });
+      toast.success('PC code assigned');
+      setMode(null);
+      onRefresh?.();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to assign');
+    } finally { setBusy(false); }
+  };
+
+  const doReparent = async () => {
+    if (!pc?.id) return;
+    if (!target) { toast.error('Select where this position reports to'); return; }
+    setBusy(true);
+    try {
+      await api.put(`/pc-codes/${pc.id}/reparent`, { reportsToId: target === '__ROOT__' ? null : target });
+      toast.success('Reporting line updated');
+      setMode(null);
+      onRefresh?.();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to change reporting line');
+    } finally { setBusy(false); }
+  };
+
+  const doVacate = async () => {
+    if (!pc?.id) return;
+    setBusy(true);
+    try {
+      await api.post(`/pc-codes/${pc.id}/vacate`, {});
+      toast.success('PC code vacated');
+      onRefresh?.();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to vacate');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <SectionCard title="Position (PC Code)" icon={Hash} accent="#0891b2">
+      <div className="grid grid-cols-2 gap-x-6 gap-y-5">
+        <InfoField label="RM / RO" value={fmt(employee.rmRoType)} />
+        <InfoField label="PC Code" value={pc ? `${pc.code} — ${pc.name}` : null} span2 />
+      </div>
+
+      {can('assign_pc_code') && (
+        <div className="mt-4 pt-4 border-t border-[var(--border)]">
+          {mode === 'assign' ? (
+            <div className="space-y-3">
+              <SearchSelect
+                value={target}
+                onChange={setTarget}
+                options={vacant}
+                placeholder={vacant.length ? 'Select a vacant position…' : 'No vacant positions available'}
+              />
+              <div className="flex gap-2">
+                <button onClick={doAssign} disabled={busy} className="primary-btn shrink-0">Assign</button>
+                <button onClick={() => setMode(null)} disabled={busy} className="secondary-btn shrink-0">Cancel</button>
+              </div>
+            </div>
+          ) : mode === 'reparent' ? (
+            <div className="space-y-3">
+              <SearchSelect
+                value={target}
+                onChange={setTarget}
+                options={parents}
+                placeholder="Report to… (or Top level)"
+              />
+              <div className="flex gap-2">
+                <button onClick={doReparent} disabled={busy} className="primary-btn shrink-0">Update</button>
+                <button onClick={() => setMode(null)} disabled={busy} className="secondary-btn shrink-0">Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-2 flex-wrap">
+              {pc && (
+                <button onClick={startReparent} disabled={busy} className="secondary-btn shrink-0">
+                  <Building className="w-[14px] h-[14px]" /> Change reporting line
+                </button>
+              )}
+              <button onClick={startAssign} disabled={busy} className="secondary-btn shrink-0">
+                <UserPlus className="w-[14px] h-[14px]" /> {pc ? 'Move to a vacant code' : 'Assign a code'}
+              </button>
+              {pc && (
+                <button onClick={doVacate} disabled={busy} className="secondary-btn shrink-0">Vacate</button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </SectionCard>
+  );
+};
+
+const EmploymentTab: React.FC<{ employee: any; onRefresh?: () => void }> = ({ employee, onRefresh }) => (
   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
     <SectionCard title="Job Details" icon={Briefcase} accent="#059669">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5">
@@ -240,6 +372,8 @@ const EmploymentTab: React.FC<{ employee: any }> = ({ employee }) => (
         <InfoField label="Confirmation Date"  value={fmtDate(employee.confirmationDate)} fieldKey="confirmationDate" />
       </div>
     </SectionCard>
+
+    <PcCodeCard employee={employee} onRefresh={onRefresh} />
 
     <SectionCard title="Financial" icon={CreditCard} accent="#0066b3">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5">
@@ -437,6 +571,7 @@ const statusPill = (status: string) => {
     'Approved':         'bg-emerald-50 text-emerald-700 border-emerald-200',
     'Pending Approval': 'bg-amber-50 text-amber-700 border-amber-200',
     'Pending HR Approval': 'bg-blue-50 text-blue-700 border-blue-200',
+    'Pending Financial Approval': 'bg-indigo-50 text-indigo-700 border-indigo-200',
     'Rejected':         'bg-rose-50 text-rose-700 border-rose-200',
     'Cancelled':        'bg-slate-100 text-slate-500 border-slate-200',
     'Draft':            'bg-slate-50 text-slate-500 border-slate-200',
@@ -491,6 +626,83 @@ const LeaveTab: React.FC<{ employee: any }> = ({ employee }) => {
 };
 
 // ─── Activity tab ─────────────────────────────────────────────────────────────
+
+const transferStatusPill = (status: string) => {
+  const map: Record<string, string> = {
+    Effective: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    Scheduled: 'bg-blue-50 text-blue-700 border-blue-200',
+    'Pending Approval': 'bg-amber-50 text-amber-700 border-amber-200',
+    Rejected: 'bg-rose-50 text-rose-700 border-rose-200',
+    Cancelled: 'bg-slate-100 text-slate-500 border-slate-200',
+    Draft: 'bg-slate-50 text-slate-500 border-slate-200',
+  };
+  const cls = map[status] ?? 'bg-slate-50 text-slate-500 border-slate-200';
+  return <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10.5px] font-semibold ${cls}`}>{status}</span>;
+};
+
+const TransferHistoryTab: React.FC<{ employeeId: string }> = ({ employeeId }) => {
+  const [transfers, setTransfers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    api.get(`/employee-transfers?employee=${encodeURIComponent(employeeId)}`)
+      .then(response => setTransfers(response.data?.data ?? []))
+      .catch(() => {
+        setTransfers([]);
+        toast.error('Failed to load employee transfer history');
+      })
+      .finally(() => setLoading(false));
+  }, [employeeId]);
+
+  if (loading) return <div className="flex justify-center py-16"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /></div>;
+
+  return (
+    <SectionCard title="Employee Transfer History" icon={ArrowRightLeft} accent="#2563eb">
+      {transfers.length === 0 ? <EmptyState icon={ArrowRightLeft} label="No employee transfer records found" /> : (
+        <div className="space-y-4">
+          {transfers.map(transfer => {
+            const approvedStages = (transfer.stages ?? []).filter((stage: any) => stage.status === 'Approved').length;
+            return (
+              <article key={transfer.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/70 px-4 py-3">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-[13px] font-bold text-slate-800">{transfer.transfer_number}</p>
+                      {transferStatusPill(transfer.status)}
+                    </div>
+                    <p className="mt-1 text-[11.5px] text-slate-500">{transfer.transfer_type}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Effective date</p>
+                    <p className="mt-0.5 text-[12.5px] font-semibold text-slate-700">{fmtDate(transfer.effective_date) ?? '—'}</p>
+                    <button type="button" onClick={() => downloadTransferPdf(transfer)} className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-700">
+                      <Download className="h-3.5 w-3.5" /> PDF
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-3 p-4">
+                  <TransferChangeComparison changes={transfer.changes ?? []} />
+                  <div className="grid gap-2 text-[11.5px] text-slate-600 sm:grid-cols-2">
+                    <p><span className="font-semibold text-slate-700">Created:</span> {fmtDate(transfer.created_at) ?? '—'}</p>
+                    <p><span className="font-semibold text-slate-700">Approval progress:</span> {transfer.stages?.length ? `${approvedStages} of ${transfer.stages.length} stages approved` : 'Direct approval flow'}</p>
+                  </div>
+                  {transfer.reason && <p className="rounded-lg bg-slate-50 px-3 py-2 text-[11.5px] text-slate-600"><span className="font-semibold text-slate-700">Reason:</span> {transfer.reason}</p>}
+                  {(transfer.rejected_reason || transfer.cancelled_reason) && (
+                    <p className="rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-[11.5px] text-rose-700">
+                      <span className="font-semibold">{transfer.rejected_reason ? 'Rejection reason:' : 'Cancellation reason:'}</span>{' '}
+                      {transfer.rejected_reason || transfer.cancelled_reason}
+                    </p>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </SectionCard>
+  );
+};
 
 const ACTION_META: Record<string, { label: string; dot: string; Icon: React.ElementType; iconColor: string }> = {
   create:            { label: 'Employee Created',        dot: 'bg-blue-500',    Icon: UserPlus,      iconColor: 'text-blue-500'    },
@@ -1093,6 +1305,7 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
   const initials = `${(employee.firstName?.[0] ?? '').toUpperCase()}${(employee.lastName?.[0] ?? '').toUpperCase()}`;
   const isPending  = employee.approvalStatus === 'PENDING';
   const isRejected = employee.approvalStatus === 'REJECTED';
+  const pendingChanges: any[] = Array.isArray(employee.pendingChanges) ? employee.pendingChanges : [];
 
   // Self-approval guard + action permissions
   const currentUser = getCurrentUser();
@@ -1101,7 +1314,9 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
   const canEditEmp      = can('edit_employees');
   const selfApprovalAllowed = getSettings().approvals.employeeSelfApproval;
   const isOwnRecord = String(currentUser?.id) === String(employee.posted_by);
-  const canApprove  = can('approve_employees') && (selfApprovalAllowed || !isOwnRecord);
+  const hasApprovalAuthority = can('approve_employees') || employee.canCurrentUserApprove === true;
+  const canApprove  = hasApprovalAuthority && (selfApprovalAllowed || !isOwnRecord);
+  const canViewTransfers = ['view_employee_transfers', 'create_employee_transfers', 'approve_employee_transfers', 'manage_employee_transfers'].some(can);
 
   const isApproved  = employee.approvalStatus === 'APPROVED';
   const isActive    = employee.lifecycleStatus === 'ACTIVE';
@@ -1166,7 +1381,7 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
     setApproving(true);
     try {
       const res = await api.put(`/employees/${employee.id}/approve`);
-      toast.success(`${fullName} approved successfully`);
+      toast.success(res.data?.message || `${fullName} approved successfully`);
 
       const sync = res.data?.syncResult;
       if (sync) {
@@ -1306,6 +1521,7 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
     { id: 'Qualifications' as TabId, label: 'Qualifications', icon: GraduationCap },
     { id: 'Attendance'     as TabId, label: 'Attendance',     icon: Activity      },
     { id: 'Leave'          as TabId, label: 'Leave',          icon: Calendar      },
+    ...(canViewTransfers ? [{ id: 'Transfers' as TabId, label: 'Transfers', icon: ArrowRightLeft }] : []),
     { id: 'Activity'       as TabId, label: 'Activity',       icon: Filter        },
     { id: 'Disciplinary'   as TabId, label: 'Disciplinary',   icon: ShieldAlert   },
     { id: 'Performance'    as TabId, label: 'Performance',    icon: TrendingUp    },
@@ -1314,12 +1530,13 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
   const renderContent = () => {
     switch (activeTab) {
       case 'Personal':       return <PersonalTab       employee={employee} />;
-      case 'Employment':     return <EmploymentTab     employee={employee} />;
+      case 'Employment':     return <EmploymentTab     employee={employee} onRefresh={onRefresh} />;
       case 'Relationships':  return <RelationshipsTab  employee={employee} />;
       case 'Documents':      return <DocumentsTab      employee={employee} onViewDocument={setDocumentToView} />;
       case 'Qualifications': return <QualificationsTab employee={employee} />;
       case 'Attendance':     return <EmptyState icon={Activity} label="Attendance data not available yet" />;
       case 'Leave':          return <LeaveTab employee={employee} />;
+      case 'Transfers':      return <TransferHistoryTab employeeId={String(employee.id)} />;
       case 'Activity':       return <ActivityTab employeeId={String(employee.id)} />;
       case 'Disciplinary':   return <EmployeeDisciplinaryTab employeeId={String(employee.id)} />;
       case 'Performance':    return <EmployeePerformanceTab  employeeId={String(employee.id)} />;
@@ -1369,7 +1586,7 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
                     </button>
                   </>
                 )}
-                {isPending && can('approve_employees') && !canApprove && (
+                {isPending && hasApprovalAuthority && !canApprove && (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-[var(--warning)] bg-[var(--warning-dim)] border border-[var(--warning)]/20">
                     <AlertTriangle className="w-3 h-3" />
                     Self-approval not permitted
@@ -1554,6 +1771,12 @@ export function EmployeeDetailsSlideOver({ isOpen, onClose, employee, onRefresh 
                     <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-[var(--warning-dim)] text-[var(--warning)] border border-[var(--warning)]/20">
                       Awaiting Approval
                     </span>
+                  </div>
+                )}
+
+                {isPending && pendingChanges.length > 0 && (
+                  <div className="mb-4">
+                    <EmployeeChangeComparison changes={pendingChanges} />
                   </div>
                 )}
 

@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Building2, Layers, Briefcase, Users, UserCircle,
   ChevronDown, ChevronRight, Network, AlignLeft, Workflow,
+  ZoomIn, ZoomOut, Maximize2,
 } from 'lucide-react';
 
 // ─── Type config ──────────────────────────────────────────────────────────────
@@ -392,6 +393,33 @@ export function Organogram({ data }: { data: any[] }) {
 
   const roots = data.filter(d => d.parent === 'None' || !data.find(p => p.name === d.parent));
 
+  // Zoom-to-fit: a wide chart would otherwise overflow horizontally. We scale the tree/pipeline
+  // down with CSS `zoom` so the whole structure fits the container width.
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const zoomRef = useRef(1);
+  zoomRef.current = zoom;
+  const clampZoom = (z: number) => Math.round(Math.max(0.3, Math.min(1.3, z)) * 100) / 100;
+
+  const fitToWidth = useCallback(() => {
+    const c = canvasRef.current, t = contentRef.current;
+    if (!c || !t) return;
+    const natural = t.scrollWidth / (zoomRef.current || 1); // scrollWidth scales with zoom
+    if (!natural) return;
+    const avail = c.clientWidth - 48; // breathing room for padding
+    setZoom(clampZoom(avail / natural));
+  }, []);
+
+  // Auto-fit whenever the data, view, or container size changes.
+  useEffect(() => {
+    if (view === 'list') return;
+    const id = setTimeout(fitToWidth, 80);
+    const onResize = () => fitToWidth();
+    window.addEventListener('resize', onResize);
+    return () => { clearTimeout(id); window.removeEventListener('resize', onResize); };
+  }, [view, data.length, fitToWidth]);
+
   const count = (types: string[]) =>
     data.filter(d => types.includes(d.type?.toLowerCase())).length;
 
@@ -424,6 +452,13 @@ export function Organogram({ data }: { data: any[] }) {
 
         <div className="flex items-center gap-3 flex-wrap">
           <Legend />
+          {view !== 'list' && (
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl shrink-0">
+              <button onClick={() => setZoom(z => clampZoom(z - 0.1))} title="Zoom out" className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-800 hover:bg-white transition-all"><ZoomOut size={13} /></button>
+              <button onClick={fitToWidth} title="Fit to screen" className="px-1.5 h-7 flex items-center gap-1 rounded-lg text-[11px] font-bold text-slate-600 hover:text-[var(--accent)] hover:bg-white transition-all tabular-nums"><Maximize2 size={11} /> {Math.round(zoom * 100)}%</button>
+              <button onClick={() => setZoom(z => clampZoom(z + 0.1))} title="Zoom in" className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-800 hover:bg-white transition-all"><ZoomIn size={13} /></button>
+            </div>
+          )}
           <div className="flex bg-slate-100 p-1 rounded-xl">
             <button
               onClick={() => setView('tree')}
@@ -455,6 +490,7 @@ export function Organogram({ data }: { data: any[] }) {
 
       {/* Canvas */}
       <div
+        ref={canvasRef}
         className={`flex-1 overflow-auto ${
           view === 'list'
             ? 'p-5 bg-[var(--bg)]'
@@ -467,13 +503,13 @@ export function Organogram({ data }: { data: any[] }) {
             <p className="text-[13px] font-medium">No company structures found.</p>
           </div>
         ) : view === 'tree' ? (
-          <div className="inline-flex flex-col items-center gap-0 pb-12 pt-2 min-w-max mx-auto">
+          <div ref={contentRef} style={{ zoom }} className="inline-flex flex-col items-center gap-0 pb-12 pt-2 min-w-max mx-auto">
             {roots.map(node => (
               <TreeNode key={node.id} node={node} allData={data} level={0} />
             ))}
           </div>
         ) : view === 'pipeline' ? (
-          <div className="inline-flex flex-col gap-6 pb-12 pt-2 min-w-max">
+          <div ref={contentRef} style={{ zoom }} className="inline-flex flex-col gap-6 pb-12 pt-2 min-w-max">
             {roots.map(node => (
               <PipelineNode key={node.id} node={node} allData={data} level={0} />
             ))}

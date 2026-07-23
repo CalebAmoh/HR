@@ -3,8 +3,15 @@ const asyncHandler = require('../middleware/asyncHandler');
 const respond = require('../helpers/respondHelper');
 const { toBigInt, s } = require('../helpers/controllerHelpers');
 
+// CodeListValue ids are integers; coerce (blank/invalid -> null).
+const clvInt = (v) => {
+  if (v === '' || v == null) return null;
+  const n = Number(v);
+  return Number.isInteger(n) ? n : null;
+};
+
 async function clvMap(ids) {
-  const unique = [...new Set(ids.filter(Boolean))];
+  const unique = [...new Set(ids.map(clvInt).filter(v => v != null))];
   if (!unique.length) return {};
   const vals = await prisma.codeListValue.findMany({
     where: { id: { in: unique } }, select: { id: true, label: true },
@@ -50,7 +57,7 @@ const addSkill = asyncHandler(async (req, res) => {
   if (!empId)    return respond.badReq(res, 'Employee is required');
   if (!skill_id) return respond.badReq(res, 'Skill is required');
   const row = await prisma.employeeskills.create({
-    data: { employee: empId, skill_id, details: details?.trim() || null },
+    data: { employee: empId, skill_id: clvInt(skill_id), details: details?.trim() || null },
   });
   respond.created(res, 'Skill added', s(row));
 });
@@ -62,7 +69,7 @@ const updateSkill = asyncHandler(async (req, res) => {
   const { skill_id, details } = req.body;
   const row = await prisma.employeeskills.update({
     where: { id },
-    data: { skill_id: skill_id || null, details: details?.trim() || null },
+    data: { skill_id: clvInt(skill_id), details: details?.trim() || null },
   });
   respond.ok(res, 'Skill updated', s(row));
 });
@@ -99,7 +106,7 @@ const addCert = asyncHandler(async (req, res) => {
   if (!certification_id) return respond.badReq(res, 'Certification is required');
   const row = await prisma.employeecertifications.create({
     data: {
-      employee: empId, certification_id,
+      employee: empId, certification_id: clvInt(certification_id),
       institute:  institute?.trim()  || null,
       date_start: date_start ? new Date(date_start) : null,
       date_end:   date_end   ? new Date(date_end)   : null,
@@ -116,7 +123,7 @@ const updateCert = asyncHandler(async (req, res) => {
   const row = await prisma.employeecertifications.update({
     where: { id },
     data: {
-      certification_id: certification_id || null,
+      certification_id: clvInt(certification_id),
       institute: institute?.trim() || null,
       date_start: date_start ? new Date(date_start) : null,
       date_end:   date_end   ? new Date(date_end)   : null,
@@ -157,7 +164,7 @@ const addEducation = asyncHandler(async (req, res) => {
   const row = await prisma.employeeeducations.create({
     data: {
       employee: empId,
-      education_id: education_id || null,
+      education_id: clvInt(education_id),
       institute:  institute?.trim()  || null,
       date_start: date_start ? new Date(date_start) : null,
       date_end:   date_end   ? new Date(date_end)   : null,
@@ -174,7 +181,7 @@ const updateEducation = asyncHandler(async (req, res) => {
   const row = await prisma.employeeeducations.update({
     where: { id },
     data: {
-      education_id: education_id || null,
+      education_id: clvInt(education_id),
       institute:  institute?.trim()  || null,
       date_start: date_start ? new Date(date_start) : null,
       date_end:   date_end   ? new Date(date_end)   : null,
@@ -215,7 +222,7 @@ const addLanguage = asyncHandler(async (req, res) => {
   if (!language_id) return respond.badReq(res, 'Language is required');
   const row = await prisma.employeelanguages.create({
     data: {
-      employee: empId, language_id,
+      employee: empId, language_id: clvInt(language_id),
       reading:       reading       || null,
       speaking:      speaking      || null,
       writing:       writing       || null,
@@ -233,7 +240,7 @@ const updateLanguage = asyncHandler(async (req, res) => {
   const row = await prisma.employeelanguages.update({
     where: { id },
     data: {
-      language_id,
+      language_id: clvInt(language_id),
       reading:       reading       || null,
       speaking:      speaking      || null,
       writing:       writing       || null,

@@ -47,7 +47,7 @@ const MODULES: HelpModule[] = [
   {
     id: 'employees',
     title: 'Employees',
-    description: 'Add, edit, and manage your workforce — profiles, documents, relations, lifecycle, and public self-onboarding.',
+    description: 'Manage employee records, approvals, transfers, change history, lifecycle actions, onboarding, and AI insights.',
     icon: Users,
     color: '#2563eb',
     accentBg: '#eff6ff',
@@ -55,19 +55,18 @@ const MODULES: HelpModule[] = [
       {
         id: 'employees-overview',
         title: 'Employees Overview',
-        summary: 'Understand the four areas of the Employees module and how employee records are used across the system.',
+        summary: 'Understand the Employees menu, its four pages, and how employee records are used across the system.',
         icon: BookOpen,
         content: [
-          { type: 'text', body: 'The Employees module is the foundation of the HR system. Every payroll run, leave balance, medical claim, and performance review traces back to an employee record. The "Employees" sidebar item is a dropdown with two pages: Manage Employees (the workforce list and tabs described below) and Self-Onboarding (a public form new hires fill in themselves).' },
-          { type: 'text', body: 'Manage Employees is organised into four areas accessible from tabs at the top of the page.' },
+          { type: 'text', body: 'The Employees module is the foundation of the HR system. Every payroll run, leave balance, medical claim, performance review, and employee transfer traces back to an employee record. The Employees sidebar menu contains four pages.' },
           {
             type: 'table',
-            headers: ['Tab', 'What it manages'],
+            headers: ['Page', 'What it manages'],
             rows: [
-              ['Employees',    'Your active workforce — add, edit, approve records, and take lifecycle actions (suspend, resign, terminate)'],
-              ['Deactivated',  'Separated view for suspended, terminated, and resigned employees — accessible from the Deactivated dropdown'],
-              ['Disciplinary', 'Misconduct and performance incidents logged against employees across the whole organisation'],
-              ['Relations',    'Skills, certifications, languages, dependents, and emergency contacts — not tied to one profile at a time'],
+              ['Manage Employees', 'Your active workforce, employee relations, disciplinary records, approvals, lifecycle actions, and deactivated employees'],
+              ['Self-Onboarding Setup', 'Configure the public intake form, share its link or QR code, review submissions, and convert them into employee records'],
+              ['AI Insights', 'Review explainable attrition-risk scores derived from tenure, attendance, leave, performance, and disciplinary signals'],
+              ['Employee Transfer', 'Create, approve, schedule, activate, review, and export auditable employee assignment changes'],
             ],
           },
           {
@@ -145,10 +144,10 @@ const MODULES: HelpModule[] = [
             type: 'steps', heading: 'Converting a submission',
             steps: [
               { label: 'Go to the Submissions tab. New entries show a "New" status badge.' },
-              { label: 'Click the eye icon to review the submitted details and any uploaded files.' },
+              { label: 'Open the submission’s three-dot actions menu and choose View to review the details and uploaded files.' },
               { label: 'Click the convert (person+) icon to open the employee form pre-filled with the submission.' },
               { label: 'Complete the employment, financial, and supervisor details, then save — the employee is created as PENDING approval and the submission is marked Converted.' },
-              { label: 'Use the bin icon to discard a submission you do not want to keep.' },
+              { label: 'Use Delete from the actions menu to discard a submission you do not want to keep.' },
             ],
           },
           { type: 'tip', body: 'The link and QR code use the server\'s network (LAN) IP — not "localhost" — so a phone on the same network can open it. Make sure the device is on the same network and the host firewall allows the app\'s port.' },
@@ -156,30 +155,53 @@ const MODULES: HelpModule[] = [
         ],
       },
       {
+        id: 'employee-ai-insights',
+        title: 'Employee AI Insights',
+        summary: 'Use explainable attrition-risk indicators as a prompt for proactive employee conversations.',
+        icon: Sparkles,
+        content: [
+          { type: 'text', body: 'Employees → AI Insights provides an offline attrition-risk scorecard for authorised users. It groups employees into Low, Medium, or High risk and explains the signals contributing to each score.' },
+          {
+            type: 'steps', heading: 'Reviewing insights',
+            steps: [
+              { label: 'Open Employees → AI Insights. Access requires View AI Insights permission.' },
+              { label: 'Review the employee count and High/Medium risk summary cards.' },
+              { label: 'Select an employee row to see contributing factors and suggested next steps.' },
+              { label: 'Use Recompute to refresh the scorecard from the latest available HR records.' },
+            ],
+          },
+          { type: 'warning', body: 'These scores are heuristic decision-support indicators, not employment decisions. Validate the context, speak with the employee, and use normal HR review before taking any action.' },
+        ],
+      },
+      {
         id: 'edit-employee',
         title: 'Editing Employee Details',
-        summary: 'Update any field across the five-section employee form at any time.',
+        summary: 'Edit personal and administrative fields while routing controlled employment changes through Employee Transfer.',
         icon: FileText,
         content: [
+          { type: 'text', body: 'Control Setup → Employee Form → Employee Transfers determines which fields must be changed through the formal transfer process. Fields switched off there remain editable as ordinary employee details. This separates personal or administrative corrections from assignment changes that need an effective date and transfer history.' },
           {
             type: 'steps', heading: 'How to edit an employee',
             steps: [
               { label: 'Find the employee in the Employees list.' },
-              { label: 'Click the pencil (edit) icon on their row to open the edit form.' },
+              { label: 'Open the three-dot actions menu and select Edit.' },
               { label: 'Navigate between sections using the step tabs at the top.' },
               { label: 'Make your changes and click Save.' },
+              { label: 'If approval on edit is enabled, the record returns to PENDING and approvers can review an old-value → new-value comparison before acting.' },
             ],
           },
+          { type: 'tip', body: 'New employee approval and employee detail-change approval use the same configured Employee Approval Flow. They are not separate approval chains.' },
+          { type: 'warning', body: 'Fields enabled for Employee Transfers should not be treated as ordinary edits for an approved active employee. Create a transfer so the proposal, approvals, effective date, and final sync remain auditable.' },
           { type: 'tip', body: 'Changes to pay grade take effect from the next payroll run and do not alter previously generated payslips.' },
         ],
       },
       {
         id: 'employee-profile',
         title: 'The Employee Profile',
-        summary: 'Nine tabs inside the slide-over give a complete view of an employee record.',
+        summary: 'The profile tabs provide a complete view of an employee record, including transfer history and change activity.',
         icon: Users,
         content: [
-          { type: 'text', body: 'Click the eye icon on any employee row to open their profile slide-over. Nine tabs organise all information about that employee.' },
+          { type: 'text', body: 'Open the three-dot actions menu on an employee row and choose View Details. The profile tabs organise all information about that employee; the exact tabs shown depend on permissions.' },
           {
             type: 'table',
             headers: ['Tab', 'What it shows'],
@@ -191,6 +213,7 @@ const MODULES: HelpModule[] = [
               ['Qualifications', 'Skills, certifications, education history, and language proficiencies in one view'],
               ['Attendance',     'Daily attendance records for this employee — see the Attendance module for clock-in/out, timesheets, and statuses'],
               ['Leave',          'Full leave history — type, period, start, end, days taken, and approval status'],
+              ['Transfers',      'Every transfer record for this employee, including proposed changes, effective date, approval progress, status, and PDF export'],
               ['Activity',       'Chronological audit log of every action taken on this employee — who did what and when'],
               ['Disciplinary',   'Disciplinary incidents logged against this employee — add, edit, and delete records from here'],
             ],
@@ -201,17 +224,26 @@ const MODULES: HelpModule[] = [
       {
         id: 'approve-employee',
         title: 'Approving or Rejecting a Record',
-        summary: 'Review newly created employee records and approve or reject them before they become active.',
+        summary: 'Review new employees and employee detail changes through one shared, configurable approval flow.',
         icon: CheckCircle2,
         content: [
-          { type: 'text', body: 'New employee records start with a PENDING approval status. Until approved, the employee cannot be processed for payroll or leave. Authorised users see Approve and Reject buttons in the slide-over header.' },
+          { type: 'text', body: 'New employee records and employee detail changes can both enter the same Employee Approval Flow configured under Settings → Controls → Approvals. Each stage may be assigned to a role or a specific user. With no configured stages, users with Approve Employees permission provide one-step approval.' },
+          {
+            type: 'table',
+            headers: ['Request', 'What the approver reviews', 'Final result'],
+            rows: [
+              ['New employee', 'The complete employee record and required employment information', 'The employee becomes APPROVED and ACTIVE, then syncs to the configured external system'],
+              ['Employee detail change', 'A clear field-by-field comparison showing the previous value and proposed value', 'The approved changes are recorded in history and the updated employee is synced'],
+            ],
+          },
           {
             type: 'steps', heading: 'How to approve or reject',
             steps: [
-              { label: 'Go to Employees. PENDING records display an amber "PENDING" badge.' },
-              { label: 'Click the eye icon to open the profile slide-over.' },
-              { label: 'Review all details across the tabs.' },
-              { label: 'Click "Approve" to activate the record, or "Reject" to decline it and enter a reason.' },
+              { label: 'Open Central Approval, or open the PENDING employee from Manage Employees.' },
+              { label: 'Review the employee details and, for an edit, the previous-value → new-value comparison.' },
+              { label: 'Review the approval progress to confirm which configured stage is currently active.' },
+              { label: 'Click Approve to complete your stage, or Reject and enter a reason. A rejection ends the entire employee request.' },
+              { label: 'After an intermediate approval, the next configured approver is notified. Final approval activates or confirms the employee and triggers external sync.' },
             ],
           },
           { type: 'text', body: 'After approval, the system automatically attempts to sync the employee record to any configured external system (x100 for user creation). A second notification appears immediately after approval confirming whether the sync succeeded or failed.' },
@@ -227,12 +259,77 @@ const MODULES: HelpModule[] = [
             type: 'steps', heading: 'How to retry a failed sync',
             steps: [
               { label: 'In the Employees list, find the employee — they will have a red "Sync Failed" badge on their row.' },
-              { label: 'Click the refresh (↻) icon that appears next to the edit button on that row.' },
+              { label: 'Open the three-dot actions menu and choose "Retry External Sync".' },
               { label: 'The system re-attempts the sync. A success or error notification will confirm the result.' },
             ],
           },
           { type: 'tip', body: 'If self-approval is disabled in Settings, the user who created the record cannot approve it — another authorised user must do so.' },
+          { type: 'tip', body: 'When a request is rejected, its rejection reason remains visible in the employee details so the requester and reviewers can understand the outcome.' },
           { type: 'warning', body: 'Suspend, Resign, and Terminate actions are only available once a record has been approved. They are disabled on PENDING records.' },
+        ],
+      },
+      {
+        id: 'central-approval',
+        title: 'Using Central Approval',
+        summary: 'Review the latest actionable employee, transfer, payroll, leave, and medical requests in one queue.',
+        icon: ListChecks,
+        content: [
+          { type: 'text', body: 'Central Approval combines pending work from multiple modules into one table. Records are arranged latest first. Stage approvers see requests only when the current configured stage is assigned to their user account or role; broader approvers see the requests their permissions allow them to action.' },
+          {
+            type: 'table',
+            headers: ['Module', 'What can appear'],
+            rows: [
+              ['Employee', 'New employee approval, employee detail-change approval, and permitted lifecycle requests'],
+              ['Employee Transfer', 'Submitted transfers awaiting the current role or user stage'],
+              ['Leave', 'Supervisor, financial, or Admin HR approval according to the leave status and allowance flow'],
+              ['Payroll', 'Submitted payroll runs awaiting their configured approval stage'],
+              ['Medical', 'Staff, dependent, and hospital requests awaiting their configured approval stage'],
+            ],
+          },
+          {
+            type: 'steps', heading: 'Reviewing a request',
+            steps: [
+              { label: 'Open Central Approval from the sidebar or from an approval notification.' },
+              { label: 'Use search to find an employee, module, or request. The newest actionable records are shown first.' },
+              { label: 'Open the record to review its details, reasons, allowance figures, proposed changes, and approval progress where applicable.' },
+              { label: 'Approve the current stage or reject with a reason. Intermediate approval notifies the next stage; rejection ends the request according to that module’s rules.' },
+            ],
+          },
+          { type: 'tip', body: 'A configured stage assignment grants authority for that stage even when the approver does not have access to the full originating module. In that case, Central Approval provides the review panel.' },
+        ],
+      },
+      {
+        id: 'employee-transfers',
+        title: 'Employee Transfers',
+        summary: 'Plan and approve effective-dated assignment changes without overwriting the employee record immediately.',
+        icon: Briefcase,
+        content: [
+          { type: 'text', body: 'Employee Transfer is the controlled workflow for changing employment fields enabled under Settings → Controls → Employee Form → Employee Transfers. A transfer snapshots the current and proposed values, follows its approval stages, and changes the employee only when it becomes effective.' },
+          {
+            type: 'table',
+            headers: ['Status', 'Meaning'],
+            rows: [
+              ['Draft', 'The proposal can still be edited and has not entered approval'],
+              ['Pending Approval', 'The transfer is awaiting its current configured role or user stage'],
+              ['Scheduled', 'All approvals are complete; the effective date is still in the future'],
+              ['Effective', 'The proposed fields have been applied to the employee and the external employee sync API has been called'],
+              ['Rejected', 'An approver rejected the proposal; the employee record was not changed'],
+              ['Cancelled', 'An authorised user cancelled the transfer before it became effective'],
+            ],
+          },
+          {
+            type: 'steps', heading: 'Creating and processing a transfer',
+            steps: [
+              { label: 'Go to Employees → Employee Transfer and click New Transfer.' },
+              { label: 'Select the employee, transfer type, effective date, proposed field values, supporting-document reference, and reason.' },
+              { label: 'Save the draft, then open its three-dot actions menu and choose Submit for Approval.' },
+              { label: 'Configured approvers act in order. Any rejection rejects the entire transfer.' },
+              { label: 'After final approval, a future-dated transfer becomes Scheduled. When due, it becomes Effective and updates the employee.' },
+            ],
+          },
+          { type: 'text', body: 'The transfer approval setup is under Settings → Controls → Approvals. Turn on "Use Employee Approval Flow" to inherit the same stages used by new employees and employee detail changes, or turn it off to maintain a separate transfer-specific flow. The selected flow is snapshotted at submission, so changing setup does not rewrite transfers already in progress.' },
+          { type: 'tip', body: 'Use the row’s three-dot actions menu to view details, edit a draft, submit, reschedule, activate when due, cancel, or download the transfer as PDF. Every employee’s full transfer history is also available from the Transfers tab in their profile.' },
+          { type: 'warning', body: 'Only one Draft, Pending Approval, or Scheduled transfer can be active for an employee at a time. This prevents overlapping proposals from applying conflicting changes.' },
         ],
       },
       {
@@ -241,10 +338,10 @@ const MODULES: HelpModule[] = [
         summary: 'Record suspensions, resignations, and terminations from the employee profile.',
         icon: AlertTriangle,
         content: [
-          { type: 'text', body: 'Once an employee record is approved and active, HR can take lifecycle actions from the "More" (⋯) menu in the slide-over header. Each action requires a reason and moves the employee to the appropriate deactivated view.' },
+          { type: 'text', body: 'Once an employee record is approved and active, authorised users can request lifecycle actions from the More (⋯) menu in the profile header. Suspension, resignation, and termination requests enter approval; the employee moves to the appropriate deactivated view only after approval.' },
           {
             type: 'table',
-            headers: ['Action', 'Who it applies to', 'Where the employee appears after'],
+            headers: ['Action', 'Who it applies to', 'Where the employee appears after approval'],
             rows: [
               ['Suspend Employee',     'Active, approved employees only',              'Suspended Employees tab'],
               ['Initiate Resignation', 'Active, approved employees only',              'Terminated Employees tab (RESIGNED)'],
@@ -258,7 +355,8 @@ const MODULES: HelpModule[] = [
               { label: 'Click the ⋯ (More) button in the top-right of the header.' },
               { label: 'Select the action — Suspend Employee, Initiate Resignation, or Terminate Employee.' },
               { label: 'A confirmation dialog opens. Enter the reason (required for suspend and terminate). For resignations you can also set an effective date.' },
-              { label: 'Confirm. The employee\'s lifecycle status is updated and they move to the appropriate deactivated view.' },
+              { label: 'Confirm to submit the lifecycle request for approval.' },
+              { label: 'An authorised employee approver reviews it in Central Approval or the employee details view. Approval applies the new lifecycle status; rejection restores the employee’s approved state.' },
             ],
           },
           { type: 'warning', body: 'These actions are irreversible through the UI. If an employee was suspended in error, contact your system administrator.' },
@@ -475,12 +573,14 @@ const MODULES: HelpModule[] = [
             type: 'table',
             headers: ['Approval step', 'Status shown', 'Who acts'],
             rows: [
-              ['1. Employee submits',          'Pending Approval',    'Supervisor — in Personal Leave → Subordinate Leave, or Central Approval'],
-              ['2. Supervisor approves',        'Pending HR Approval', 'With the leave-approval permission — in Central Approval'],
-              ['3. HR approves',               'Approved',            'Balance deducted; leave is confirmed'],
+              ['1. Employee submits', 'Pending Approval, Pending Financial Approval, or Pending HR Approval', 'The configured supervisor option, allowance, and financial stages determine the first required approver'],
+              ['2. Supervisor approves (when enabled)', 'Pending Financial Approval or Pending HR Approval', 'The employee’s supervisor acts first only when supervisor approval is enabled and a supervisor is assigned'],
+              ['3. Finance approves (when required)', 'Pending Financial Approval', 'Configured role/user stages approve the allowance in order; a financial rejection rejects the entire leave'],
+              ['4. Admin HR approves', 'Approved', 'Admin HR is always the final leave approver'],
+              ['5. Allowance is scheduled', 'GL Scheduled', 'An eligible cleared allowance waits for the leave start date before GL posting'],
             ],
           },
-          { type: 'tip', body: 'All pending leave approvals across the system are also visible in Central Approval from the sidebar — a single queue for supervisors and HR.' },
+          { type: 'tip', body: 'If there is no allowance, no matching financial stage, or no financial approver configured, finance is skipped and the request goes to Admin HR. Pending approvers are notified in-app when the request reaches their stage.' },
         ],
       },
       {
@@ -588,8 +688,11 @@ const MODULES: HelpModule[] = [
             rows: [
               ['Draft',               'Saved but not yet submitted for approval'],
               ['Pending Approval',    'Sent to your supervisor for first-level approval'],
-              ['Pending HR Approval', 'Passed supervisor tier and waiting for HR/admin sign-off'],
+              ['Pending Financial Approval', 'Allowance is waiting for its configured financial approver(s)'],
+              ['Pending HR Approval', 'Passed the required supervisor and financial tiers and is waiting for Admin HR sign-off'],
               ['Approved',            'Fully approved — balance has been deducted'],
+              ['GL Scheduled',        'HR approved the leave and its eligible allowance is waiting for the leave start date before GL posting'],
+              ['Paid',                'The approved allowance was posted successfully'],
               ['Rejected',            'Declined at one of the approval tiers'],
               ['Cancelled',           'Approved leave that was later cancelled'],
             ],
@@ -602,13 +705,13 @@ const MODULES: HelpModule[] = [
         summary: 'Review and action leave requests from your team or the approval queue.',
         icon: CheckCircle2,
         content: [
-          { type: 'text', body: 'Leave approval follows up to two tiers: the employee\'s supervisor acts first, then HR/admin gives final sign-off.' },
+          { type: 'text', body: 'When supervisor approval is enabled and the employee has a supervisor, the supervisor acts first. Requests with an allowance then pass through configured financial role/user stages. If supervisor approval is off, the employee has no supervisor, there is no allowance, or no financial stage applies, unnecessary tiers are skipped. Admin HR is always the final approver. A financial rejection rejects the entire leave.' },
           {
             type: 'steps', heading: 'Approving as a supervisor',
             steps: [
               { label: 'Go to Leave → Personal Leave → Subordinate Leave.' },
               { label: 'Find the leave request with status "Pending Approval".' },
-              { label: 'Click the eye icon to open the details slide-over.' },
+              { label: 'Open the row’s three-dot actions menu and choose View to open the details slide-over.' },
               { label: 'Click "Approve" or "Reject" in the slide-over. If rejecting, enter a reason.' },
             ],
           },
@@ -621,6 +724,8 @@ const MODULES: HelpModule[] = [
             ],
           },
           { type: 'tip', body: 'Approve/Reject only appear inside the detail slide-over — not on the table rows. Supervisors act on "Pending Approval" items; HR acts on "Pending HR Approval" items.' },
+          { type: 'tip', body: 'The allowance breakdown—basic salary, gross allowance, non-taxable basic, tax, and net payout—is shown to Admin HR in the Leave Approval List details. Supervisors review the leave request without this financial breakdown.' },
+          { type: 'tip', body: 'The request details/reason and any rejection reason remain visible in leave details throughout the approval history.' },
         ],
       },
       {
@@ -1028,7 +1133,7 @@ const MODULES: HelpModule[] = [
             steps: [
               { label: 'Go to Medical → Manage Medical from the sidebar.' },
               { label: 'The "Staff Medical" tab shows all submitted employee claims.' },
-              { label: 'Click the eye icon on any claim to open the detail panel — you can see the amount, date, description, and supporting document.' },
+              { label: 'Open a claim’s three-dot actions menu and choose View to see the amount, date, description, and supporting document.' },
               { label: 'Click "Approve" to accept the claim, or "Reject" with a reason to decline it.' },
               { label: 'Approved claims reduce the employee\'s remaining annual medical balance.' },
             ],
@@ -1128,6 +1233,7 @@ const MODULES: HelpModule[] = [
         content: [
           { type: 'text', body: 'Every user is assigned a role. The role determines which sidebar items are visible and which actions the user can perform. Roles are created and edited on the Users page under the "Roles" tab — managing roles requires the "manage_roles" permission.' },
           { type: 'text', body: 'Permissions work in two tiers. A "view" permission (e.g. view_employees, view_payroll) lets a user open a page and see its data, but with no action buttons. Separate action permissions (create, edit, delete, approve, or a manage_ permission) each unlock a specific button and the matching API action. So a user with only view_payroll sees payroll read-only; add approve_payroll and the Approve button appears.' },
+          { type: 'tip', body: 'Hover over any permission in the role or user permission selector to see a tooltip explaining exactly what that permission allows.' },
           { type: 'text', body: 'Roles are fully customisable — there are no fixed access levels. Each role is just a bundle of permissions you choose. The examples below are common setups, but you can create any role with any combination of permissions.' },
           {
             type: 'table',
@@ -1143,13 +1249,36 @@ const MODULES: HelpModule[] = [
             type: 'steps', heading: 'Creating or editing a role',
             steps: [
               { label: 'Go to Users from the sidebar and open the "Roles" tab.' },
-              { label: 'Click "Add Role", or the edit icon on an existing role.' },
+              { label: 'Click "Add Role", or open an existing role’s three-dot actions menu and choose Edit.' },
               { label: 'Tick the permissions to grant, grouped by module (view permissions control page visibility; action permissions unlock buttons).' },
               { label: 'Save. Changes take effect on the next page load for affected users.' },
             ],
           },
           { type: 'tip', body: 'Use the view icon on a role to see exactly which permissions it grants. Instead of deleting a role, you can deactivate it — deactivated roles strip their permissions from assigned users until reactivated.' },
           { type: 'warning', body: 'Removing a permission from a role affects all users who hold that role simultaneously. Review affected users before saving.' },
+        ],
+      },
+      {
+        id: 'approval-setup',
+        title: 'Configuring Approval Flows',
+        summary: 'Set ordered role or user approval stages from Settings → Controls → Approvals.',
+        icon: ShieldAlert,
+        content: [
+          { type: 'text', body: 'Users with settings access configure workflow behaviour under Settings → Controls → Approvals. Stages run from top to bottom and may target an entire role or one specific user. Requests snapshot their stages when submitted, so later configuration changes affect new requests without rewriting approvals already in progress.' },
+          {
+            type: 'table',
+            headers: ['Workflow', 'Configuration behaviour'],
+            rows: [
+              ['Employee Approval', 'One shared stage chain controls both new employee approval and employee detail-change approval'],
+              ['Employee Transfer Approval', 'Use a transfer-specific chain, or enable "Use Employee Approval Flow" to inherit the employee stages'],
+              ['Payroll Approval', 'Submitted payroll runs pass through the configured ordered stages before finalisation'],
+              ['Medical Approval', 'Staff, dependent, and hospital requests follow the configured medical stages'],
+              ['Leave Approval', 'Optional supervisor approval is followed by applicable financial stages, then mandatory final Admin HR approval'],
+              ['Training Approval', 'Choose direct HR routing or supervisor-first routing according to the training setup'],
+            ],
+          },
+          { type: 'tip', body: 'With no stages configured, the workflow falls back to its existing approval permission. For employee transfers, an inherited Employee Approval Flow with no stages falls back to Approve Employee Transfers permission.' },
+          { type: 'warning', body: 'Before assigning a role or specific user to a stage, confirm at least one active user can receive and action it. Self-approval controls still apply where provided.' },
         ],
       },
       {
@@ -1162,7 +1291,7 @@ const MODULES: HelpModule[] = [
             type: 'steps', heading: 'Editing a user',
             steps: [
               { label: 'Go to Users from the sidebar.' },
-              { label: 'Find the user in the list and click the edit (pencil) icon.' },
+              { label: 'Find the user, open the three-dot actions menu, and choose Edit.' },
               { label: 'Update their name, email, role, or linked employee record.' },
               { label: 'To reset their password, enter a new value in the Password field and save.' },
               { label: 'Click Save to apply changes.' },

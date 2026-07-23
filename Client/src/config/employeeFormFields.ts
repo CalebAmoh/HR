@@ -24,6 +24,14 @@ export interface EmployeeFormField {
 
 export interface FieldFlags { visible: boolean; required: boolean }
 export type EmployeeFieldConfig = Record<string, FieldFlags>;
+export type EmployeeTransferFieldConfig = Record<string, boolean>;
+
+// Initial business defaults for the transfer workflow. Admins can change this classification from
+// Settings → Controls → Employee Form → Employee Transfers without changing the employee form registry.
+export const DEFAULT_EMPLOYEE_TRANSFER_FIELD_KEYS = [
+  'jobTitleId', 'branchId', 'departmentId', 'unitId', 'outletId',
+  'supervisorId', 'paygradeId', 'notcheId',
+];
 
 export const EMPLOYEE_FORM_STEPS: { id: EmployeeFieldStep; label: string }[] = [
   { id: 'personal',   label: 'Personal'    },
@@ -60,6 +68,7 @@ export const EMPLOYEE_FORM_FIELDS: EmployeeFormField[] = [
   { key: 'jobTitleId',         label: 'Job Title',         step: 'employment', type: 'select', defaultVisible: true, defaultRequired: true  },
   { key: 'staff_level',        label: 'Staff Level',       step: 'employment', type: 'select', defaultVisible: true, defaultRequired: true  },
   { key: 'staff_role',         label: 'Staff Role',        step: 'employment', type: 'select', defaultVisible: true, defaultRequired: true  },
+  { key: 'rmRoType',           label: 'RM / RO',           step: 'employment', type: 'select', defaultVisible: true, defaultRequired: true  },
   { key: 'branchId',           label: 'Branch',            step: 'employment', type: 'select', defaultVisible: true, defaultRequired: false },
   { key: 'departmentId',       label: 'Department',        step: 'employment', type: 'select', defaultVisible: true, defaultRequired: false },
   { key: 'unitId',             label: 'Unit',              step: 'employment', type: 'select', defaultVisible: true, defaultRequired: false },
@@ -100,4 +109,9 @@ export function defaultFieldConfig(): EmployeeFieldConfig {
   const out: EmployeeFieldConfig = {};
   for (const f of EMPLOYEE_FORM_FIELDS) out[f.key] = { visible: f.defaultVisible, required: f.defaultRequired };
   return out;
+}
+
+export function defaultTransferFieldConfig(): EmployeeTransferFieldConfig {
+  const selected = new Set(DEFAULT_EMPLOYEE_TRANSFER_FIELD_KEYS);
+  return Object.fromEntries(EMPLOYEE_FORM_FIELDS.map((field) => [field.key, selected.has(field.key)]));
 }

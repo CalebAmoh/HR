@@ -5,6 +5,7 @@ import { Combobox } from './EmployeeTabs';
 import api from '../../lib/api';
 import { toast } from 'sonner';
 import { PERMISSION_GROUPS, formatPermission as fmtPerm } from '@/lib/permissionGroups';
+import { PermissionTooltip } from './ui/PermissionTooltip';
 
 const blank = (type: string) =>
   type === 'Users'
@@ -303,7 +304,7 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
                         key={perm}
                         type="button"
                         onClick={() => togglePerm(perm)}
-                        disabled={inherited}
+                        aria-disabled={inherited}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-medium transition-all select-none"
                         style={inherited
                           ? { backgroundColor: `color-mix(in srgb, ${group.color.active} 14%, transparent)`, borderColor: group.color.active, color: group.color.active, opacity: 0.85, cursor: 'default' }
@@ -312,21 +313,23 @@ export function UserCreationForm({ onClose, initialData, onSave, type, roles = [
                             : { backgroundColor: 'var(--surface)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }
                         }
                       >
-                        <span
-                          className="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all"
-                          style={on
-                            ? { borderColor: group.color.active, backgroundColor: group.color.active }
-                            : { borderColor: '#cbd5e1', backgroundColor: 'transparent' }
-                          }
-                        >
-                          {on && <span className="w-1.5 h-1.5 rounded-full bg-white block" />}
-                        </span>
-                        {fmtPerm(perm)}
-                        {inherited && (
-                          <span className="flex items-center gap-0.5 ml-0.5 text-[10px] font-semibold" style={{ color: group.color.active }}>
-                            <ShieldCheck size={10} /> Role
+                        <PermissionTooltip permission={perm}>
+                          <span
+                            className="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all"
+                            style={on
+                              ? { borderColor: group.color.active, backgroundColor: group.color.active }
+                              : { borderColor: '#cbd5e1', backgroundColor: 'transparent' }
+                            }
+                          >
+                            {on && <span className="w-1.5 h-1.5 rounded-full bg-white block" />}
                           </span>
-                        )}
+                          {fmtPerm(perm)}
+                          {inherited && (
+                            <span className="flex items-center gap-0.5 ml-0.5 text-[10px] font-semibold" style={{ color: group.color.active }}>
+                              <ShieldCheck size={10} /> Role
+                            </span>
+                          )}
+                        </PermissionTooltip>
                       </button>
                     );
                   })}

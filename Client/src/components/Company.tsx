@@ -73,7 +73,7 @@ export function Company() {
       ...s,
       name:    s.title,
       parent:  s.parentTitle ?? 'None',
-      manager: s.heads,
+      manager: s.managerName ?? null,
       type:    s.typeLabel,
     })),
     [structures]
@@ -189,7 +189,7 @@ export function Company() {
             }
           />
 
-          <div className="overflow-auto flex-1 min-h-0">
+          <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
             <table className="w-full border-collapse">
               <thead>
                 <tr>
@@ -216,12 +216,12 @@ export function Company() {
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: 0.05 + i * 0.04 }}
                     >
-                      <td className="td font-medium text-[var(--text-primary)]">{row.title}</td>
+                      <td className="td font-medium text-[var(--text-primary)] whitespace-normal break-words min-w-[160px]">{row.title}</td>
                       <td className="td">{row.comp_code || '—'}</td>
                       <td className="td">{row.typeLabel || '—'}</td>
-                      <td className="td">{row.parentTitle || '—'}</td>
-                      <td className="td">{row.heads || '—'}</td>
-                      <td className="td">{row.address || '—'}</td>
+                      <td className="td whitespace-normal break-words">{row.parentTitle || '—'}</td>
+                      <td className="td whitespace-normal break-words">{row.managerName || '—'}</td>
+                      <td className="td whitespace-normal break-words min-w-[200px]">{row.address || '—'}</td>
                       <td className="td">
                         <div className="flex justify-end">
                           <RowActions actions={[

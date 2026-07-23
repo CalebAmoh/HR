@@ -34,14 +34,16 @@ async function isNamedInFlow(settingName, userId, roleNames) {
   } catch { return false; }
 }
 
-/** A stage approver of payroll, medical, OR leave — any surfaces Central Approval to them. */
+/** A stage approver in any configured workflow can reach Central Approval. */
 async function isStageApproverAnyModule(userId, roleNames) {
-  const [payroll, medical, leave] = await Promise.all([
+  const [payroll, medical, leave, transfer] = await Promise.all([
     isNamedInFlow('payroll_approval_flow', userId, roleNames),
     isNamedInFlow('medical_approval_flow', userId, roleNames),
     isNamedInFlow('leave_approval_flow',   userId, roleNames),
+    isNamedInFlow('employee_approval_flow', userId, roleNames),
+    isNamedInFlow('employee_transfer_approval_flow', userId, roleNames),
   ]);
-  return payroll || medical || leave;
+  return payroll || medical || leave || transfer;
 }
 
 
@@ -318,7 +320,7 @@ const loginUser = asyncHandler(async (req, res) => {
   const { password: _, ...userWithoutPassword } = user;
 
   // ── Stage-approver flag ─────────────────────────────────
-  // A user named in the payroll OR medical approval flow (by user id, or one of their role names) can reach
+  // A user named in a configured approval flow (by user id, or one of their role names) can reach
   // Central Approval even without a blanket `approve_*` permission — stage assignment grants access.
   const isStageApprover = await isStageApproverAnyModule(String(user.id), roles.map(r => r.name));
 
@@ -924,7 +926,7 @@ const getMe = asyncHandler(async (req, res) => {
   if (empFk != null) {
     const e = await helper.prisma.employee.findUnique({ where: { id: BigInt(empFk) } });
     if (e) {
-      // CodeListValue-backed lookups (string UUID ids) → { id, label, code, value }
+      // CodeListValue-backed lookups (integer ids) → { id, label, code, value }
       const clvIds = [e.titleId, e.genderId, e.nationalityId, e.religionId, e.jobTitleId, e.employmentStatusId].filter(Boolean);
       const clvMap = {};
       if (clvIds.length) {

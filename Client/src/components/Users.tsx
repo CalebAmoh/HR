@@ -8,6 +8,7 @@ import { TabBar } from './ui/TabBar';
 import { TableToolbar } from './ui/TableToolbar';
 import { TablePagination } from './ui/TablePagination';
 import { RowActions } from './ui/RowActions';
+import { PermissionTooltip } from './ui/PermissionTooltip';
 import api from '../../lib/api';
 import { toast } from 'sonner';
 import { useCan } from '@/hooks/useCan';
@@ -277,7 +278,9 @@ export function Users() {
                           className="flex items-center justify-between px-4 py-2.5 bg-[var(--surface)] hover:bg-[var(--bg)] transition-colors"
                           initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.02 }}
                         >
-                          <span className="text-[13px] font-medium text-[var(--text-primary)]">{fmtPerm(perm)}</span>
+                          <span className="text-[13px] font-medium text-[var(--text-primary)]">
+                            <PermissionTooltip permission={perm} />
+                          </span>
                           <div className="flex items-center gap-1.5 flex-wrap justify-end">
                             {assignedRoles.length === 0 ? (
                               <span className="text-[11px] text-[var(--text-muted)] italic">No roles assigned</span>
@@ -352,8 +355,16 @@ export function Users() {
                             {row.status === '1' ? 'Active' : 'Inactive'}
                           </span>
                         </td>
-                        <td className="td truncate max-w-[200px]">
-                          {row.directPermissions?.length > 0 ? row.directPermissions.join(', ') : 'None'}
+                        <td className="td max-w-[260px]">
+                          {row.directPermissions?.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {row.directPermissions.map((permission: string) => (
+                                <span key={permission} className="rounded-full border border-[var(--border)] bg-[var(--bg)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-secondary)]">
+                                  <PermissionTooltip permission={permission} showIcon={false} />
+                                </span>
+                              ))}
+                            </div>
+                          ) : 'None'}
                         </td>
                       </>
                     ) : (
@@ -480,7 +491,7 @@ export function Users() {
                           {granted.map(p => (
                             <span key={p} className="text-[11px] font-medium px-2.5 py-1 rounded-full border"
                               style={{ backgroundColor: color + '12', borderColor: color + '35', color }}>
-                              {fmtPerm(p)}
+                              <PermissionTooltip permission={p} showIcon={false} />
                             </span>
                           ))}
                         </div>

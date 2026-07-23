@@ -13,6 +13,9 @@ const { upload, csvUpload } = require('../middleware/upload');
 
 const {
   getAllEmployees,
+  getEmployeeApprovals,
+  getEmployeeApprovalFlow,
+  saveEmployeeApprovalFlow,
   getActiveEmployees,
   getStaffOrganogram,
   getEmployeeById,
@@ -51,6 +54,18 @@ const {
   deleteCompanyStructure,
 } = require('../controllers/companyStructureController.js');
 
+const {
+  getAllPcCodes,
+  getPcCodeOrganogram,
+  getPcCodeById,
+  createPcCode,
+  updatePcCode,
+  reparentPcCode,
+  setPcCodeActive,
+  assignEmployee: assignPcCodeEmployee,
+  vacatePcCode,
+} = require('../controllers/pcCodeController.js');
+
 const salary = require('../controllers/salaryController.js');
 const { getPaygrades, createPaygrade, updatePaygrade, deletePaygrade } = salary;
 
@@ -71,6 +86,7 @@ const {
 
 const med      = require('../controllers/medicalController');
 const leave    = require('../controllers/leaveController');
+const transfer = require('../controllers/employeeTransferController');
 const appCfg   = require('../controllers/settingsController');
 const apiInteg = require('../controllers/apiIntegrationController');
 
@@ -180,17 +196,36 @@ router.post('/employees/documents/upload', upload.single('file'), uploadDocument
 // ─────────────────────────────────────────────
 // Employee routes  (static before /:id)
 // ─────────────────────────────────────────────
+router.get   ('/employee-transfers/approval-flow', permissionGuard.any('manage_settings', 'view_employee_transfers', 'approve_employee_transfers', 'manage_employee_transfers'), transfer.getApprovalFlow);
+router.put   ('/employee-transfers/approval-flow', permissionGuard.any('manage_settings', 'manage_employee_transfers'), transfer.saveApprovalFlow);
+router.get   ('/employee-transfers/approval-settings', permissionGuard.any('manage_settings', 'view_employee_transfers', 'approve_employee_transfers', 'manage_employee_transfers'), transfer.getApprovalSettings);
+router.put   ('/employee-transfers/approval-settings', permissionGuard.any('manage_settings', 'manage_employee_transfers'), transfer.saveApprovalSettings);
+router.get   ('/employee-transfers/approvals',     transfer.listApprovals);
+router.get   ('/employee-transfers',               permissionGuard.any('view_employee_transfers', 'create_employee_transfers', 'approve_employee_transfers', 'manage_employee_transfers'), transfer.listTransfers);
+router.post  ('/employee-transfers',               permissionGuard('create_employee_transfers'), transfer.createTransfer);
+router.get   ('/employee-transfers/:id',           permissionGuard.any('view_employee_transfers', 'create_employee_transfers', 'approve_employee_transfers', 'manage_employee_transfers'), transfer.getTransfer);
+router.put   ('/employee-transfers/:id',           permissionGuard.any('create_employee_transfers', 'manage_employee_transfers'), transfer.updateTransfer);
+router.post  ('/employee-transfers/:id/submit',    permissionGuard.any('create_employee_transfers', 'manage_employee_transfers'), transfer.submitTransfer);
+router.post  ('/employee-transfers/:id/approve',   transfer.approveTransfer);
+router.post  ('/employee-transfers/:id/reject',    transfer.rejectTransfer);
+router.post  ('/employee-transfers/:id/cancel',    permissionGuard('manage_employee_transfers'), transfer.cancelTransfer);
+router.put   ('/employee-transfers/:id/reschedule',permissionGuard('manage_employee_transfers'), transfer.rescheduleTransfer);
+router.post  ('/employee-transfers/:id/activate',  permissionGuard('manage_employee_transfers'), transfer.activateTransfer);
+
 router.get   ('/employees/active',         getActiveEmployees);
 router.get   ('/employees/organogram',     getStaffOrganogram);
 router.get   ('/employees/paygrades',      getAllPaygrades);
 router.get   ('/employees/notches',        getAllNotches);
+router.get   ('/employees/approvals',      getEmployeeApprovals);
+router.get   ('/employees/approval-flow',  permissionGuard('manage_settings'), getEmployeeApprovalFlow);
+router.put   ('/employees/approval-flow',  permissionGuard('manage_settings'), saveEmployeeApprovalFlow);
 router.get   ('/employees',                getAllEmployees);
 router.post  ('/employees',                permissionGuard('create_employees'),       createEmployee);
 router.get   ('/employees/:id',            getEmployeeById);
 // PUT /employees/:id is shared with self-service (Personal Info profile image) — not guarded
 router.put   ('/employees/:id',            updateEmployee);
-router.put   ('/employees/:id/approve',    permissionGuard('approve_employees'),       approveEmployee);
-router.put   ('/employees/:id/reject',     permissionGuard('approve_employees'),       rejectEmployee);
+router.put   ('/employees/:id/approve',    approveEmployee);
+router.put   ('/employees/:id/reject',     rejectEmployee);
 router.put   ('/employees/:id/status',     permissionGuard('change_employee_status'),  changeEmployeeStatus);
 router.post  ('/employees/:id/resign',     permissionGuard('change_employee_status'),  initiateResignation);
 router.post  ('/employees/:id/sync',       permissionGuard('edit_employees'),          syncEmployee);
@@ -255,6 +290,18 @@ router.post  ('/company/structures',        permissionGuard('create_company_stru
 router.get   ('/company/structures/:id',    getCompanyStructureById);
 router.put   ('/company/structures/:id',    permissionGuard('edit_company_structure'),   updateCompanyStructure);
 router.delete('/company/structures/:id',    permissionGuard('delete_company_structure'), deleteCompanyStructure);
+
+// ─── PC Codes (positions) ─────────────────────
+// NOTE: /organogram is declared before /:id so the param route doesn't capture it.
+router.get   ('/pc-codes/organogram',       getPcCodeOrganogram);
+router.get   ('/pc-codes',                  getAllPcCodes);
+router.post  ('/pc-codes',                  permissionGuard('create_pc_code'), createPcCode);
+router.get   ('/pc-codes/:id',              getPcCodeById);
+router.put   ('/pc-codes/:id',              permissionGuard('edit_pc_code'),   updatePcCode);
+router.put   ('/pc-codes/:id/reparent',     permissionGuard('edit_pc_code'),   reparentPcCode);
+router.put   ('/pc-codes/:id/active',       permissionGuard('delete_pc_code'), setPcCodeActive);
+router.post  ('/pc-codes/:id/assign',       permissionGuard('assign_pc_code'), assignPcCodeEmployee);
+router.post  ('/pc-codes/:id/vacate',       permissionGuard('assign_pc_code'), vacatePcCode);
 
 // ─────────────────────────────────────────────
 // Dynamic user routes — must come after all static routes

@@ -15,6 +15,8 @@ async function postToGL({ approvedBy, referenceNo, debitAccounts, creditAccounts
   try { extra = JSON.parse(cfg.gl_extra || '{}'); } catch {}
 
   const headers = { 'Content-Type': 'application/json' };
+  const forwardedFor = cfg.gl_forwarded_for || extra.x_forwarded_for || extra.forwarded_for;
+  if (forwardedFor) headers['X-FORWARDED-FOR'] = String(forwardedFor);
   if (cfg.gl_bearer_token) {
     headers['Authorization'] = `Bearer ${cfg.gl_bearer_token}`;
   } else if (cfg.gl_basic_user) {

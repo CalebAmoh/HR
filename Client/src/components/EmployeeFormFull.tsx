@@ -75,12 +75,17 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
     employmentStatusId: '',
     staff_level:        '',
     staff_role:         '',
+    rmRoType:           '',
     ssn_num:            '',
     departmentId:       '',
     branchId:           '',
     unitId:             '',
     outletId:           '',
     supervisorId:       '',
+    // PC code (positions) — set at creation only
+    pcMode:             'existing', // 'existing' | 'inline'
+    pcCodeId:           '',
+    pcCodeName:         '',
     hireDate:           '',
     confirmationDate:   '',
     // Next of Kin
@@ -124,6 +129,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
       employmentStatusId: initialData.employmentStatus?.id ?? '',
       staff_level:        initialData.staff_level        ?? '',
       staff_role:         initialData.staff_role         ?? '',
+      rmRoType:           initialData.rmRoType           ?? '',
       ssn_num:            initialData.ssn_num            ?? '',
       departmentId:       initialData.department?.id     ?? '',
       branchId:           initialData.branch?.id         ?? '',
@@ -189,6 +195,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
   const [supervisors, setSupervisors] = useState<any[]>([]);
   const [paygrades, setPaygrades]     = useState<any[]>([]);
   const [notches, setNotches]         = useState<any[]>([]);
+  const [vacantPcCodes, setVacantPcCodes] = useState<any[]>([]);
 
   useEffect(() => {
     Promise.all([
@@ -205,7 +212,8 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
       api.get('/employees/paygrades'),
       api.get('/employees/notches'),
       api.get('/system/code-lists/CT/values'),
-    ]).then(([t, g, n, r, e, j, sl, sr, s, sup, pg, nc, ct]) => {
+      api.get('/pc-codes?vacant=1').catch(() => ({ data: { data: [] } })),
+    ]).then(([t, g, n, r, e, j, sl, sr, s, sup, pg, nc, ct, pc]) => {
       setCl({
         titles:       t.data.data  ?? [],
         genders:      g.data.data  ?? [],
@@ -221,6 +229,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
       setSupervisors(sup.data.data ?? []);
       setPaygrades(pg.data.data    ?? []);
       setNotches(nc.data.data      ?? []);
+      setVacantPcCodes(pc.data.data ?? []);
     }).catch(() => {});
   }, []);
 
@@ -265,6 +274,12 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
   // ── Configurable visibility / required (Settings → Controls → Employee Form) ──
   // Read once per open; defaults mirror the form's original behaviour.
   const fieldsCfg = useMemo(() => getSettings().employeeForm.fields, []);
+  const transferFieldsCfg = useMemo(() => getSettings().employeeForm.transferFields, []);
+  const approvedActiveEdit = isEdit
+    && String(initialData?.approvalStatus || '').toUpperCase() === 'APPROVED'
+    && String(initialData?.lifecycleStatus || '').toUpperCase() === 'ACTIVE';
+  const transferProtected = (key: string) => approvedActiveEdit && !!transferFieldsCfg[key];
+  const protectedLabels = EMPLOYEE_FORM_FIELDS.filter((field) => transferProtected(field.key)).map((field) => field.label);
   const fcfg = (key: string) =>
     fieldsCfg[key] ?? {
       visible:  EMPLOYEE_FORM_FIELDS_BY_KEY[key]?.defaultVisible ?? true,
@@ -274,6 +289,7 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
   const isRequired = (key: string) => isLocked(key) || (fcfg(key).visible && fcfg(key).required);
   // A field shows when config-visible (locked always) — plus the spouse-name marriage rule.
   const fieldShown = (key: string) => {
+    if (transferProtected(key)) return false;
     if (!(isLocked(key) || fcfg(key).visible)) return false;
     if (key === 'spouse_name') return form.marital_status === 'Married';
     return true;
@@ -329,6 +345,9 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
     }
 
     const payload: any = { ...form };
+    if (approvedActiveEdit) {
+      for (const field of EMPLOYEE_FORM_FIELDS) if (transferFieldsCfg[field.key]) delete payload[field.key];
+    }
     ['titleId', 'genderId', 'nationalityId', 'religionId', 'staff_level', 'staff_role',
      'departmentId', 'branchId', 'unitId', 'outletId', 'supervisorId'].forEach(k => {
       if (!payload[k]) payload[k] = null;
@@ -337,6 +356,20 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
      'nationalIdExpiry', 'passportExpiry', 'driverLicenseExp'].forEach(k => {
       if (!payload[k]) payload[k] = null;
     });
+
+    // PC code — translate the UI's mode fields into what the API expects, then drop the internals.
+    if (!isEdit) {
+      if (payload.pcMode === 'inline' && payload.pcCodeName?.trim()) {
+        payload.pcCode = { name: payload.pcCodeName.trim() };
+        payload.pcCodeId = null;
+      } else if (payload.pcMode === 'existing' && payload.pcCodeId) {
+        // pcCodeId already set
+      } else {
+        payload.pcCodeId = null;
+      }
+    }
+    delete payload.pcMode;
+    delete payload.pcCodeName;
 
     onSave(payload, initialData?.id?.toString());
   };
@@ -471,6 +504,15 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
             {fieldShown('jobTitleId') && clSelect('jobTitleId', cl.jobTitles, 'Select Job Title', isRequired('jobTitleId'), 'Job Title')}
             {fieldShown('staff_level') && clSelect('staff_level', cl.staffLevels, 'Select Staff Level', isRequired('staff_level'), 'Staff Level')}
             {fieldShown('staff_role') && clSelect('staff_role', cl.staffRoles, 'Select Staff Role', isRequired('staff_role'), 'Staff Role')}
+            {fieldShown('rmRoType') && (
+            <Field label="RM / RO" required={isRequired('rmRoType')}>
+              <Combobox
+                options={[{ id: 'RM', label: 'RM — Relationship Manager' }, { id: 'RO', label: 'RO — Relationship Officer' }]}
+                value={form.rmRoType}
+                onChange={v => set('rmRoType', v)}
+                placeholder="Select RM or RO"
+              />
+            </Field>)}
             {fieldShown('branchId') && structSelect('branchId', branches, 'Select Branch', isRequired('branchId'), 'Branch')}
             {fieldShown('departmentId') && structSelect('departmentId', departments, 'Select Department', isRequired('departmentId'), 'Department')}
             {fieldShown('unitId') && structSelect('unitId', units, 'Select Unit', isRequired('unitId'), 'Unit')}
@@ -480,12 +522,48 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
               <Combobox
                 options={supervisors
                   .filter(s => !initialData || s.id !== initialData.id?.toString())
-                  .map(s => ({ id: String(s.id), label: s.name + (s.employee_id ? ` (${s.employee_id})` : '') }))}
+                  .map(s => {
+                    const name = (s.name ?? `${s.firstName ?? ''} ${s.lastName ?? ''}`).trim();
+                    return { id: String(s.id), label: (name || 'Employee') + (s.employee_id ? ` (${s.employee_id})` : '') };
+                  })}
                 value={form.supervisorId}
                 onChange={id => set('supervisorId', id)}
                 placeholder="Search supervisor..."
               />
             </Field>)}
+            {/* PC code (positions) — set only when creating a new employee */}
+            {!isEdit && (
+              <div className="md:col-span-2 rounded-xl border border-[var(--border)] bg-[var(--bg)] p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-[13px] font-bold text-[var(--text-primary)] syne">PC Code (Position)</p>
+                  <div className="flex bg-slate-100 p-1 rounded-lg">
+                    <button type="button" onClick={() => set('pcMode', 'existing')}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${form.pcMode === 'existing' ? 'bg-white text-[var(--accent)] shadow-sm' : 'text-slate-500'}`}>
+                      Pick existing
+                    </button>
+                    <button type="button" onClick={() => set('pcMode', 'inline')}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${form.pcMode === 'inline' ? 'bg-white text-[var(--accent)] shadow-sm' : 'text-slate-500'}`}>
+                      Create new
+                    </button>
+                  </div>
+                </div>
+                {form.pcMode === 'existing' ? (
+                  <Field label="Vacant PC Code">
+                    <Combobox
+                      options={vacantPcCodes.map((c: any) => ({ id: String(c.id), label: `${c.code} — ${c.name}` }))}
+                      value={form.pcCodeId}
+                      onChange={v => set('pcCodeId', v)}
+                      placeholder={vacantPcCodes.length ? 'Select a vacant position…' : 'No vacant positions available'}
+                    />
+                  </Field>
+                ) : (
+                  <Field label="New Position Name">
+                    <input value={form.pcCodeName} onChange={e => set('pcCodeName', e.target.value)} placeholder="e.g. Branch Officer — Kissy" />
+                    <p className="text-[11px] text-[var(--text-muted)] mt-1.5">The 6-digit code is generated automatically and reports to the position held by the selected supervisor.</p>
+                  </Field>
+                )}
+              </div>
+            )}
             {fieldShown('ssn_num') && (
             <Field label="SSN" required={isRequired('ssn_num')}>
               <input name="ssn_num" value={form.ssn_num} onChange={handleChange} placeholder="Social security number" />
@@ -717,6 +795,11 @@ export function EmployeeFormFull({ onClose, onSave, initialData }: Props) {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-8">
+          {approvedActiveEdit && protectedLabels.length > 0 && (
+            <div className="mb-5 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-[12px] leading-relaxed text-blue-800">
+              <strong>Transfer-controlled fields are hidden here.</strong> Use Employee Transfers to change: {protectedLabels.join(', ')}.
+            </div>
+          )}
           {renderStep()}
         </div>
 

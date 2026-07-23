@@ -6,7 +6,7 @@ const API_CAT = 'api';
 
 const ALL_KEYS = [
   'gl_url', 'gl_api_key', 'gl_api_secret', 'gl_bearer_token',
-  'gl_basic_user', 'gl_basic_pass', 'gl_timeout', 'gl_extra',
+  'gl_basic_user', 'gl_basic_pass', 'gl_timeout', 'gl_forwarded_for', 'gl_extra',
   'employee_sync_url', 'employee_sync_timeout',
   'employee_sync_api_key', 'employee_sync_api_secret',
   'employee_sync_bearer_token', 'employee_sync_basic_user', 'employee_sync_basic_pass',
@@ -58,6 +58,7 @@ async function getApiConfig() {
     gl_basic_user:         db.gl_basic_user         || '',
     gl_basic_pass:         db.gl_basic_pass         || '',
     gl_timeout:            db.gl_timeout            || '30000',
+    gl_forwarded_for:      db.gl_forwarded_for      || process.env.POSTING_X_FORWARDED_FOR || '',
     gl_extra:              db.gl_extra              || '{}',
     employee_sync_url:          db.employee_sync_url          || process.env.EMPLOYEE_SYNC_URL || '',
     employee_sync_timeout:      db.employee_sync_timeout      || '10000',
@@ -81,6 +82,7 @@ async function getApiConfig() {
     ['gl_basic_user',         ''],
     ['gl_basic_pass',         ''],
     ['gl_timeout',            '30000'],
+    ['gl_forwarded_for',      process.env.POSTING_X_FORWARDED_FOR || ''],
     ['gl_extra',              JSON.stringify({
       channel_code: process.env.POSTING_CHANNEL_CODE     || 'HRP',
       trans_type:   process.env.POSTING_TRANS_TYPE       || '1504',

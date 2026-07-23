@@ -32,6 +32,7 @@ const EMPLOYEE_FORM_FIELDS = [
   { key: 'jobTitleId',         label: 'Job title',          defaultRequired: true  },
   { key: 'staff_level',        label: 'Staff level',        defaultRequired: true  },
   { key: 'staff_role',         label: 'Staff role',         defaultRequired: true  },
+  { key: 'rmRoType',           label: 'RM / RO',            defaultRequired: true  },
   { key: 'branchId',           label: 'Branch',             defaultRequired: false },
   { key: 'departmentId',       label: 'Department',         defaultRequired: false },
   { key: 'unitId',             label: 'Unit',               defaultRequired: false },
@@ -80,6 +81,31 @@ function effectiveRequiredFields(cfg) {
 }
 
 const FIELD_BY_KEY = Object.fromEntries(EMPLOYEE_FORM_FIELDS.map((f) => [f.key, f]));
+const DEFAULT_EMPLOYEE_TRANSFER_FIELD_KEYS = [
+  'jobTitleId', 'branchId', 'departmentId', 'unitId', 'outletId',
+  'supervisorId', 'paygradeId', 'notcheId',
+];
+const NON_TRANSFERABLE_FIELDS = new Set([
+  'firstName', 'lastName', 'work_email',
+  'fit_and_proper', 'policeClearance', 'medicalClearance',
+]);
+
+function defaultTransferFieldConfig() {
+  const selected = new Set(DEFAULT_EMPLOYEE_TRANSFER_FIELD_KEYS);
+  return Object.fromEntries(EMPLOYEE_FORM_FIELDS.map((field) => [field.key, selected.has(field.key)]));
+}
+
+/** Normalize the saved transfer classification and return enabled, whitelisted field metadata. */
+function effectiveTransferFields(cfg) {
+  let normalized;
+  if (Array.isArray(cfg)) {
+    const selected = new Set(cfg.map(String));
+    normalized = Object.fromEntries(EMPLOYEE_FORM_FIELDS.map((field) => [field.key, selected.has(field.key)]));
+  } else {
+    normalized = { ...defaultTransferFieldConfig(), ...(cfg && typeof cfg === 'object' ? cfg : {}) };
+  }
+  return EMPLOYEE_FORM_FIELDS.filter((field) => !!normalized[field.key] && !NON_TRANSFERABLE_FIELDS.has(field.key));
+}
 
 /** Whether a field is visible given the saved `{ key: { visible, required } }` config.
  *  Locked fields are always visible; unknown/unsaved keys default to visible. */
@@ -89,4 +115,7 @@ function isFieldVisible(cfg, key) {
   return c[key]?.visible !== false;
 }
 
-module.exports = { EMPLOYEE_FORM_FIELDS, effectiveRequiredFields, isFieldVisible };
+module.exports = {
+  EMPLOYEE_FORM_FIELDS, FIELD_BY_KEY, DEFAULT_EMPLOYEE_TRANSFER_FIELD_KEYS,
+  effectiveRequiredFields, effectiveTransferFields, isFieldVisible,
+};

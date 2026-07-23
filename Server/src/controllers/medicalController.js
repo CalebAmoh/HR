@@ -33,6 +33,44 @@ function toInt(val) {
   return isNaN(n) ? null : n;
 }
 
+// Medical costs are DECIMAL(..., 2) in both PostgreSQL and MySQL. Some raw-query
+// drivers expose those decimals through a JS floating-point conversion (for example
+// 56 can become 56.00000000000001), so normalise every returned cost field to the
+// database's two-decimal scale before it reaches the API response.
+function hasMedicalGlFailure(record) {
+  if (!record || record.document_ref) return false;
+  try {
+    const log = typeof record.payment_log === 'string'
+      ? JSON.parse(record.payment_log || '{}')
+      : (record.payment_log ?? {});
+    return !!log && typeof log === 'object' && Object.prototype.hasOwnProperty.call(log, 'error');
+  } catch {
+    return false;
+  }
+}
+
+function serializeMedical(value) {
+  const serialized = s(value);
+  const roundCosts = current => {
+    if (Array.isArray(current)) return current.map(roundCosts);
+    if (current === null || typeof current !== 'object') return current;
+    for (const [key, child] of Object.entries(current)) {
+      if (key === 'cost' && child !== null && child !== '') {
+        const amount = Number(child);
+        current[key] = Number.isFinite(amount) ? Math.round(amount * 100) / 100 : child;
+      } else {
+        current[key] = roundCosts(child);
+      }
+    }
+    // Approval and GL posting are separate concerns. The legacy medical status
+    // enums do not contain GL Failed, so derive the effective API status from
+    // the persisted error log instead.
+    if (hasMedicalGlFailure(current)) current.status = 'GL Failed';
+    return current;
+  };
+  return roundCosts(serialized);
+}
+
 // The medical status enums store spaced DB values but Prisma's client values are underscored
 // (@map). Reads/writes done via raw SQL use the spaced value (Postgres auto-casts a string literal
 // to the enum); builder writes need the client value, so map the two spaced ones across.
@@ -289,7 +327,7 @@ exports.getStaffMedical = asyncHandler(async (req, res) => {
   ]);
   const toDateStr = v => v instanceof Date ? v.toISOString().slice(0, 10) : (v ? String(v).slice(0, 10) : null);
   respond.ok(res, 'Staff medical records', rows.map(r => ({
-    ...s(r),
+    ...serializeMedical(r),
     employee_name:    em[String(r.employee)]?.name        ?? r.employee,
     employee_empid:   em[String(r.employee)]?.employee_id ?? null,
     posted_by_name:   um[String(r.posted_by)]   ?? null,
@@ -335,7 +373,7 @@ exports.createStaffMedical = asyncHandler(async (req, res) => {
   });
 
   const created = await prisma.$queryRaw`SELECT * FROM staffmedical WHERE id = ${row.id}`;
-  respond.created(res, 'Staff medical record created', s(created[0] ?? {}));
+  respond.created(res, 'Staff medical record created', serializeMedical(created[0] ?? {}));
 });
 
 // PUT /medical/staff/:id — patch a staff medical record; handles status changes (approve/reject) separately
@@ -348,6 +386,18 @@ async function assertCanMutateMedical(req, res, table, id, perm) {
   const owns    = String(rec.posted_by ?? '') === String(req.user?.id ?? '');
   const hasPerm = (req.user?.permissions ?? []).includes(perm);
   if (!owns && !hasPerm) { respond.forbidden(res, 'You can only modify medical requests you created'); return false; }
+  return true;
+}
+
+// A medical record may only be deleted while still in Draft — once it has been submitted
+// (Pending Approval, Approved, Rejected, etc.) it must be withdrawn/cancelled, not deleted.
+async function assertMedicalIsDraft(req, res, table, id) {
+  const [rec] = await prisma.$queryRaw`SELECT status FROM ${Prisma.raw(table)} WHERE id = ${id} LIMIT 1`;
+  if (!rec) { respond.notFound(res, 'Record not found'); return false; }
+  if (String(rec.status ?? '') !== 'Draft') {
+    respond.badReq(res, 'Only medical records in Draft can be deleted');
+    return false;
+  }
   return true;
 }
 
@@ -612,7 +662,7 @@ exports.updateStaffMedical = asyncHandler(async (req, res) => {
   }
 
   const updated = await prisma.$queryRaw`SELECT * FROM staffmedical WHERE id = ${id}`;
-  respond.ok(res, 'Staff medical record updated', s(updated[0] ?? {}));
+  respond.ok(res, 'Staff medical record updated', serializeMedical(updated[0] ?? {}));
 });
 
 // DELETE /medical/staff/:id — permanently remove a staff medical record.
@@ -620,6 +670,7 @@ exports.deleteStaffMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
   if (!(await assertCanMutateMedical(req, res, 'staffmedical', id, 'delete_medical'))) return;
+  if (!(await assertMedicalIsDraft(req, res, 'staffmedical', id))) return;
   await prisma.staffmedical.delete({ where: { id } });
   respond.ok(res, 'Deleted');
 });
@@ -649,7 +700,7 @@ exports.getDependentMedical = asyncHandler(async (req, res) => {
   const cm  = await clvMap(rows.map(r => r.relation_to_dependent));
   const toDateStr = v => v instanceof Date ? v.toISOString().slice(0, 10) : (v ? String(v).slice(0, 10) : null);
   respond.ok(res, 'Dependent medical records', rows.map(r => ({
-    ...s(r),
+    ...serializeMedical(r),
     employee_name:    em[String(r.employee)]?.name        ?? r.employee,
     employee_empid:   em[String(r.employee)]?.employee_id ?? null,
     posted_by_name:   um[String(r.posted_by)]   ?? null,
@@ -714,7 +765,7 @@ exports.createDependentMedical = asyncHandler(async (req, res) => {
   });
 
   const created = await prisma.$queryRaw`SELECT * FROM dependentmedical WHERE id = ${row.id}`;
-  respond.created(res, 'Dependent medical record created', s(created[0] ?? {}));
+  respond.created(res, 'Dependent medical record created', serializeMedical(created[0] ?? {}));
 });
 
 // PUT /medical/dependent/:id — patch a dependent medical record; same approve/reject + auto-Draft-restore logic as updateStaffMedical.
@@ -786,7 +837,7 @@ exports.updateDependentMedical = asyncHandler(async (req, res) => {
     await prisma.dependentmedical.updateMany({ where: { id }, data: { dependent_id: toBigInt(dependent_id) } }).catch(() => {});
   }
   const updatedDep = await prisma.$queryRaw`SELECT * FROM dependentmedical WHERE id = ${id}`;
-  respond.ok(res, 'Dependent medical record updated', s(updatedDep[0] ?? {}));
+  respond.ok(res, 'Dependent medical record updated', serializeMedical(updatedDep[0] ?? {}));
 });
 
 // DELETE /medical/dependent/:id — permanently remove a dependent medical record.
@@ -794,6 +845,7 @@ exports.deleteDependentMedical = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
   if (!(await assertCanMutateMedical(req, res, 'dependentmedical', id, 'delete_medical'))) return;
+  if (!(await assertMedicalIsDraft(req, res, 'dependentmedical', id))) return;
   await prisma.dependentmedical.delete({ where: { id } });
   respond.ok(res, 'Deleted');
 });
@@ -931,7 +983,7 @@ exports.getMedicalEnquiry = asyncHandler(async (req, res) => {
     };
   });
 
-  respond.ok(res, 'Medical enquiry', s(rows));
+  respond.ok(res, 'Medical enquiry', serializeMedical(rows));
 });
 
 // GET /medical/enquiry/:id — detailed utilisation breakdown for a single employee including all approved
@@ -988,7 +1040,7 @@ exports.getMedicalEnquiryByEmployee = asyncHandler(async (req, res) => {
   const staffRows = await prisma.$queryRaw`SELECT * FROM staffmedical WHERE employee = ${empIdStr} AND status = 'Approved'${Prisma.raw(frag.staff)} ORDER BY id DESC`.catch(() => []);
   const depRows = await prisma.$queryRaw`SELECT * FROM dependentmedical WHERE employee = ${empIdStr} AND status = 'Approved'${Prisma.raw(frag.dep)} ORDER BY id DESC`.catch(() => []);
 
-  respond.ok(res, 'Employee medical enquiry', s({
+  respond.ok(res, 'Employee medical enquiry', serializeMedical({
     employee_id:    String(emp.id),
     employee_empid: emp.employee_id,
     employee_name:  `${emp.firstName ?? ''} ${emp.lastName ?? ''}`.trim(),
@@ -1062,7 +1114,7 @@ exports.getMyMedicalEnquiry = asyncHandler(async (req, res) => {
   const depRows = await prisma.$queryRaw`SELECT * FROM dependentmedical WHERE employee = ${empId} ORDER BY id DESC`.catch(() => []);
   const toDateStr = v => v instanceof Date ? v.toISOString().slice(0, 10) : (v ? String(v).slice(0, 10) : null);
 
-  respond.ok(res, 'My medical enquiry', s({
+  respond.ok(res, 'My medical enquiry', serializeMedical({
     employee_name:   `${emp.firstName ?? ''} ${emp.lastName ?? ''}`.trim(),
     employee_empid:  emp.employee_id,
     grade:           emp.pg_name ?? '—',
@@ -1364,7 +1416,8 @@ exports.approveHospitalClaim = asyncHandler(async (req, res) => {
   }
 
   const [updated] = await prisma.$queryRaw`SELECT * FROM hospitalclaims WHERE id = ${id}`;
-  respond.ok(res, 'Claim approved', s(updated));
+  const response = serializeMedical(updated);
+  respond.ok(res, response.status === 'GL Failed' ? 'Claim approved, but GL posting failed' : 'Claim approved', response);
 });
 
 // POST /medical/hospital-claims/:id/reject — reject a hospital claim with an optional reason.
@@ -1403,7 +1456,7 @@ exports.submitStaffMedical = asyncHandler(async (req, res) => {
   if (flow.length) notifyMedicalStageApprovers(flow[0], req, rec.employee);
   else notifyMedicalStatus(req, rec.employee, 'Pending Approval', null, 'staff medical claim');
   const [updated] = await prisma.$queryRaw`SELECT * FROM staffmedical WHERE id=${id}`;
-  respond.ok(res, 'Submitted for approval', s(updated));
+  respond.ok(res, 'Submitted for approval', serializeMedical(updated));
 });
 
 // POST /medical/staff/:id/approve — approve a staff medical claim and GL-post the reimbursement to the
@@ -1444,11 +1497,12 @@ exports.approveStaffMedical = asyncHandler(async (req, res) => {
     } catch (e) {
       const errData = e.glResponse || e.response?.data || e.message;
       console.error('[staff medical approve] GL error:', errData);
-      await prisma.$executeRaw`UPDATE staffmedical SET status='GL Failed', payment_log=${JSON.stringify({ error: errData })} WHERE id=${id}`;
+      await prisma.$executeRaw`UPDATE staffmedical SET payment_log=${JSON.stringify({ error: errData })} WHERE id=${id}`;
     }
   }
   const [updated] = await prisma.$queryRaw`SELECT * FROM staffmedical WHERE id=${id}`;
-  respond.ok(res, 'Approved', { ...s(updated), gl_payload: glPayload });
+  const response = serializeMedical(updated);
+  respond.ok(res, response.status === 'GL Failed' ? 'Approved, but GL posting failed' : 'Approved', { ...response, gl_payload: glPayload });
 });
 
 // POST /medical/staff/:id/reject — reject a Pending Approval staff medical record with an optional reason.
@@ -1467,7 +1521,7 @@ exports.rejectStaffMedical = asyncHandler(async (req, res) => {
   const userId = req.user?.id ? Number(req.user.id) : null;
   await prisma.$executeRaw`UPDATE staffmedical SET status='Rejected', approved_by=${userId != null ? String(userId) : null}, rejection_reason=${reason?.trim() || null}, updatedAt=NOW() WHERE id=${id}`;
   const [updated] = await prisma.$queryRaw`SELECT * FROM staffmedical WHERE id=${id}`;
-  respond.ok(res, 'Rejected', s(updated));
+  respond.ok(res, 'Rejected', serializeMedical(updated));
 });
 
 // POST /medical/staff/:id/finalize — directly approve a Draft record and trigger GL posting in one step,
@@ -1502,11 +1556,12 @@ exports.finalizeStaffMedical = asyncHandler(async (req, res) => {
     } catch (e) {
       const errData = e.glResponse || e.response?.data || e.message;
       console.error('[staff medical finalize] GL error:', errData);
-      await prisma.$executeRaw`UPDATE staffmedical SET status='GL Failed', payment_log=${JSON.stringify({ error: errData })} WHERE id=${id}`;
+      await prisma.$executeRaw`UPDATE staffmedical SET payment_log=${JSON.stringify({ error: errData })} WHERE id=${id}`;
     }
   }
   const [updated] = await prisma.$queryRaw`SELECT * FROM staffmedical WHERE id=${id}`;
-  respond.ok(res, 'Finalized', { ...s(updated), gl_payload: glPayload });
+  const response = serializeMedical(updated);
+  respond.ok(res, response.status === 'GL Failed' ? 'Finalized, but GL posting failed' : 'Finalized', { ...response, gl_payload: glPayload });
 });
 
 // ── DEPENDENT MEDICAL — Action endpoints ──────────────────────────────────────
@@ -1527,7 +1582,7 @@ exports.submitDependentMedical = asyncHandler(async (req, res) => {
   if (flow.length) notifyMedicalStageApprovers(flow[0], req, rec.employee);
   else notifyMedicalStatus(req, rec.employee, 'Pending Approval', null, 'dependent medical claim');
   const [updated] = await prisma.$queryRaw`SELECT * FROM dependentmedical WHERE id=${id}`;
-  respond.ok(res, 'Submitted for approval', s(updated));
+  respond.ok(res, 'Submitted for approval', serializeMedical(updated));
 });
 
 // POST /medical/dependent/:id/approve — approve a dependent medical claim and GL-post reimbursement to
@@ -1567,11 +1622,12 @@ exports.approveDependentMedical = asyncHandler(async (req, res) => {
     } catch (e) {
       const errData = e.glResponse || e.response?.data || e.message;
       console.error('[dep medical approve] GL error:', errData);
-      await prisma.$executeRaw`UPDATE dependentmedical SET status='GL Failed', payment_log=${JSON.stringify({ error: errData })} WHERE id=${id}`;
+      await prisma.$executeRaw`UPDATE dependentmedical SET payment_log=${JSON.stringify({ error: errData })} WHERE id=${id}`;
     }
   }
   const [updated] = await prisma.$queryRaw`SELECT * FROM dependentmedical WHERE id=${id}`;
-  respond.ok(res, 'Approved', { ...s(updated), gl_payload: glPayload });
+  const response = serializeMedical(updated);
+  respond.ok(res, response.status === 'GL Failed' ? 'Approved, but GL posting failed' : 'Approved', { ...response, gl_payload: glPayload });
 });
 
 // POST /medical/dependent/:id/reject — reject a Pending Approval dependent medical record with an optional reason.
@@ -1589,7 +1645,7 @@ exports.rejectDependentMedical = asyncHandler(async (req, res) => {
   const userId = req.user?.id ? Number(req.user.id) : null;
   await prisma.$executeRaw`UPDATE dependentmedical SET status='Rejected', approved_by=${userId != null ? String(userId) : null}, rejection_reason=${reason?.trim() || null} WHERE id=${id}`;
   const [updated] = await prisma.$queryRaw`SELECT * FROM dependentmedical WHERE id=${id}`;
-  respond.ok(res, 'Rejected', s(updated));
+  respond.ok(res, 'Rejected', serializeMedical(updated));
 });
 
 // POST /medical/dependent/:id/finalize — directly approve a Draft dependent record and GL-post in one step.
@@ -1624,11 +1680,12 @@ exports.finalizeDependentMedical = asyncHandler(async (req, res) => {
     } catch (e) {
       const errData = e.glResponse || e.response?.data || e.message;
       console.error('[dep medical finalize] GL error:', errData);
-      await prisma.$executeRaw`UPDATE dependentmedical SET status='GL Failed', payment_log=${JSON.stringify({ error: errData })} WHERE id=${id}`;
+      await prisma.$executeRaw`UPDATE dependentmedical SET payment_log=${JSON.stringify({ error: errData })} WHERE id=${id}`;
     }
   }
   const [updated] = await prisma.$queryRaw`SELECT * FROM dependentmedical WHERE id=${id}`;
-  respond.ok(res, 'Finalized', { ...s(updated), gl_payload: glPayload });
+  const response = serializeMedical(updated);
+  respond.ok(res, response.status === 'GL Failed' ? 'Finalized, but GL posting failed' : 'Finalized', { ...response, gl_payload: glPayload });
 });
 
 // ── GL Retry endpoints ────────────────────────────────────────────────────────
@@ -1665,9 +1722,9 @@ async function retryMedicalGL(table, id, req) {
 exports.retryStaffMedicalGL = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [rec] = await prisma.$queryRaw`SELECT id, status, document_ref FROM staffmedical WHERE id = ${id}`;
+  const [rec] = await prisma.$queryRaw`SELECT id, status, document_ref, payment_log FROM staffmedical WHERE id = ${id}`;
   if (!rec) return respond.notFound(res, 'Record not found');
-  if (rec.status !== 'GL Failed') return respond.badReq(res, 'Only GL Failed records can retry posting');
+  if (rec.status !== 'GL Failed' && !hasMedicalGlFailure(rec)) return respond.badReq(res, 'Only GL Failed records can retry posting');
   if (rec.document_ref) return respond.badReq(res, 'GL already posted for this record');
   if (!(await medicalPaymentsEnabled())) return respond.badReq(res, 'Medical GL posting is disabled in settings');
   if (!(await glConfig()).url) return respond.badReq(res, "POSTING_API_URL not configured");
@@ -1681,16 +1738,17 @@ exports.retryStaffMedicalGL = asyncHandler(async (req, res) => {
     await prisma.$executeRaw`UPDATE staffmedical SET payment_log=${JSON.stringify({ error: errData })} WHERE id=${id}`;
   }
   const [updated] = await prisma.$queryRaw`SELECT * FROM staffmedical WHERE id=${id}`;
-  respond.ok(res, 'GL retry complete', s(updated));
+  const response = serializeMedical(updated);
+  respond.ok(res, response.status === 'GL Failed' ? 'GL posting failed' : 'GL posted successfully', response);
 });
 
 // POST /medical/dependent/:id/retry-gl — re-attempt GL posting for a dependent medical record stuck in 'GL Failed'.
 exports.retryDependentMedicalGL = asyncHandler(async (req, res) => {
   const id = toBigInt(req.params.id);
   if (!id) return respond.badReq(res, 'Invalid ID');
-  const [rec] = await prisma.$queryRaw`SELECT id, status, document_ref FROM dependentmedical WHERE id = ${id}`;
+  const [rec] = await prisma.$queryRaw`SELECT id, status, document_ref, payment_log FROM dependentmedical WHERE id = ${id}`;
   if (!rec) return respond.notFound(res, 'Record not found');
-  if (rec.status !== 'GL Failed') return respond.badReq(res, 'Only GL Failed records can retry posting');
+  if (rec.status !== 'GL Failed' && !hasMedicalGlFailure(rec)) return respond.badReq(res, 'Only GL Failed records can retry posting');
   if (rec.document_ref) return respond.badReq(res, 'GL already posted for this record');
   if (!(await medicalPaymentsEnabled())) return respond.badReq(res, 'Medical GL posting is disabled in settings');
   if (!(await glConfig()).url) return respond.badReq(res, "POSTING_API_URL not configured");
@@ -1704,7 +1762,8 @@ exports.retryDependentMedicalGL = asyncHandler(async (req, res) => {
     await prisma.$executeRaw`UPDATE dependentmedical SET payment_log=${JSON.stringify({ error: errData })} WHERE id=${id}`;
   }
   const [updated] = await prisma.$queryRaw`SELECT * FROM dependentmedical WHERE id=${id}`;
-  respond.ok(res, 'GL retry complete', s(updated));
+  const response = serializeMedical(updated);
+  respond.ok(res, response.status === 'GL Failed' ? 'GL posting failed' : 'GL posted successfully', response);
 });
 
 // POST /medical/hospital-claims/:id/retry-gl — re-attempt full GL posting for a hospital claim stuck in 'GL Failed';
@@ -1738,16 +1797,16 @@ exports.retryHospitalClaimGL = asyncHandler(async (req, res) => {
         const amt = parseFloat(item.amount ?? 0);
         if (!amt || amt <= 0) continue;
         const narration = ['Medical', item.employee_name, item.type === 'dependent' ? `Dep: ${item.dependent_name}` : null, item.narration || null].filter(Boolean).join(' - ');
-        debitAccounts.push({ debitAmount: amt, debitAccount: expenseGl, debitCurrency: currency, debitNarration: narration, debitProdRef: `MED_${id}_${item.employee_id}`, debitBranch: branch });
+        debitAccounts.push({ debitAmount: amt, debitAccount: expenseGl, debitCurrency: currency, debitNarration: narration, debitProdRef: `BS_${id}_${item.employee_id}`, debitBranch: branch });
       }
     }
     const creditAmt = parseFloat(String(claim.total_credit_amount ?? 0));
     if (creditAmt > 0 && claim.hospital_account) {
-      creditAccounts.push({ creditAmount: creditAmt, creditAccount: claim.hospital_account, creditCurrency: currency, creditNarration: `Hospital Payment - ${claim.hospital_name}`, creditProdRef: `MED_${id}`, creditBranch: branch });
+      creditAccounts.push({ creditAmount: creditAmt, creditAccount: claim.hospital_account, creditCurrency: currency, creditNarration: `Hospital Payment - ${claim.hospital_name}`, creditProdRef: `NS_${id}`, creditBranch: branch });
     }
     const whtAmt = parseFloat(String(claim.withholding_tax ?? 0));
     if (whtAmt > 0 && whtGl) {
-      creditAccounts.push({ creditAmount: whtAmt, creditAccount: whtGl, creditCurrency: currency, creditNarration: `WHT - ${claim.hospital_name}`, creditProdRef: `MED_${id}_WHT`, creditBranch: branch });
+      creditAccounts.push({ creditAmount: whtAmt, creditAccount: whtGl, creditCurrency: currency, creditNarration: `WHT - ${claim.hospital_name}`, creditProdRef: `NS_${id}_WHT`, creditBranch: branch });
     }
 
     if (debitAccounts.length && creditAccounts.length) {
@@ -1759,7 +1818,8 @@ exports.retryHospitalClaimGL = asyncHandler(async (req, res) => {
     await prisma.hospitalclaims.updateMany({ where: { id }, data: { payment_log: JSON.stringify({ error: errData }) } });
   }
   const [updated] = await prisma.$queryRaw`SELECT * FROM hospitalclaims WHERE id = ${id}`;
-  respond.ok(res, 'GL retry complete', s(updated));
+  const response = serializeMedical(updated);
+  respond.ok(res, response.status === 'GL Failed' ? 'GL posting failed' : 'GL posted successfully', response);
 });
 
 // ── YEAR-END UTILIZATION RESET ──────────────────────────────────────────────────

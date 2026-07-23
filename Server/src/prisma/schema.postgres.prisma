@@ -27,6 +27,7 @@ model users {
 
 model employee {
   id                  BigInt    @id @default(autoincrement())
+  employee_id         String?   @unique @db.VarChar(20)
   firstName           String    @default("") @db.VarChar(100) @map("firstname")
   lastName            String    @default("") @db.VarChar(100) @map("lastname")
   email               String    @unique @db.VarChar(100)
@@ -42,19 +43,18 @@ model employee {
   createdAt           DateTime  @default(now()) @map("createdat")
   dateOfBirth         DateTime? @db.Date @map("dateofbirth")
   departmentId        BigInt? @map("departmentid")
-  employee_id         String?   @unique @db.VarChar(20)
-  employmentStatusId  String?   @db.VarChar(36) @map("employmentstatusid")
-  genderId            String?   @db.VarChar(36) @map("genderid")
+  employmentStatusId  Int?      @map("employmentstatusid")
+  genderId            Int?      @map("genderid")
   hireDate            DateTime? @db.Date @map("hiredate")
-  jobTitleId          String?   @db.VarChar(36) @map("jobtitleid")
+  jobTitleId          Int?      @map("jobtitleid")
   lifecycleStatus     String    @default("PENDING") @db.VarChar(20) @map("lifecyclestatus")
   middleName          String?   @db.VarChar(100) @map("middlename")
   mobilePhone         String?   @db.VarChar(30) @map("mobilephone")
-  nationalityId       String?   @db.VarChar(36) @map("nationalityid")
+  nationalityId       Int?      @map("nationalityid")
   outletId            BigInt? @map("outletid")
-  religionId          String?   @db.VarChar(36) @map("religionid")
+  religionId          Int?      @map("religionid")
   supervisorId        BigInt? @map("supervisorid")
-  titleId             String?   @db.VarChar(36) @map("titleid")
+  titleId             Int?      @map("titleid")
   unitId              BigInt? @map("unitid")
   updatedAt           DateTime  @default(now()) @updatedAt @map("updatedat")
   bankAccount         String?   @db.VarChar(50) @map("bankaccount")
@@ -85,14 +85,43 @@ model employee {
   retirement_date     DateTime? @db.Date
   spouse_name         String?   @db.VarChar(100)
   ssn_num             String?   @db.VarChar(20)
-  staff_level         String?   @db.VarChar(36)
-  staff_role          String?   @db.VarChar(36)
+  staff_level         Int?
+  staff_role          Int?
   termination_date         DateTime? @db.Date
   work_email               String?   @unique @db.VarChar(100)
   sync_status              String?   @db.VarChar(20)
   sync_error               String?   @db.VarChar(500)
   pending_lifecycle_action String?   @db.VarChar(20)
   resignation_letter       String?   @db.VarChar(150)
+  rmRoType                 String?   @db.VarChar(2) @map("rmrotype")
+}
+
+// Performance Codes (positions/seats). Self-referential hierarchy via reportsToId;
+// `code` is a server-generated 6-digit path (see pcCodeHelper.nextChildCode).
+model pccodes {
+  id          BigInt   @id @default(autoincrement())
+  code        String   @unique @db.VarChar(12)
+  name        String   @db.VarChar(150)
+  reportsToId BigInt?  @map("reportstoid")
+  isActive    Boolean  @default(true) @map("isactive")
+  createdAt   DateTime @default(now()) @map("createdat")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updatedat")
+
+  @@map("pccodes")
+}
+
+// Staff <-> PC code occupancy. Open row (endDate NULL) = current holder; one holder per code.
+model pccodeassignments {
+  id         BigInt    @id @default(autoincrement())
+  pcCodeId   BigInt    @map("pccodeid")
+  employeeId BigInt    @map("employeeid")
+  startDate  DateTime  @default(now()) @db.Date @map("startdate")
+  endDate    DateTime? @db.Date @map("enddate")
+  createdAt  DateTime  @default(now()) @map("createdat")
+
+  @@index([pcCodeId])
+  @@index([employeeId])
+  @@map("pccodeassignments")
 }
 
 model refresh_tokens {
@@ -697,7 +726,7 @@ model employeeattendancesheets {
 
 model employeecertifications {
   id               BigInt    @id @default(autoincrement())
-  certification_id String?   @db.VarChar(36)
+  certification_id Int?
   employee         BigInt
   institute        String?   @db.VarChar(400)
   date_start       DateTime? @db.Date
@@ -760,7 +789,7 @@ model employeedocuments {
 
 model employeeeducations {
   id           BigInt    @id @default(autoincrement())
-  education_id String?   @db.VarChar(36)
+  education_id Int?
   employee     BigInt
   institute    String?   @db.VarChar(400)
   date_start   DateTime? @db.Date
@@ -883,7 +912,7 @@ model employeeimprestgl {
 
 model employeelanguages {
   id            BigInt                           @id @default(autoincrement())
-  language_id   String?                          @db.VarChar(36)
+  language_id   Int?
   employee      BigInt
   reading       employeelanguages_reading?
   speaking      employeelanguages_speaking?
@@ -1146,7 +1175,7 @@ model employeeseverance {
 
 model employeeskills {
   id       BigInt  @id @default(autoincrement())
-  skill_id String? @db.VarChar(36)
+  skill_id Int?
   employee BigInt
   details  String? @db.VarChar(400)
 }
@@ -1848,6 +1877,84 @@ model salarycomponenttype {
   description String? @db.VarChar(500)
 
   @@ignore
+}
+
+model employeetransfers {
+  id                          BigInt    @id @default(autoincrement())
+  transfer_number             String    @unique @db.VarChar(40)
+  employee                    BigInt
+  transfer_type               String    @db.VarChar(50)
+  reason                      String?   @db.Text
+  effective_date              DateTime  @db.Date
+  status                      String    @default("Draft") @db.VarChar(30)
+  current_department          BigInt?
+  proposed_department         BigInt?
+  current_branch              BigInt?
+  proposed_branch             BigInt?
+  current_unit                BigInt?
+  proposed_unit               BigInt?
+  current_outlet              BigInt?
+  proposed_outlet             BigInt?
+  current_job_title           Int?
+  proposed_job_title          Int?
+  current_supervisor          BigInt?
+  proposed_supervisor         BigInt?
+  current_paygrade            BigInt?
+  proposed_paygrade           BigInt?
+  current_notch               BigInt?
+  proposed_notch              BigInt?
+  current_values              String?   @db.Text
+  proposed_values             String?   @db.Text
+  supporting_document         String?   @db.VarChar(255)
+  initiated_by                BigInt?
+  submitted_at                DateTime? @db.Timestamp(0)
+  approved_at                 DateTime? @db.Timestamp(0)
+  effective_at                DateTime? @db.Timestamp(0)
+  rejected_reason             String?   @db.Text
+  cancelled_reason            String?   @db.Text
+  created_at                  DateTime  @default(now()) @db.Timestamp(0)
+  updated_at                  DateTime  @updatedAt @db.Timestamp(0)
+
+  @@index([employee])
+  @@index([status])
+  @@index([effective_date])
+}
+
+model employeeapprovalstages {
+  id             BigInt    @id @default(autoincrement())
+  employee_id    BigInt
+  request_type   String    @db.VarChar(40)
+  stage_order    Int
+  stage_name     String    @db.VarChar(100)
+  approver_type  String    @db.VarChar(20)
+  approver_id    String    @db.VarChar(100)
+  approver_label String?   @db.VarChar(150)
+  status         String    @default("Pending") @db.VarChar(20)
+  acted_by       BigInt?
+  acted_at       DateTime? @db.Timestamp(0)
+  comment        String?   @db.VarChar(500)
+  created_at     DateTime  @default(now()) @db.Timestamp(0)
+
+  @@index([employee_id, stage_order])
+  @@index([status])
+}
+
+model employeetransferstages {
+  id                          BigInt    @id @default(autoincrement())
+  transfer_id                 BigInt
+  stage_order                 Int
+  stage_name                  String    @db.VarChar(100)
+  approver_type               String    @db.VarChar(20)
+  approver_id                 String    @db.VarChar(100)
+  approver_label              String?   @db.VarChar(150)
+  status                      String    @default("Pending") @db.VarChar(20)
+  acted_by                    BigInt?
+  acted_at                    DateTime? @db.Timestamp(0)
+  comment                     String?   @db.VarChar(500)
+  created_at                  DateTime  @default(now()) @db.Timestamp(0)
+
+  @@index([transfer_id, stage_order])
+  @@index([status])
 }
 
 model settings {
@@ -2833,7 +2940,7 @@ model upload {
 }
 
 model CodeList {
-  id          String          @id @default(cuid())
+  id          Int             @id @default(autoincrement())
   code        String          @unique
   description String?
   createdAt   DateTime        @default(now()) @map("createdat")
@@ -2846,8 +2953,8 @@ model CodeList {
 }
 
 model CodeListValue {
-  id          String   @id @default(cuid())
-  codeListId  String @map("codelistid")
+  id          Int      @id @default(autoincrement())
+  codeListId  Int      @map("codelistid")
   label       String
   code        String?
   description String?

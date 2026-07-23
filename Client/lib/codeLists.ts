@@ -1,7 +1,7 @@
 import api from './api';
 
 export interface CodeList {
-  id: string;
+  id: number;
   name: string;
   code: string;
   description: string | null;
@@ -11,8 +11,8 @@ export interface CodeList {
 }
 
 export interface CodeListValue {
-  id: string;
-  codeListId: string;
+  id: number;
+  codeListId: number;
   label: string;
   code: string | null;
   description: string | null;
@@ -20,17 +20,20 @@ export interface CodeListValue {
   isActive: boolean;
 }
 
+// ids arrive from the API as numbers; accept either when building request URLs.
+type IdArg = number | string;
+
 export const codeLists = {
   getAll: () =>
     api.get<{ status: string; data: CodeList[] }>('/system/code-lists'),
 
-  getById: (id: string) =>
+  getById: (id: IdArg) =>
     api.get<{ status: string; data: CodeList }>(`/system/code-lists/${id}`),
 
   create: (data: { name: string; code: string; description?: string }) =>
     api.post<{ status: string; data: CodeList }>('/system/code-lists', data),
 
-  update: (id: string, data: { name?: string; description?: string }) =>
+  update: (id: IdArg, data: { name?: string; description?: string }) =>
     api.put<{ status: string; data: CodeList }>(`/system/code-lists/${id}`, data),
 
   createValue: (
@@ -43,8 +46,8 @@ export const codeLists = {
     ),
 
   updateValue: (
-    codeListId: string,
-    valueId: string,
+    codeListId: IdArg,
+    valueId: IdArg,
     data: { label?: string; description?: string }
   ) =>
     api.put<{ status: string; data: CodeListValue }>(
@@ -52,12 +55,12 @@ export const codeLists = {
       data
     ),
 
-  deactivateValue: (codeListId: string, valueId: string) =>
+  deactivateValue: (codeListId: IdArg, valueId: IdArg) =>
     api.put<{ status: string; data: CodeListValue }>(
       `/system/code-lists/${codeListId}/values/${valueId}/deactivate`
     ),
 
-  activateValue: (codeListId: string, valueId: string) =>
+  activateValue: (codeListId: IdArg, valueId: IdArg) =>
     api.put<{ status: string; data: CodeListValue }>(
       `/system/code-lists/${codeListId}/values/${valueId}/activate`
     ),

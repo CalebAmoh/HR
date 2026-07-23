@@ -6,12 +6,14 @@ import {
   Building2, Users, ShieldCheck, Stethoscope, Banknote, Network, CalendarClock, FileText, Briefcase,
   Mail, Server, AtSign, Eye, EyeOff, Send, Loader2, GraduationCap,
   Clock, MapPin, Tablet, KeyRound, Copy, RefreshCw, Lock, Sparkles, CheckCircle2, XCircle, Plus, Trash2, Pencil,
-  MessageSquare, RotateCcw, Search, Check,
+  MessageSquare, RotateCcw, Search, Check, ArrowRightLeft,
 } from 'lucide-react';
 import { Modules } from './Modules';
 import { PayrollApprovalFlow } from './PayrollApprovalFlow';
 import { MedicalApprovalFlow } from './MedicalApprovalFlow';
 import { LeaveApprovalFlow } from './LeaveApprovalFlow';
+import { EmployeeApprovalFlow } from './EmployeeApprovalFlow';
+import { EmployeeTransferApprovalFlow } from './EmployeeTransferApprovalFlow';
 import {
   aiGetConfig, aiSaveConfig, aiHealth, aiReindex, type AiHealth,
   aiListKnowledge, aiSaveKnowledge, aiSetKnowledgeEnabled, aiDeleteKnowledge, type KnowledgeEntry,
@@ -20,7 +22,8 @@ import { getSettings, saveSetting } from '../../lib/settings';
 import { listMessages, saveMessage, resetMessage, type MessageEntry } from '../../lib/messagesClient';
 import {
   EMPLOYEE_FORM_FIELDS, EMPLOYEE_FORM_STEPS, EMPLOYEE_FORM_FIELDS_BY_KEY,
-  defaultFieldConfig, type EmployeeFieldConfig, type FieldFlags,
+  defaultFieldConfig, defaultTransferFieldConfig, type EmployeeFieldConfig,
+  type EmployeeTransferFieldConfig, type FieldFlags,
 } from '../config/employeeFormFields';
 import { ONBOARDING_FIELDS } from '@/lib/onboardingFields';
 import {
@@ -163,7 +166,7 @@ function MaybeToggle({ checked, disabled, onChange }: { checked: boolean; disabl
 }
 
 // Settings → Controls → Employee Form: per-field visibility + required for the Add Employee form.
-function EmployeeFormFieldsSection() {
+function EmployeeCreationFieldsSection() {
   const [fields, setFields] = useState<EmployeeFieldConfig>(() => getSettings().employeeForm.fields);
 
   const flag = (key: string): FieldFlags => fields[key] ?? {
@@ -251,6 +254,78 @@ function EmployeeFormFieldsSection() {
       })}
     </div>
   );
+}
+
+function EmployeeTransferFieldsSection() {
+  const [transferFields, setTransferFields] = useState<EmployeeTransferFieldConfig>(() => getSettings().employeeForm.transferFields);
+
+  const update = (key: string, enabled: boolean) => {
+    setTransferFields((current) => {
+      const next = { ...current, [key]: enabled };
+      saveSetting('employeeForm', { transferFields: next });
+      return next;
+    });
+  };
+
+  const resetDefaults = () => {
+    const defaults = defaultTransferFieldConfig();
+    setTransferFields(defaults);
+    saveSetting('employeeForm', { transferFields: defaults });
+  };
+
+  return (
+    <div className="space-y-5 max-w-3xl">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-[12px] text-[var(--text-muted)] leading-relaxed">
+          Fields switched on must be changed through <strong className="text-[var(--text-secondary)]">Employee Transfers</strong> for
+          approved, active employees. Fields switched off remain personal or administrative details that can be changed through Edit Employee.
+          New employees can still be fully completed before their initial approval.
+        </p>
+        <button onClick={resetDefaults} className="secondary-btn shrink-0 text-[12px]"><RefreshCw size={13} /> Reset to defaults</button>
+      </div>
+
+      {EMPLOYEE_FORM_STEPS.map((stepDef) => {
+        const stepFields = EMPLOYEE_FORM_FIELDS.filter((field) => field.step === stepDef.id);
+        if (!stepFields.length) return null;
+        return (
+          <SectionCard key={stepDef.id} icon={<ArrowRightLeft size={13} />} title={stepDef.label}>
+            <div className="flex items-center gap-4 px-5 py-2 bg-[var(--bg)] border-b border-[var(--border-light)] text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
+              <span className="flex-1">Employee field</span><span className="w-[100px] text-center">Use Transfer</span>
+            </div>
+            {stepFields.map((field) => {
+              const unavailable = !!field.locked || field.type === 'file';
+              return (
+                <div key={field.key} className="flex items-center gap-4 px-5 py-3 border-b border-[var(--border-light)] last:border-0">
+                  <div className="flex-1 min-w-0 flex items-center gap-2">
+                    <p className="text-[13px] font-semibold text-[var(--text-primary)]">{field.label}</p>
+                    {unavailable && <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-[var(--surface-hover)] text-[var(--text-muted)] border border-[var(--border)]">Personal / identity field</span>}
+                  </div>
+                  <div className="w-[100px] flex justify-center">
+                    <MaybeToggle checked={!unavailable && !!transferFields[field.key]} disabled={unavailable} onChange={(enabled) => update(field.key, enabled)} />
+                  </div>
+                </div>
+              );
+            })}
+          </SectionCard>
+        );
+      })}
+    </div>
+  );
+}
+
+function EmployeeFormFieldsSection() {
+  const [tab, setTab] = useState<'Employee Details' | 'Employee Transfers'>('Employee Details');
+  return <div className="space-y-5">
+    <div className="inline-flex rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1">
+      {(['Employee Details', 'Employee Transfers'] as const).map((item) => (
+        <button key={item} type="button" onClick={() => setTab(item)}
+          className={`rounded-md px-4 py-2 text-[12px] font-semibold transition-colors ${tab === item ? 'bg-[var(--accent)] text-white shadow-sm' : 'text-[var(--text-muted)] hover:bg-[var(--surface-hover)]'}`}>
+          {item}
+        </button>
+      ))}
+    </div>
+    {tab === 'Employee Details' ? <EmployeeCreationFieldsSection /> : <EmployeeTransferFieldsSection />}
+  </div>;
 }
 
 function GlInput({ label, desc, value, onChange, mono = true }: {
@@ -495,6 +570,8 @@ function ApprovalsSection({
   const [showFlowEditor, setShowFlowEditor] = useState(false);
   const [showMedicalFlowEditor, setShowMedicalFlowEditor] = useState(false);
   const [showLeaveFlowEditor, setShowLeaveFlowEditor] = useState(false);
+  const [showEmployeeFlowEditor, setShowEmployeeFlowEditor] = useState(false);
+  const [showTransferFlowEditor, setShowTransferFlowEditor] = useState(false);
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 auto-rows-min">
       <SectionCard icon={<ShieldCheck size={13} />} title="Employee Approval">
@@ -521,7 +598,32 @@ function ApprovalsSection({
           checked={employeeUpdateApproval}
           onChange={(v) => { setEmployeeUpdateApproval(v); saveSetting('approvals', { employeeUpdateApproval: v }); }}
         />
+        {employeeApproval && (
+          <div className="px-5 py-3 border-t border-[var(--border)]">
+            <p className="text-[12px] text-[var(--text-muted)] mb-2 leading-relaxed">
+              New employee records and employee detail changes use this same ordered sign-off chain.
+              With no configured stages, the existing Approve Employees permission provides one-step approval.
+            </p>
+            <button type="button" onClick={() => setShowEmployeeFlowEditor(true)} className="secondary-btn text-[13px]">
+              <ShieldCheck size={14} /> Configure Approval Flow
+            </button>
+          </div>
+        )}
       </SectionCard>
+      {showEmployeeFlowEditor && <EmployeeApprovalFlow onClose={() => setShowEmployeeFlowEditor(false)} />}
+
+      <SectionCard icon={<ArrowRightLeft size={13} />} title="Employee Transfer Approval">
+        <div className="px-5 py-4">
+          <p className="text-[12px] text-[var(--text-muted)] mb-3 leading-relaxed">
+            Define the ordered role or user stages used when an employee transfer is submitted.
+            With no configured stages, the existing transfer approval permission provides one-step approval.
+          </p>
+          <button type="button" onClick={() => setShowTransferFlowEditor(true)} className="secondary-btn text-[13px]">
+            <ShieldCheck size={14} /> Configure Approval Flow
+          </button>
+        </div>
+      </SectionCard>
+      {showTransferFlowEditor && <EmployeeTransferApprovalFlow onClose={() => setShowTransferFlowEditor(false)} />}
 
       <SectionCard icon={<ShieldCheck size={13} />} title="Payroll Approval">
         <ControlRow

@@ -49,10 +49,25 @@ const getAllCompanyStructures = asyncHandler(async (req, res) => {
   const idToTitle = {};
   for (const s of structures) idToTitle[s.id.toString()] = s.title;
 
+  // `heads` stores the head/manager's employee id — resolve it to a display name.
+  const headIds = [...new Set(
+    structures.map(s => s.heads).filter(h => h && /^\d+$/.test(h)).map(h => BigInt(h))
+  )];
+  const headNameById = {};
+  if (headIds.length > 0) {
+    const emps = await prisma.employee.findMany({
+      where: { id: { in: headIds } },
+      select: { id: true, firstName: true, lastName: true },
+    });
+    emps.forEach(e => { headNameById[e.id.toString()] = `${e.firstName ?? ''} ${e.lastName ?? ''}`.trim(); });
+  }
+
   const data = structures.map(s => ({
     ...serialize(s),
-    typeLabel:   s.type   ? (TYPE_LABEL[s.type] ?? s.type)                   : null,
-    parentTitle: s.parent2 ? (idToTitle[s.parent2.toString()] ?? null)        : null,
+    typeLabel:    s.type    ? (TYPE_LABEL[s.type] ?? s.type)              : null,
+    parentTitle:  s.parent2 ? (idToTitle[s.parent2.toString()] ?? null)  : null,
+    // Resolved manager/head name (falls back to the raw value if it isn't a known employee id).
+    managerName:  s.heads ? (headNameById[s.heads] ?? (/^\d+$/.test(s.heads) ? null : s.heads)) : null,
   }));
 
   respond.ok(res, 'Company structures fetched', data);

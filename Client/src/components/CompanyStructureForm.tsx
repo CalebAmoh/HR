@@ -40,7 +40,9 @@ export function CompanyStructureForm({ onClose, initialData, onSave, currentStru
           type:        initialData.typeLabel   ?? '',
           comp_code:   initialData.comp_code   ?? '',
           parent2:     initialData.parent2     ?? '',
-          heads:       initialData.heads       ?? '',
+          // Legacy records store `heads` as an employee id; prefer the resolved name so the
+          // manager picker shows a name (and re-saves it as a name, matching how it's stored now).
+          heads:       initialData.managerName ?? initialData.heads ?? '',
         }
       : null,
   [initialData]);

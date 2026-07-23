@@ -74,9 +74,12 @@ const menuSections: MenuSection[] = [
           { label: 'Manage Employees', id: 'Employees'      },
           { label: 'Self-Onboard Setup',  id: 'SelfOnboarding' },
           { label: 'AI Insights',      id: 'AiInsights'     },
+          { label: 'Employee Transfers', id: 'EmployeeTransfers' },
         ],
       },
       { icon: Building2, label: 'Company',   moduleIds: ['Company'],       hasSubmenu: true },
+      { icon: Briefcase, label: 'PC Codes',           id: 'PcCodes'          },
+      { icon: Network,   label: 'PC Code Organogram', id: 'PcCodeOrganogram' },
       {
         icon: FolderOpen,
         label: 'Documents',
