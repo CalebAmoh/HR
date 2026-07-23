@@ -211,7 +211,7 @@ async function sendWelcomeEmail({ to, name, username, password, loginUrl }) {
 
   // Where the user signs in. Falls back to the dev client URL when FRONTEND_URL
   // is not configured (set FRONTEND_URL to the public app URL in production).
-  const signInUrl = loginUrl || process.env.FRONTEND_URL || 'http://localhost:3002';
+  const signInUrl = loginUrl || process.env.FRONTEND_URL || 'http://localhost:3099';
 
   const body = `
     ${greeting(name)}

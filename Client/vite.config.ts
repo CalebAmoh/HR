@@ -37,18 +37,18 @@ export default defineConfig(({mode}) => {
   return {
     base,
     server: {
-        port: 3002,
+        port: 3099,
         host: '0.0.0.0',
 
         proxy: {
-          // All requests that start with /v1/api/school-management → forward to backend port 3030
+          // Requests to the HR API are proxied to the backend (PORT in Server/.env).
           "/v1/api/hr": {
-            target: "http://localhost:3050",       // ← change to 3006 if that's your real backend port now
+            target: "http://localhost:3088",
             changeOrigin: true,
             secure: false,
           },
           '/uploads': {
-              target: 'http://localhost:3050',
+              target: 'http://localhost:3088',
               changeOrigin: true,
           },
         },

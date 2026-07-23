@@ -717,7 +717,7 @@ const sendScheduleLink = asyncHandler(async (req, res) => {
   // Public portals (interview scheduling) live at the ROOT path, not under the app's /xhrm base,
   // so candidates get a clean link that works without authentication. Strip any sub-path from
   // FRONTEND_URL down to the origin.
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3002';
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3099';
   let origin = frontendUrl;
   try { origin = new URL(frontendUrl).origin; } catch { /* keep as-is if not a full URL */ }
   const link     = `${origin}/schedule/${token}`;
